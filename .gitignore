@@ -6,6 +6,28 @@ snapdir_*/
 ICs/
 examples/
 
+# Python venvs
+.venv/
+venv/
+**/.venv/
+
+# Big outputs / generated artifacts
+*.hdf5
+*.npz
+*.npy
+*.log
+*.zip
+*.tar
+*.tar.gz
+
+# Big plots / html reports (optional)
+*.html
+*.png
+
+# Gadget run directories (adjust to your naming)
+*_output_*/
+snapdir_*/
+
 # Your specific runs (belt + suspenders)
 1_output_*/
 2_output_*/
