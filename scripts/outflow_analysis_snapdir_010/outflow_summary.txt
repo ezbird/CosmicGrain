@@ -1,0 +1,10 @@
+Outflow Analysis Summary
+============================================================
+
+Snapshot: ../5_output_zoom_halo569_50Mpc/snapdir_010/
+Redshift: 5.963
+Time: 0.1436
+
+Outflow criterion: v_r > 50 km/s, T > 1e5 K
+Total outflowing mass: 6.19e+08 Msun
+Outflowing particles: 2,090 (0.0%)

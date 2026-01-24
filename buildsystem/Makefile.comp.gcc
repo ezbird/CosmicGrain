@@ -1,0 +1,16 @@
+CPP      =  mpicxx  -std=c++11 # sets the C++-compiler
+
+# Fast version (remove -ggdb, add aggressive opts)
+OPTIMIZE =  -O3 -march=native -mtune=native -ffast-math -funroll-loops -Wall -Wno-format-security -Wno-unused-result
+
+# Add link-time optimization
+OPT += -flto
+
+ifeq (EXPLICIT_VECTORIZATION,$(findstring EXPLICIT_VECTORIZATION,$(CONFIGVARS)))
+# Upgrade to AVX2 (or AVX512 if you have it)
+CFLAGS_VECTOR += -mavx2 -mfma -fabi-version=0  # AVX2 + FMA instructions
+CPV      =  $(CPP)
+else
+CFLAGS_VECTOR =
+CPV      =  $(CPP)
+endif

@@ -1,0 +1,167 @@
+
+%----  Relevant files
+InitCondFile         ICs/IC_uniform_50Mpc_128_music
+OutputDir            ./4_output_uniform_50Mpc_128_music_agb_yields
+SnapshotFileBase     snapshot
+OutputListFilename   output_snapshots.txt
+TreecoolFile         data/TREECOOL_fg_dec11
+MetalcoolFile        data/METALCOOL
+AGByieldFile         data/agb_yield_table.txt
+
+%---- File formats
+ICFormat             3
+SnapFormat           3
+
+%---- CPU-time limits
+TimeLimitCPU              1728000   
+CpuTimeBetRestartFile     7200    % 2h,  in seconds
+
+%----- Memory allocation
+MaxMemSize                2500    % in MByte
+
+%---- Characteristics of run
+TimeBegin                 0.01    % z=99 (1/(1+z) = 1/100)
+TimeMax	                  1.0     % End of the simulation,   z = 0
+
+%---- Basic code options that set the type of simulation
+ComovingIntegrationOn     1
+
+%---- Cosmological parameters
+Omega0	                  0.3158
+OmegaLambda               0.6842
+OmegaBaryon               0.04936
+HubbleParam               0.6732
+Hubble                    100   % km/s/Mpc
+BoxSize                   50    % Mpc (matches IC numbers)
+
+%---- Output frequency and output paramaters
+OutputListOn              1
+TimeBetSnapshot           1.067
+TimeOfFirstSnapshot       0.02
+TimeBetStatistics         0.1
+NumFilesPerSnapshot       16
+MaxFilesWithConcurrentIO  8
+
+%---- Accuracy of time integration
+ErrTolIntAccuracy        0.025
+CourantFac               0.05
+MaxSizeTimestep          0.0005
+MinSizeTimestep          1e-11
+
+%---- Adaptive Courant factor
+#CourantFacMin          0.05
+#CourantFacMax          0.4
+#CourantFacDecay        0.7
+#CourantFacRecover      1.01
+#AdaptiveThreshold      1
+#AdaptiveRecoverySteps  50
+
+%---- Tree algorithm, force accuracy, domain update frequency
+TypeOfOpeningCriterion                1
+ErrTolTheta                           0.7
+ErrTolThetaMax                        1.0
+ErrTolForceAcc                        0.005
+TopNodeFactor                         2.0
+ActivePartFracForNewDomainDecomp      0.05   ; how often to rebuild the domain
+ActivePartFracForPMinsteadOfEwald     0.05
+
+%---- System of units
+UnitLength_in_cm         3.085678e24        ;  Mpc
+UnitMass_in_g            1.989e43           ;  1.0e10 Msun
+UnitVelocity_in_cm_per_s 1e5                ;  1 km/sec
+GravityConstantInternal  0
+
+%---- SPH 
+DesNumNgb                        64      % Standard SPH neighbors; AGORA uses 128 ± 8
+MaxNumNgbDeviation               16       % Standard deviation
+#DesLinkNgb                       20 
+ArtBulkViscConst                 1.0        % Viscosity parameter
+MinGasHsml                       0.002    
+MaxGasHsml                       5         % maybe silly to keep this?      
+InitGasTemp                      10000       
+#MinGasTemp                       50         % Minimum temperature floor
+
+
+% --- Adaptive gas softening (gravitational)
+GasSoftFactor                   1.5
+AdaptiveHydroSofteningSpacing   1.05          % epsilon_gas ≈ Hsml / 2
+MinimumComovingHydroSoftening   0.0025        % 2.5 kpc (doubled from 1.25 kpc)
+
+% --- Gravitational softenings (comoving, in Mpc)
+% Gas (Type 0) – adaptive handles gravity; keep a sensible backup
+SofteningComovingClass0         0.0050        ; 5.0 kpc   (was 2.5)
+SofteningMaxPhysClass0          0.0024        ; 2.4 kpc   (was 1.2)
+
+% DM (Type 1) – keep same fraction of Δx (≈0.025×Δx → 9.766 kpc here)
+SofteningComovingClass1         0.009766      ; 9.766 kpc (was 4.883)
+SofteningMaxPhysClass1          0.0040        ; 4.0 kpc   (was 2.0)
+
+% Stars (Type 4) – track gas/DM scale
+SofteningComovingClass4         0.0070        ; 7.0 kpc   (was 3.5)
+SofteningMaxPhysClass4          0.0030        ; 3.0 kpc   (was 1.5)
+
+% If you’re actually using extra DM shells (Types 2/3/5), scale them too
+SofteningComovingClass2         0.0070        ; 7.0 kpc   (was 3.5)
+SofteningMaxPhysClass2          0.0030        ; 3.0 kpc   (was 1.5)
+SofteningComovingClass3         0.0070        ; 7.0 kpc   (was 3.5)
+SofteningMaxPhysClass3          0.0030        ; 3.0 kpc   (was 1.5)
+SofteningComovingClass5         0.0070        ; 7.0 kpc   (was 3.5)
+SofteningMaxPhysClass5          0.0030        ; 3.0 kpc   (was 1.5)
+
+
+% ---- Map particle types to classes
+SofteningClassOfPartType0   0   ; Gas
+SofteningClassOfPartType1   1   ; HR DM
+SofteningClassOfPartType2   2   ; LR DM (use 3/5 for outer shells if present)
+SofteningClassOfPartType3   3   ; (unused or additional LR shell)
+SofteningClassOfPartType4   4   ; Stars
+SofteningClassOfPartType5   5   ; (unused / outer LR)
+#SofteningClassOfPartType6   6   ; Dust
+
+%---- Velocity Limiter Parameters
+#LimitExtremeVelocities     1       % Prevent runaway particles
+#LimitVelocitiesOnlyForGas  0       
+#MaxAllowedVelocity         1000    % Higher for zoom (km/s in code units)
+
+%----- Cooling and Star formation
+MaxSfrTimescale       1.5        % usually 1.5; Gas consumption timescale (multi-phase model)
+FactorSN              0.1      % 0.193; beta, mass fraction of massive stars (multi-phase model)
+FactorEVP             1000       % A_0, evaporation parameter (multi-phase model); smaller value means lower pressure support, making it easier for gas to collapse
+TempSupernova         1e8        % T_SN, effective "supernova temperature",sets feedback energy (multi-phase model)
+TempClouds            1000       % temperature of cold clouds (multi-phase model)
+CritOverDensity       57.7       % default is 57.7; overdensity threshold value for cosmological sims; lower value means conditions easier to reach for SF
+CritPhysDensity       0          % consider 0.001; critical physical density for star formation (in cm^(-3))
+                                 % if set to 0 == Gadget-4 compute a threshold from  Springel & Hernquist 03 model, which at low resolution will pick a lower effective density.
+MinEgySpec            0          % No minimum energy; 0.1 is 10-50,000K. Probably DO NOT change.
+
+
+%----- Debugging (REDUCE FOR PERFORMANCE)
+StarformationDebugLevel   1       % 0=off, 1=on
+FeedbackDebugLevel       1     
+
+
+#TargetGasMass         1.0e5      % Target gas particle mass in code units
+#WindEfficiency        2.0
+#WindEnergyFraction    0.5
+#WindFreeTravelLength  30
+#WindFreeTravelDensFac 0.1
+
+%---- Dust Model Parameters
+#DustCondensationEfficiency      0.3     
+#DustGrowthTimescaleNorm         1.0e8   
+#DustDestructionThresholdVelocity 50.0   
+#DustThermalSputteringTemp        1.0e6  
+
+
+%---- NGENIC Parameters (used ONLY when compiled with NGENIC)
+%NSample                     256            % Grid size - set same as NGENIC in Config.sh
+%GridSize                    256
+%PowerSpectrumFile           empty.txt      % ICs/fixed_power_spectrum.txt
+%PowerSpectrumType           1
+%Sigma8                      0.811
+%ReNormalizeInputSpectrum    1               % Apply Sigma8 normalization
+%PrimordialIndex             0.965
+%Seed                        246975
+%SphereMode                  0
+%InputSpectrum_UnitLength_in_cm 3.085678e21
+%ShapeGamma                  0.21

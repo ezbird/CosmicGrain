@@ -1,0 +1,42 @@
+# --- Font ---
+font.family: sans-serif
+font.sans-serif: Inter, Roboto, Lato, Helvetica, DejaVu Sans, Arial
+font.size: 12
+
+# --- Axes ---
+axes.edgecolor: black
+axes.labelcolor: black
+axes.labelsize: 14
+axes.linewidth: 1
+axes.grid: True
+axes.titlesize: 15
+axes.titleweight: bold
+axes.facecolor: 0.9, 0.9, 0.9
+
+# --- Grid ---
+grid.color: gray
+grid.linestyle: -
+grid.linewidth: 0.8
+grid.alpha: 0.9
+
+# --- Lines ---
+lines.linewidth: 2.0
+lines.markersize: 6
+
+# --- Figure ---
+figure.facecolor: white
+figure.dpi: 100
+
+# --- Ticks ---
+xtick.color: black
+ytick.color: black
+xtick.direction: out
+ytick.direction: out
+xtick.major.size: 5
+ytick.major.size: 5
+xtick.minor.visible: True
+ytick.minor.visible: True
+
+# --- Legend ---
+legend.frameon: True
+legend.fontsize: 11

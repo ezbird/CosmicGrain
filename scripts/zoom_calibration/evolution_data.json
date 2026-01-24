@@ -1,0 +1,1172 @@
+[
+  {
+    "redshift": 49.159028478897696,
+    "time_Gyr": 0.27512494596672205,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 66107965440.0,
+      "Mdust": 0.0,
+      "Mdm": 356844961792.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 1.9936590287443627e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.0002255153212764971,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 46.00321386678342,
+    "time_Gyr": 0.29359694507511724,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 66759208960.0,
+      "Mdust": 0.0,
+      "Mdm": 360358150144.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 2.1275140947472263e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.00023357718988903633,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 43.045951064144965,
+    "time_Gyr": 0.3133091616049519,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 67430187008.0,
+      "Mdust": 0.0,
+      "Mdm": 363980029952.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 2.2703562435141445e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.00024192696126580778,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 40.2747479490133,
+    "time_Gyr": 0.33434486425082816,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 68150202368.0,
+      "Mdust": 0.0,
+      "Mdm": 367867658240.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 2.4227888713828125e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.0002506157387278023,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 37.67789835605061,
+    "time_Gyr": 0.3567929124008669,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 68942979072.0,
+      "Mdust": 0.0,
+      "Mdm": 372148076544.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 2.5854558869628035e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.0002596904804239349,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 35.244432627159014,
+    "time_Gyr": 0.38074813149811193,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 69824061440.0,
+      "Mdust": 0.0,
+      "Mdm": 376906219520.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 2.759044431145739e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.0002691895411392361,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 32.96407127325639,
+    "time_Gyr": 0.4063117136038471,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 70777102336.0,
+      "Mdust": 0.0,
+      "Mdm": 382049550336.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 2.9442877797380228e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.00027910166290595606,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 30.827181551476265,
+    "time_Gyr": 0.4335916448548962,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 71775797248.0,
+      "Mdust": 0.0,
+      "Mdm": 387440410624.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 3.141968440977509e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.0002893996697091696,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 28.824736774364624,
+    "time_Gyr": 0.462703161620577,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 72875753472.0,
+      "Mdust": 0.0,
+      "Mdm": 393375711232.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 3.3529214610186735e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.0003001854084769461,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 26.948278179186705,
+    "time_Gyr": 0.4937692372862156,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 74092527616.0,
+      "Mdust": 0.0,
+      "Mdm": 399941566464.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 3.578037951349388e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.00031150258845582965,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 25.189879196271434,
+    "time_Gyr": 0.5269211017195017,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 75383250944.0,
+      "Mdust": 0.0,
+      "Mdm": 406911975424.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 3.818268853039867e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.0003232976537872313,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 23.542111965455298,
+    "time_Gyr": 0.5622987956140223,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 76814909440.0,
+      "Mdust": 0.0,
+      "Mdm": 414639915008.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 4.0746289537248e-05,
+      "SFR_timescale_Gyr": 0.5,
+      "Z_gas": 0.00033569871282662395,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 21.99801595918372,
+    "time_Gyr": 0.6000517620516431,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 78354817024.0,
+      "Mdust": 0.0,
+      "Mdm": 422947848192.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 4.348201174287269e-05,
+      "SFR_timescale_Gyr": 0.5189679278677092,
+      "Z_gas": 0.0003486670675583522,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 20.551068579727136,
+    "time_Gyr": 0.6403394777826245,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 80008142848.0,
+      "Mdust": 0.0,
+      "Mdm": 431878799360.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 4.640141143352351e-05,
+      "SFR_timescale_Gyr": 0.5423488767498276,
+      "Z_gas": 0.0003622333374950574,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 19.195157606308012,
+    "time_Gyr": 0.683332126890138,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 81825120256.0,
+      "Mdust": 0.0,
+      "Mdm": 441690980352.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 4.951682078914043e-05,
+      "SFR_timescale_Gyr": 0.5665304205295075,
+      "Z_gas": 0.0003765019825454594,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 17.924555375749456,
+    "time_Gyr": 0.7292113196848878,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 83754934272.0,
+      "Mdust": 0.0,
+      "Mdm": 452103569408.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 5.284139997716579e-05,
+      "SFR_timescale_Gyr": 0.5915143189058003,
+      "Z_gas": 0.00039139567909005546,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 16.73389458757886,
+    "time_Gyr": 0.7781708598666065,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 85855780864.0,
+      "Mdust": 0.0,
+      "Mdm": 463441559552.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 5.638919274395699e-05,
+      "SFR_timescale_Gyr": 0.6172995410247769,
+      "Z_gas": 0.00040704325308729325,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 15.618145631382063,
+    "time_Gyr": 0.8304175631930788,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 88091377664.0,
+      "Mdust": 0.0,
+      "Mdm": 475508015104.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 6.0175185738628897e-05,
+      "SFR_timescale_Gyr": 0.6438820481737829,
+      "Z_gas": 0.00042339321780785096,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 14.57259534063387,
+    "time_Gyr": 0.8861721311149335,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 90459136000.0,
+      "Mdust": 0.0,
+      "Mdm": 488300773376.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 6.421537181992272e-05,
+      "SFR_timescale_Gyr": 0.6712545852665287,
+      "Z_gas": 0.0004404595010170416,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 13.592827083256426,
+    "time_Gyr": 0.9456700830666251,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 93043580928.0,
+      "Mdust": 0.0,
+      "Mdm": 502226550784.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 6.852681761352356e-05,
+      "SFR_timescale_Gyr": 0.6994064851016314,
+      "Z_gas": 0.0004584042605562156,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 12.674702104803703,
+    "time_Gyr": 1.0091627513518033,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 95843311616.0,
+      "Mdust": 0.0,
+      "Mdm": 517332762624.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 7.312773560520314e-05,
+      "SFR_timescale_Gyr": 0.7283234896464315,
+      "Z_gas": 0.0004772625057175212,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 11.814342045461549,
+    "time_Gyr": 1.076918342825689,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 98973548544.0,
+      "Mdust": 0.0,
+      "Mdm": 534190686208.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 7.803756107432529e-05,
+      "SFR_timescale_Gyr": 0.7579875927973783,
+      "Z_gas": 0.0004972631909590132,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 11.008112557011406,
+    "time_Gyr": 1.1492230718592267,
+    "masses": {
+      "Mstar": 0.0,
+      "Mgas": 102353158144.0,
+      "Mdust": 0.0,
+      "Mdm": 552517369856.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 8.327703419269758e-05,
+      "SFR_timescale_Gyr": 0.7883769091801901,
+      "Z_gas": 0.0005183194841381939,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 10.219095952284851,
+    "time_Gyr": 1.230045634576245,
+    "masses": {
+      "Mstar": 199340.234375,
+      "Mgas": 106139623424.0,
+      "Mdust": 0.0,
+      "Mdm": 572872392704.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 3.479662083803679e-07,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 8.913374163595977e-05,
+      "SFR_timescale_Gyr": 0.820908807100333,
+      "Z_gas": 0.0005413414124113518,
+      "DTM": 0.01
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0039038662799720926,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 9.584191109436329,
+    "time_Gyr": 1.3038313327219329,
+    "masses": {
+      "Mstar": 398680.46875,
+      "Mgas": 109625278464.0,
+      "Mdust": 0.0,
+      "Mdm": 591725264896.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 6.737594157316757e-07,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 9.448053135666179e-05,
+      "SFR_timescale_Gyr": 0.8493762668549134,
+      "Z_gas": 0.000562062181046808,
+      "DTM": 0.02834415940699854
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.007131198417886218,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 8.888736058253592,
+    "time_Gyr": 1.3955271855478324,
+    "masses": {
+      "Mstar": 398680.46875,
+      "Mgas": 114091696128.0,
+      "Mdust": 0.0,
+      "Mdm": 615849525248.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 6.473666900846486e-07,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.00010112515837303133,
+      "SFR_timescale_Gyr": 0.8832340825389703,
+      "Z_gas": 0.0005875853692777568,
+      "DTM": 0.030337547511909396
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.006401638331152342,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 8.238977246227421,
+    "time_Gyr": 1.4936718245122853,
+    "masses": {
+      "Mstar": 398680.46875,
+      "Mgas": 118784155648.0,
+      "Mdust": 0.0,
+      "Mdm": 641340342272.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 6.216363488653188e-07,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.0001082370887327743,
+      "SFR_timescale_Gyr": 0.9177458948247217,
+      "Z_gas": 0.0006142158218789915,
+      "DTM": 0.032471126619832286
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.005743284082594571,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 7.716130180693366,
+    "time_Gyr": 1.5832714420176563,
+    "masses": {
+      "Mstar": 598020.6875,
+      "Mgas": 123199537152.0,
+      "Mdust": 39.86804962158203,
+      "Mdm": 664946016256.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 8.993522374450407e-07,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 3.2360551462457194e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.0001147298146389606,
+      "SFR_timescale_Gyr": 0.9478116158515909,
+      "Z_gas": 0.000638181979452226,
+      "DTM": 0.03441894439168818
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.007838871179868825,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 7.143419739408419,
+    "time_Gyr": 1.694619759462688,
+    "masses": {
+      "Mstar": 598020.6875,
+      "Mgas": 129061330944.0,
+      "Mdust": 53.15739822387695,
+      "Mdm": 696238735360.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 8.589305034727564e-07,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 4.1187703423686266e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.00012279853329439768,
+      "SFR_timescale_Gyr": 0.9834067699825416,
+      "Z_gas": 0.0006681285741698327,
+      "DTM": 0.0368395599883193
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.006994631616760056,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 6.608340361767213,
+    "time_Gyr": 1.8137989816210893,
+    "masses": {
+      "Mstar": 797360.9375,
+      "Mgas": 135086776320.0,
+      "Mdust": 53.15739822387695,
+      "Mdm": 729202425856.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 1.0934699463787298e-06,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0,
+      "DGR": 3.9350556488190354e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.00013143470881312242,
+      "SFR_timescale_Gyr": 1.0195062498652896,
+      "Z_gas": 0.0006993007985665004,
+      "DTM": 0.03943041264393673
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.00831949152741272,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 6.17777339253275,
+    "time_Gyr": 1.9226017938037092,
+    "masses": {
+      "Mstar": 1196041.375,
+      "Mgas": 140735889408.0,
+      "Mdust": 39.86804962158203,
+      "Mdm": 759330897920.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 1.5751253877278809e-06,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 5.665592484046932e-08,
+      "DTM": 0.0050000551523282045,
+      "DGR": 2.832827489085081e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.00013931897056548617,
+      "SFR_timescale_Gyr": 1.0508040994614813,
+      "Z_gas": 0.0007271980998254123,
+      "DTM": 0.041795691169645856
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.011305893097936014,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 7.790989120305928e-05,
+      "DTM": 0.11963087611192556
+    }
+  },
+  {
+    "redshift": 5.706143703455095,
+    "time_Gyr": 2.057814536973023,
+    "masses": {
+      "Mstar": 3189443.75,
+      "Mgas": 147414564864.0,
+      "Mdust": 53.15739822387695,
+      "Mdm": 797290594304.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 4.0003529112045346e-06,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 1.6226834043802588e-07,
+      "DTM": 0.0022222326644835925,
+      "DGR": 3.605980065329249e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.0007239749612307919,
+      "SFR_timescale_Gyr": 1.0876759965994365,
+      "Z_gas": 0.0007613471254729714,
+      "DTM": 0.04473509862984833
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.0055255404198009065,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.00021313318854027324,
+      "DTM": 0.04967537196846294
+    }
+  },
+  {
+    "redshift": 5.26550336879909,
+    "time_Gyr": 2.202536522240359,
+    "masses": {
+      "Mstar": 3787464.5,
+      "Mgas": 158075469824.0,
+      "Mdust": 66.44674682617188,
+      "Mdm": 852168474624.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 4.444502011965571e-06,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 2.0176644869305715e-07,
+      "DTM": 0.0020833406690612525,
+      "DGR": 4.2034824821430655e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.0006907452342023786,
+      "SFR_timescale_Gyr": 1.1248686138880015,
+      "Z_gas": 0.000802462051290432,
+      "DTM": 0.04788122874435563
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.006434357838310318,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.00025143425582380916,
+      "DTM": 0.04351059326786476
+    }
+  },
+  {
+    "redshift": 4.853816172207471,
+    "time_Gyr": 2.357436515604833,
+    "masses": {
+      "Mstar": 6777567.5,
+      "Mgas": 171488870400.0,
+      "Mdust": 26.578699111938477,
+      "Mdm": 923031699456.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 7.342724528306495e-06,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 2.481112407295325e-07,
+      "DTM": 0.0006246709942213902,
+      "DGR": 1.5498789542401974e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.0006470796916393706,
+      "SFR_timescale_Gyr": 1.162311231123191,
+      "Z_gas": 0.0008499536676485176,
+      "DTM": 0.10391011049538866
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.011347481033910627,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0002919114890296988,
+      "DTM": 0.006011647867982125
+    }
+  },
+  {
+    "redshift": 4.5225402607894365,
+    "time_Gyr": 2.4988500487685563,
+    "masses": {
+      "Mstar": 8372289.5,
+      "Mgas": 182998958080.0,
+      "Mdust": 0.0,
+      "Mdm": 993041580032.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 8.43095563000515e-06,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 3.027160763302418e-07,
+      "DTM": 0.0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.0006078699018376948,
+      "SFR_timescale_Gyr": 1.1945483840384574,
+      "Z_gas": 0.0008942391608113305,
+      "DTM": 0.10760635493234175
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.013869671132781747,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.000338518026939898,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 4.159670913475604,
+    "time_Gyr": 2.6745891804762776,
+    "masses": {
+      "Mstar": 10166351.0,
+      "Mgas": 198554058752.0,
+      "Mdust": 26.578699111938477,
+      "Mdm": 1070958051328.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 9.492763033429377e-06,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 4.4068457470713187e-07,
+      "DTM": 0.00030375756476410905,
+      "DGR": 1.3386127324214546e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.0005728715134211193,
+      "SFR_timescale_Gyr": 1.8483889417029142,
+      "Z_gas": 0.000944738089441011,
+      "DTM": 0.11208514369636544
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.016570492354803516,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0004664621651572015,
+      "DTM": 0.0027100608943052902
+    }
+  },
+  {
+    "redshift": 3.820644608856247,
+    "time_Gyr": 2.8626876942239905,
+    "masses": {
+      "Mstar": 12558433.0,
+      "Mgas": 211675004928.0,
+      "Mdust": 0.0,
+      "Mdm": 1140961443840.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 1.1006886400765267e-05,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 6.067198984768364e-07,
+      "DTM": 0.0,
+      "DGR": 0.0
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.0005494166925682705,
+      "SFR_timescale_Gyr": 1.9050088549077857,
+      "Z_gas": 0.0009927608647282058,
+      "DTM": 0.11675034848391636
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.020033767720658673,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0006111440529466699,
+      "DTM": 0.0
+    }
+  },
+  {
+    "redshift": 3.5478373683413684,
+    "time_Gyr": 3.034409298816454,
+    "masses": {
+      "Mstar": 15947219.0,
+      "Mgas": 224648249344.0,
+      "Mdust": 26.578699111938477,
+      "Mdm": 1210528038912.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 1.3173770856504128e-05,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 7.679075115374694e-07,
+      "DTM": 0.00015407130686003414,
+      "DGR": 1.1831251385021467e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.0005266403958354176,
+      "SFR_timescale_Gyr": 1.9534947916620875,
+      "Z_gas": 0.0010375044568303748,
+      "DTM": 0.12090334018066909
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.025014736736262658,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0007401486388631652,
+      "DTM": 0.001274334576942219
+    }
+  },
+  {
+    "redshift": 3.2490127876938404,
+    "time_Gyr": 3.2478132426355852,
+    "masses": {
+      "Mstar": 24319508.0,
+      "Mgas": 237915324416.0,
+      "Mdust": 119.6041488647461,
+      "Mdm": 1278761500672.0
+    },
+    "SFR": 0.0,
+    "simulation": {
+      "Mstar_Mhalo": 1.901801703227685e-05,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 1.1112074512179707e-06,
+      "DTM": 0.0004524063411371912,
+      "DGR": 5.02717297249906e-10
+    },
+    "observations": {
+      "Mstar_Mhalo": 0.000511770293825755,
+      "SFR_timescale_Gyr": 2.0099056762767202,
+      "Z_gas": 0.001085573132305159,
+      "DTM": 0.12593557570128114
+    },
+    "sim_over_obs": {
+      "Mstar_Mhalo": 0.03716123671443894,
+      "SFR_timescale_Gyr": Infinity,
+      "Z_gas": 0.0010236136268943746,
+      "DTM": 0.003592363306539352
+    }
+  }
+]

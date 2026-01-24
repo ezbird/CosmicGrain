@@ -1,0 +1,10 @@
+=== SIMULATION SUMMARY ===
+Start/End redshift:
+
+Final star count:
+
+Total SNe:
+
+Energy caps needed:
+
+Average imbalance:
