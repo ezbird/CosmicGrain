@@ -53,6 +53,8 @@ struct global_data_all_processes : public parameters
   double DustOffsetMaxSNII;         // Maximum of sphere around SN to spawn dust particles [kpc]
   double DustOffsetMinAGB;          // Minimum of sphere around AGB to spawn dust particles [kpc]
   double DustOffsetMaxAGB;          // Maximum of sphere around AGB to spawn dust particles [kpc]
+  double DustOrphanCleanupCenterX, DustOrphanCleanupCenterY, DustOrphanCleanupCenterZ; // Fixed center for orphan dust cleanup [kpc]
+  double DustClumpingFactor;        // Subgrid clumping factor for dust grain growth
 #endif
 
 #ifdef STARFORMATION

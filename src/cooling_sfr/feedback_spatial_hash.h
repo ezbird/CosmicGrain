@@ -54,6 +54,7 @@ struct spatial_hash_improved {
   double box_size;          // Simulation box size
   int total_gas_particles;  // Total number of gas particles
   
+  // Note, using a unordered_map<CellKey,...> would be more memory efficient (handle empty cells better), could consider for the future
   std::vector<std::vector<int>> cells;  // cells[cell_index] = list of gas particle indices
   
   bool is_built;
@@ -444,13 +445,12 @@ int find_nearest_gas_particle(simparticles *Sp, int particle_idx,
     }
     
     // Early exit: if we found a neighbor and the next shell can't be closer
-    if(nearest_idx >= 0 && radius < max_cell_radius) {
-      double min_possible_dist_next_shell = (radius + 1) * cell_size - cell_size * sqrt(3.0);
-      if(sqrt(min_r2) < min_possible_dist_next_shell) {
-        // We're certain the nearest particle is in current or inner shells
-        break;
-      }
+    if(nearest_idx >= 0) {
+      double best = sqrt(min_r2);
+      double lower_bound_next = (radius + 0.5) * cell_size;
+      if(best < lower_bound_next) break;
     }
+
   }
   
   if(nearest_dist != nullptr) {

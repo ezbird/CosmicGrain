@@ -211,6 +211,10 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustOffsetMaxSNII", &DustOffsetMaxSNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMinAGB", &DustOffsetMinAGB, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMaxAGB", &DustOffsetMaxAGB, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustOrphanCleanupCenterX", &DustOrphanCleanupCenterX, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustOrphanCleanupCenterY", &DustOrphanCleanupCenterY, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustOrphanCleanupCenterZ", &DustOrphanCleanupCenterZ, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustClumpingFactor", &DustClumpingFactor, PARAM_DOUBLE, PARAM_FIXED);
 #endif
 
 #ifdef NGENIC
