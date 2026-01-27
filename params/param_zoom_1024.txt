@@ -152,17 +152,18 @@ DustDebugLevel           1
 #MaxAllowedVelocity         1000    % Higher for zoom (km/s in code units)
 
 %---- Dust Model Parameters
-DustThermalSputteringTemp      1e7      % K; Temp for thermal sputtering destruction; Hu et al. 2019 suggest 1e6K; At 5e6, only very hot gas destroys dust
-DustVelocitySNII               75.0     % Velocity kick for Type II SN dust in addition to the star's velocity (km/s)
+DustThermalSputteringTemp      1e6      % K; Temp for thermal sputtering destruction; Hu et al. 2019 suggest 1e6K; At 5e6, only very hot gas destroys dust
+DustVelocitySNII               30.0     % Velocity kick for Type II SN dust in addition to the star's velocity (km/s)
 DustVelocityAGB                10.0     % Velocity kick for AGB wind dust in addition to the star's velocity  (km/s)
 DustYieldSNII                  0.1      % Dust mass fraction from Type II SN; 10% of metals → dust (Todini & Ferrara 2001)
 DustYieldAGB                   0.2      % Dust mass fraction from AGB stars; 20% of metals → dust (Zhukovska et al. 2008)
-DustGrowthCalibration          0.2      % Calibration factor for growth timescale; 1.0 = Asano+2013 prescription; Tune to match observed D/Z evolution
-DustOffsetMinSNII              0.4      % kpc; Minimum offset of newly created dust from the parent supernova
-DustOffsetMaxSNII              1.0      % kpc; Maximum
+DustGrowthCalibration          1.0      % Calibration factor for growth timescale; 1.0 = Asano+2013 prescription; Tune to match observed D/Z evolution
+DustOffsetMinSNII              0.2      % kpc; Minimum offset of newly created dust from the parent supernova
+DustOffsetMaxSNII              0.4      % kpc; Maximum
 DustOffsetMinAGB               0.1      % kpc; Minimum offset of newly created dust from the parent AGB star
 DustOffsetMaxAGB               0.3      % kpc; Maximum
-
-###DustCondensationEfficiency      0.3     
-###DustGrowthTimescaleNorm         1.0e8   
-###DustDestructionThresholdVelocity 50.0   
+DustClumpingFactor             30       % parameter "C" from Hopkins & Lee 2016; without it, accretion is too slow in subgrid MCs
+#DustCouplingRadiusKpc   consider this for "find nearest gas" search max radii
+DustOrphanCleanupCenterX       23937.27  % kpc; halo X coordinate; use for zooms where you know the center so orphan removal has fixed center point
+DustOrphanCleanupCenterY       24238.31  % kpc; halo Y coordinate  
+DustOrphanCleanupCenterZ       24548.18  % kpc; halo Z coordinate 

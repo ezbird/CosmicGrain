@@ -106,51 +106,48 @@ static inline void diag_add_EtoRes(double v){ FbDiag.E_to_reservoir_erg += v; }
 static inline void diag_add_EfromRes(double v){ FbDiag.E_from_reservoir_erg += v; }
 static inline void diag_track_dulog(double a){ if(a>FbDiag.max_abs_dulog) FbDiag.max_abs_dulog=a; }
 
-void rebuild_feedback_spatial_hash(simparticles *Sp, double max_feedback_radius)
+
+
+// -------------------- Feedback Spatial Hash Rebuild --------------------------
+// Note that we sharing this hash between feedback and dust modules
+// to avoid redundant neighbor searches; so we size it for dust needs which are (potentially) smaller
+void rebuild_feedback_spatial_hash(simparticles *Sp, double /*max_feedback_radius*/)
 {
-  static double last_rebuild_time = -1.0;
-  
-  // Only rebuild if:
-  // 1. Never built before, OR
-  // 2. Scale factor changed by >0.5% (particles moved significantly)
-  if(gas_hash.is_built && last_rebuild_time > 0) {
-    double time_change = fabs(All.Time - last_rebuild_time) / last_rebuild_time;
-    if(time_change < 0.005) {  // Less than 0.5% change
-      return;  // Skip rebuild, particles haven't moved much
-    }
+  static long long last_rebuild_step = -1;
+
+  const int REBUILD_EVERY_N_STEPS = 1;
+  if(gas_hash.is_built && last_rebuild_step >= 0) {
+    if((All.NumCurrentTiStep - last_rebuild_step) < REBUILD_EVERY_N_STEPS)
+      return;
   }
-  
+
+  // Shared by feedback + dust: size cells for dust-scale locality
+  const double dust_search_kpc   = 10.0;   // dust query radius (kpc)
+  const double cell_size_kpc     = 2.5 * dust_search_kpc; // good default: ~2.5× radius
+
+  // Cap total cells to avoid 3D vector-of-vectors explosion
+  const int    MAX_TOTAL_CELLS   = 1000000;                       // matches your header
+  const int    MAX_CELLS_PER_DIM = (int)std::floor(std::cbrt((double)MAX_TOTAL_CELLS)); // ~100
+  const int    MIN_CELLS_PER_DIM = 8;
+
+  int n_cells = (int)std::ceil(All.BoxSize / cell_size_kpc);
+  n_cells = std::max(MIN_CELLS_PER_DIM, std::min(n_cells, MAX_CELLS_PER_DIM));
+
   if(All.ThisTask == 0) {
-    FB_PRINT("\nRebuilding spatial hash (Δa/a = %.3f%%)\n", 
-           fabs(All.Time - last_rebuild_time) / last_rebuild_time * 100.0);
+    FB_PRINT("\nRebuilding spatial hash at step=%lld (n_cells=%d, cell_size=%.2f kpc)\n",
+             (long long)All.NumCurrentTiStep, n_cells, All.BoxSize / n_cells);
   }
-  
-  if(max_feedback_radius <= 0) {
-    max_feedback_radius = 2.5;
-  }
-  
-  // Cell size should be 3× search radius
-  // n_cells = BoxSize / (3 × search_radius)
-  double ideal_cell_size = 3 * max_feedback_radius;
-  int manual_cells = (int)(All.BoxSize / ideal_cell_size);
-  manual_cells = std::max(8, std::min(manual_cells, 32));  // Clamp to [8, 32]
-  
-  if(All.ThisTask == 0) {
-    FB_PRINT("Using manual cell count: %d (based on search_radius=%.3g)\n",
-           manual_cells, max_feedback_radius);
-  }
-  
-  gas_hash.build(Sp, max_feedback_radius, 
-                0.0,              // softening (unused)
-                false,            // auto_size = false
-                manual_cells);    // Use calculated value
-  
-  if(All.ThisTask == 0 && last_rebuild_step < 0) {
-    gas_hash.print_stats();
-  }
-  
-  last_rebuild_time = All.Time;
+
+  gas_hash.build(Sp,
+                 /*max_search_radius=*/dust_search_kpc, // only used for sizing if auto_size=true; OK for logs
+                 /*softening=*/0.0,
+                 /*auto_size=*/false,
+                 /*manual_n_cells=*/n_cells);
+
+  last_rebuild_step = All.NumCurrentTiStep;
 }
+
+
 
 
 void feedback_diag_try_flush(MPI_Comm comm, int cadence)
@@ -835,10 +832,10 @@ static void try_release_reservoir(simparticles *Sp, ngbtree *Tree,
   double E_code = Sp->P[star_i].EnergyReservoir;
   if(E_code<=0) return;
 
-  // ✅ Track that we're trying
+  // Track that we're trying
   reservoir_release_attempts++;
   
-  // ✅ Track reservoir statistics
+  // Track reservoir statistics
   if(E_code > reservoir_max_size) reservoir_max_size = E_code;
   
   std::vector<int> ngb; 
@@ -878,7 +875,7 @@ static void try_release_reservoir(simparticles *Sp, ngbtree *Tree,
   double E_one    = E_per_g * (m_g_code*All.UnitMass_in_g);
   double E_need   = (E_one * Nheat) / All.UnitEnergy_in_cgs;
 
-  // ✅ Debug output (occasional)
+  // Debug output (occasional)
   static int release_debug_count = 0;
   if(release_debug_count < 5 && All.ThisTask == 0) {
       printf("[RESERVOIR_DEBUG] Star %d: E_res=%.2e (code), E_need=%.2e, ratio=%.3f\n",
@@ -889,7 +886,7 @@ static void try_release_reservoir(simparticles *Sp, ngbtree *Tree,
   // Only release if we have meaningful energy
   if(E_code < 0.0001*E_need) return;  // Needs 0.806 code units
   
-  // ✅ We passed the threshold!
+  // We passed the threshold!
   reservoir_release_successes++;
 
   double E_to_release = std::min(E_code, E_need * 2.0);
@@ -937,7 +934,7 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
 {
     double t_start = MPI_Wtime();
     
-        // ✅ ADD THIS: Rate limiting to prevent timebin cascades
+    // Rate limiting to prevent timebin cascades
     static int particles_heated_this_step = 0;
     static long long last_heating_step = -1;
     

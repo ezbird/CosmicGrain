@@ -82,7 +82,7 @@ double get_size_dependent_destruction_efficiency(double shock_velocity_km_s,
 // ========== HELPER FUNCTIONS ==========
 
 // Particle finding
-int find_nearest_gas_particle(simparticles *Sp, int dust_idx);
+int find_nearest_gas_particle(simparticles *Sp, int dust_idx, double max_r_kpc, double *out_dist_kpc = nullptr);
 int find_nearest_dust_particle(simparticles *Sp, int gas_idx);
 
 // Utility
