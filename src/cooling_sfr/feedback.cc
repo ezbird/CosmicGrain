@@ -30,7 +30,7 @@
 #include <set>
 
 #include "../cooling_sfr/feedback.h"
-#include "../cooling_sfr/feedback_spatial_hash.h"
+#include "../cooling_sfr/spatial_hash_zoom.h"
 #include "../data/allvars.h"
 #include "../data/dtypes.h"
 #include "../data/mymalloc.h"
@@ -50,7 +50,7 @@ constexpr int spatial_hash_config::MIN_CELLS_PER_DIM;
 constexpr int spatial_hash_config::MAX_CELLS_PER_DIM;
 constexpr int spatial_hash_config::TARGET_PARTICLES_PER_CELL;
 constexpr double spatial_hash_config::CELL_SIZE_SAFETY_FACTOR;
-constexpr int spatial_hash_config::MAX_TOTAL_CELLS;
+//constexpr int spatial_hash_config::MAX_TOTAL_CELLS;
 
 // ------------------------------- Constants ----------------------------------
 static const double ESN_ERG                  = 1.0e51;  // should probably be 1e51; SN energy in erg
@@ -86,7 +86,7 @@ static int stars_with_reservoir = 0;
 static double reservoir_total_energy = 0.0;
 
 // Global spatial hash instance
-spatial_hash_improved gas_hash;
+spatial_hash_zoom gas_hash;
 static int last_rebuild_step = -1;
 
 #define FB_PRINT(...) do{ if(All.FeedbackDebugLevel){ \
@@ -107,47 +107,51 @@ static inline void diag_add_EfromRes(double v){ FbDiag.E_from_reservoir_erg += v
 static inline void diag_track_dulog(double a){ if(a>FbDiag.max_abs_dulog) FbDiag.max_abs_dulog=a; }
 
 
-
 // -------------------- Feedback Spatial Hash Rebuild --------------------------
-// Note that we sharing this hash between feedback and dust modules
-// to avoid redundant neighbor searches; so we size it for dust needs which are (potentially) smaller
+// Note: We share this hash between feedback and dust modules to avoid redundant
+// neighbor searches. The hash automatically detects where gas exists and only
+// creates cells over that region, saving 99%+ memory in zoom simulations.
 void rebuild_feedback_spatial_hash(simparticles *Sp, double /*max_feedback_radius*/)
 {
   static long long last_rebuild_step = -1;
-
-  const int REBUILD_EVERY_N_STEPS = 1;
-  if(gas_hash.is_built && last_rebuild_step >= 0) {
-    if((All.NumCurrentTiStep - last_rebuild_step) < REBUILD_EVERY_N_STEPS)
-      return;
-  }
-
-  // Shared by feedback + dust: size cells for dust-scale locality
-  const double dust_search_kpc   = 10.0;   // dust query radius (kpc)
-  const double cell_size_kpc     = 2.5 * dust_search_kpc; // good default: ~2.5× radius
-
-  // Cap total cells to avoid 3D vector-of-vectors explosion
-  const int    MAX_TOTAL_CELLS   = 1000000;                       // matches your header
-  const int    MAX_CELLS_PER_DIM = (int)std::floor(std::cbrt((double)MAX_TOTAL_CELLS)); // ~100
-  const int    MIN_CELLS_PER_DIM = 8;
-
-  int n_cells = (int)std::ceil(All.BoxSize / cell_size_kpc);
-  n_cells = std::max(MIN_CELLS_PER_DIM, std::min(n_cells, MAX_CELLS_PER_DIM));
-
+  const int REBUILD_EVERY_N_STEPS = 20;
+  
+  // ============================================================
+  // CRITICAL: All tasks must agree whether to rebuild or skip!
+  // ============================================================
+  int need_rebuild = 0;
+  
+  // Only task 0 decides
   if(All.ThisTask == 0) {
-    FB_PRINT("\nRebuilding spatial hash at step=%lld (n_cells=%d, cell_size=%.2f kpc)\n",
-             (long long)All.NumCurrentTiStep, n_cells, All.BoxSize / n_cells);
+    if(!gas_hash.is_built || last_rebuild_step < 0 || 
+       (All.NumCurrentTiStep - last_rebuild_step) >= REBUILD_EVERY_N_STEPS) {
+      need_rebuild = 1;
+    }
   }
-
-  gas_hash.build(Sp,
-                 /*max_search_radius=*/dust_search_kpc, // only used for sizing if auto_size=true; OK for logs
-                 /*softening=*/0.0,
-                 /*auto_size=*/false,
-                 /*manual_n_cells=*/n_cells);
-
+  
+  // Broadcast decision to all tasks
+  MPI_Bcast(&need_rebuild, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  
+  // Now all tasks agree - safe to return
+  if(!need_rebuild) {
+    return;
+  }
+  
+  // ============================================================
+  // All tasks proceed to rebuild (no deadlock possible)
+  // ============================================================
+  
+  const double max_search_radius = 10.0;  // kpc
+  double softening = All.ForceSoftening[0];
+  
+  gas_hash.build(Sp, max_search_radius, softening);
+  
   last_rebuild_step = All.NumCurrentTiStep;
+  
+  if(All.ThisTask == 0 && gas_hash.is_built) {
+    gas_hash.print_stats();
+  }
 }
-
-
 
 
 void feedback_diag_try_flush(MPI_Comm comm, int cadence)
@@ -194,7 +198,6 @@ void feedback_diag_try_flush(MPI_Comm comm, int cadence)
 }
 
 
-// ----------------------- Stellar Age Calculation ----------------------------
 
 // ----------------------- Stellar Age Calculation ----------------------------
 //
@@ -463,8 +466,17 @@ void find_feedback_neighbors_tree(simparticles *Sp, ngbtree * /*Tree*/,
       return;
     }
 
-  gas_hash.find_neighbors(Sp, star_idx, search_radius,
-                           ngb_list, distances, n_ngb, max_ngb);
+  //gas_hash.find_neighbors(Sp, star_idx, search_radius, ngb_list, distances, n_ngb, max_ngb);
+  
+  for(int i = 0; i < Sp->NumGas; i++) {
+  double dxyz[3];
+  Sp->nearest_image_intpos_to_pos(Sp->P[i].IntPos, Sp->P[star_idx].IntPos, dxyz);
+  double r2 = dxyz[0]*dxyz[0] + dxyz[1]*dxyz[1] + dxyz[2]*dxyz[2];
+  if(r2 <= search_radius*search_radius) {
+    // Found neighbor
+  }
+}
+  
   *smoothing_length = h;
 }
 
@@ -932,7 +944,7 @@ to find the neighbors to a star that would receive feedback. */
 void apply_stellar_feedback(double /*current_time*/, simparticles *Sp, 
                            ngbtree *Tree, domain<simparticles> *D)
 {
-    double t_start = MPI_Wtime();
+  double t_start = MPI_Wtime();
     
     // Rate limiting to prevent timebin cascades
     static int particles_heated_this_step = 0;
@@ -945,8 +957,7 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
     
     const int MAX_PARTICLES_HEATED_PER_STEP = Sp->NumGas / 100;  // 1% of gas per step
     
-
-    // ✅ Build star index list FIRST (very fast)
+    // Build star index list FIRST (very fast)
     static std::vector<int> star_indices;
     star_indices.clear();
     star_indices.reserve(Sp->NumPart / 10);
@@ -960,12 +971,24 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
     int n_stars_processed = star_indices.size();
     
     // Early exit BEFORE expensive calculations
+    int local_has_work = 0;
+
     bool any_reservoir = false;
     for (int p : star_indices) {
       if (Sp->P[p].EnergyReservoir > 0) { any_reservoir = true; break; }
     }
-    if (n_stars_processed == 0 && !any_reservoir) {
-        return;  // ← Exit before calculating max_radius or building hash!
+
+    if (n_stars_processed > 0 || any_reservoir) {
+        local_has_work = 1;
+    }
+
+    // Check if ANY task has work to do
+    int global_has_work = 0;
+    MPI_Allreduce(&local_has_work, &global_has_work, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+    // All tasks return together, or all continue together
+    if (!global_has_work) {
+        return;  // Now safe - all tasks agree to exit
     }
 
     // NOW calculate max_radius (only if stars exist)

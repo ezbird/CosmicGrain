@@ -367,11 +367,34 @@ integertime simparticles::get_timestep_hydro(int p /*!< particle index */)
     dt = dt_hsml;
 
   if(p < 3 && ThisTask == 0) {
-  double pos[3];
-  intpos_to_pos(P[p].IntPos, pos);
-  printf("TIMESTEP_DEBUG p=%d: pos=(%.1f,%.1f,%.1f) dt_kin=%.3e dt_courant=%.3e dt_tree=%.3e dt_hsml=%.3e --> dt=%.3e\n",
-         p, pos[0], pos[1], pos[2], dt_kin, dt_courant, dt_treebased, dt_hsml, dt);
-  }
+      double pos[3];
+      intpos_to_pos(P[p].IntPos, pos);
+
+      // Determine which constraint is limiting
+      double dt_actual = dt;
+      const char* limiter = "UNKNOWN";
+      double min_dt = 1e30;
+      
+      if(dt_kin < min_dt) { min_dt = dt_kin; limiter = "KINETIC"; }
+      if(dt_courant < min_dt) { min_dt = dt_courant; limiter = "COURANT"; }
+      if(dt_hsml < min_dt) { min_dt = dt_hsml; limiter = "HSML"; }
+      
+      // Print every 100 timesteps
+      static long long last_print_step = -1;
+      const int PRINT_EVERY_N_STEPS = 100;
+      
+      if(All.NumCurrentTiStep - last_print_step >= PRINT_EVERY_N_STEPS || last_print_step < 0) {
+        printf("TIMESTEP_DEBUG p=%d step=%lld: dt=%.3e limited by %s | pos=(%.1f,%.1f,%.1f)\n",
+              p, (long long)All.NumCurrentTiStep, dt_actual, limiter, pos[0], pos[1], pos[2]);
+        printf("               constraints: kinetic=%.3e courant=%.3e hsml=%.3e\n",
+              dt_kin, dt_courant, dt_hsml);
+        
+        // Only reset after we've printed all 3 particles (p=0,1,2)
+        if(p == 2) {
+          last_print_step = All.NumCurrentTiStep;
+        }
+      }
+    }
 
 #ifdef STARFORMATION
   if(P[p].getType() == 0) /* to protect using a particle that has been turned into a star */

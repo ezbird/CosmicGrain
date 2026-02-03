@@ -418,6 +418,17 @@ void sim::set_units(void)
   mpi_printf("BEGRUN: UnitEnergy_in_cgs        = %g\n", All.UnitEnergy_in_cgs);
   mpi_printf("\n");
 
+  #ifdef DUST
+    mpi_printf("=== DUST PHYSICS CONFIGURATION ===\n");
+    mpi_printf("  Sputtering:       %s\n", All.DustEnableSputtering ? "ON" : "OFF");
+    mpi_printf("  Shock destruction: %s\n", All.DustEnableShockDestruction ? "ON" : "OFF");
+    mpi_printf("  Gas drag:         %s\n", All.DustEnableDrag ? "ON" : "OFF");
+    mpi_printf("  Grain growth:     %s\n", All.DustEnableGrowth ? "ON" : "OFF");
+    mpi_printf("  Dust creation:    %s\n", All.DustEnableCreation ? "ON" : "OFF");
+    mpi_printf("  Clumping:         %s\n", All.DustEnableClumping ? "ON" : "OFF");
+    mpi_printf("==================================\n\n");
+  #endif
+
 #ifdef STARFORMATION
   CoolSfr.set_units_sfr();
 #endif

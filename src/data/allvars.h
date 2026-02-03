@@ -31,6 +31,9 @@
  */
 struct global_data_all_processes : public parameters
 {
+
+int SpatialHashDebugLevel;               // 0=off, 1=detailed output
+
 #if defined(COOLING)
   char TreecoolFile[255];
   char MetalcoolFile[255];
@@ -42,6 +45,15 @@ struct global_data_all_processes : public parameters
 #endif
 
 #ifdef DUST
+
+  // Dust physics switches (1=on, 0=off)
+  int DustEnableSputtering;      // Thermal erosion
+  int DustEnableShockDestruction; // SN shock destruction/erosion  
+  int DustEnableDrag;            // Gas-dust drag coupling
+  int DustEnableGrowth;          // Grain growth (accretion)
+  int DustEnableCreation;        // Dust creation from stellar feedback
+  int DustEnableClumping;        // Clumping factor in growth
+
   int DustDebugLevel;               // 0=off, 1=detailed output
   double DustThermalSputteringTemp; // Temperature for thermal sputtering [K]
   double DustVelocitySNII;          // Ejection velocity for Type II SN dust [km/s]
@@ -54,7 +66,7 @@ struct global_data_all_processes : public parameters
   double DustOffsetMinAGB;          // Minimum of sphere around AGB to spawn dust particles [kpc]
   double DustOffsetMaxAGB;          // Maximum of sphere around AGB to spawn dust particles [kpc]
   double DustOrphanCleanupCenterX, DustOrphanCleanupCenterY, DustOrphanCleanupCenterZ; // Fixed center for orphan dust cleanup [kpc]
-  double DustClumpingFactor;        // Subgrid clumping factor for dust grain growth
+  //double DustClumpingFactor;        // Subgrid clumping factor for dust grain growth
 #endif
 
 #ifdef STARFORMATION

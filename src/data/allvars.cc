@@ -122,6 +122,8 @@ void global_data_all_processes::register_parameters(void)
   add_param("MaxGasHsml", &MaxGasHsml, PARAM_DOUBLE, PARAM_FIXED);
   add_param("MinGasHsml", &MinGasHsml, PARAM_DOUBLE, PARAM_FIXED);
 
+  add_param("SpatialHashDebugLevel", &SpatialHashDebugLevel, PARAM_INT, PARAM_FIXED);
+
   for(int i = 0; i < NSOFTCLASSES; i++)
     {
       char buf_l[MAXLEN_PARAM_TAG];
@@ -200,6 +202,12 @@ void global_data_all_processes::register_parameters(void)
 #endif
 
 #ifdef DUST
+  add_param("DustEnableSputtering", &DustEnableSputtering, PARAM_INT, PARAM_FIXED);
+  add_param("DustEnableShockDestruction", &DustEnableShockDestruction, PARAM_INT, PARAM_FIXED);
+  add_param("DustEnableDrag", &DustEnableDrag, PARAM_INT, PARAM_FIXED);
+  add_param("DustEnableGrowth", &DustEnableGrowth, PARAM_INT, PARAM_FIXED);
+  add_param("DustEnableCreation", &DustEnableCreation, PARAM_INT, PARAM_FIXED);
+  add_param("DustEnableClumping", &DustEnableClumping, PARAM_INT, PARAM_FIXED);
   add_param("DustDebugLevel", &DustDebugLevel, PARAM_INT, PARAM_FIXED);
   add_param("DustThermalSputteringTemp", &DustThermalSputteringTemp, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustVelocitySNII", &DustVelocitySNII, PARAM_DOUBLE, PARAM_FIXED);
@@ -214,7 +222,7 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustOrphanCleanupCenterX", &DustOrphanCleanupCenterX, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOrphanCleanupCenterY", &DustOrphanCleanupCenterY, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOrphanCleanupCenterZ", &DustOrphanCleanupCenterZ, PARAM_DOUBLE, PARAM_FIXED);
-  add_param("DustClumpingFactor", &DustClumpingFactor, PARAM_DOUBLE, PARAM_FIXED);
+  //add_param("DustClumpingFactor", &DustClumpingFactor, PARAM_DOUBLE, PARAM_FIXED);
 #endif
 
 #ifdef NGENIC
