@@ -128,6 +128,12 @@ void snap_io::init_basic(simparticles *Sp_ptr)
              0, 0, 0, 0, 0, 0, 0);
 #endif
 
+#ifdef FEEDBACK
+  init_field("FBFG", "FeedbackFlag", MEM_INT, FILE_INT, READ_IF_PRESENT, 1, A_P, &Sp->P[0].FeedbackFlag, NULL,
+             STARS_ONLY, /* tracks which feedback events have fired */
+             0, 0, 0, 0, 0, 0, 0);
+#endif
+
 #ifdef DUST
   init_field("DAGE", "DustFormationTime", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_P, &Sp->P[0].StellarAge, NULL,
              DUST_ONLY, /* dust formation time (reuses StellarAge storage) */

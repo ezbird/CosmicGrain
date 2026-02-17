@@ -12,7 +12,11 @@
 #include <mpi.h>                 /* for MPI_Comm */
 #include "../data/simparticles.h"
 
+
+
 #ifdef DUST
+void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mass_formed);
+void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt);
 
 // ========== GLOBAL DUST STATISTICS ==========
 // Accessible from all dust modules
@@ -42,7 +46,7 @@ extern double    TotalMassEroded;
 void create_dust_particles_from_feedback(simparticles *Sp, int star_idx, 
                                          double metals_produced, int feedback_type);
 void spawn_dust_particle(simparticles *Sp, double offset_kpc[3], double dust_mass, 
-                         double initial_velocity[3], int star_idx);
+                         double initial_velocity[3], int star_idx, int feedback_type);
 void destroy_dust_particles(simparticles *Sp);
 void cleanup_invalid_dust_particles(simparticles *Sp);
 

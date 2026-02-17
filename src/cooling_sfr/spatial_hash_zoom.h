@@ -2,6 +2,7 @@
  *
  *  \brief Zoom-aware spatial hash for fast neighbor finding in Gadget-4
  *
+ *  SPARSE IMPLEMENTATION - Only allocates non-empty cells!
  *  Optimized for zoom simulations by creating spatial bins only over the
  *  gas-occupied region, dramatically reducing memory usage and improving
  *  performance compared to full-box spatial hashing.
@@ -12,18 +13,14 @@
  *  - Efficient neighbor finding with minimal empty cell overhead
  *  - Automatically tracks gas as halo drifts/evolves
  *  - MPI-synchronized bounding box detection
- *
- *  Physics motivation:
- *  In zoom simulations, gas only exists in the high-resolution region (~7 Mpc)
- *  while the full box might be 50+ Mpc. Creating a spatial hash over the entire
- *  box wastes 99% of memory on empty cells. This implementation detects where
- *  gas actually exists and only creates cells there.
+ *  - SPARSE storage: only non-empty cells consume memory
  */
 
 #ifndef SPATIAL_HASH_ZOOM_H
 #define SPATIAL_HASH_ZOOM_H
 
 #include <vector>
+#include <unordered_map>  // ← NEW: For sparse storage
 #include <algorithm>
 #include <cmath>
 #include <mpi.h>
@@ -33,9 +30,9 @@
 // Configuration constants for spatial hash behavior
 struct spatial_hash_config {
   // Cell count constraints
-  static constexpr int MIN_CELLS_PER_DIM = 8;      // Minimum grid resolution
-  static constexpr int MAX_CELLS_PER_DIM = 256;    // Maximum grid resolution
-  static constexpr int MAX_TOTAL_CELLS = 500000;   // Memory limit (~500k cells)
+  static constexpr int MIN_CELLS_PER_DIM = 8;       // Minimum grid resolution
+  static constexpr int MAX_CELLS_PER_DIM = 768;     // Maximum grid resolution
+  static constexpr int MAX_TOTAL_CELLS = 452984832;  // 768^3 max
   
   // Cell sizing parameters
   static constexpr int TARGET_PARTICLES_PER_CELL = 32;  // Optimal particles per cell
@@ -46,10 +43,11 @@ struct spatial_hash_config {
 };
 
 /**
- * Zoom-aware spatial hash structure
+ * Zoom-aware spatial hash structure (SPARSE VERSION)
  * 
  * Creates a 3D grid of cells only over the region where gas exists,
  * enabling fast O(1) neighbor finding for feedback and dust operations.
+ * Only non-empty cells are stored in memory (sparse hash table).
  */
 struct spatial_hash_zoom {
   // Grid parameters
@@ -65,8 +63,9 @@ struct spatial_hash_zoom {
   // Particle tracking
   int total_gas_particles;       // Total gas particles in simulation
   
-  // Cell storage: cells[cell_index] = list of gas particle indices
-  std::vector<std::vector<int>> cells;
+  // SPARSE cell storage: only non-empty cells exist in map!
+  // Key = cell_index, Value = list of gas particle indices
+  std::unordered_map<int, std::vector<int>> cells;
   
   bool is_built;
   
@@ -178,7 +177,7 @@ struct spatial_hash_zoom {
   }
   
   /**
-   * Build the spatial hash
+   * Build the spatial hash (SPARSE VERSION - only creates non-empty cells!)
    */
   void build(simparticles *Sp, double max_search_radius, double softening) {
     box_size = All.BoxSize;
@@ -205,9 +204,8 @@ struct spatial_hash_zoom {
     double max_bbox_size = std::max({bbox_size[0], bbox_size[1], bbox_size[2]});
     cell_size = max_bbox_size / n_cells_per_dim;
 
-    int total_cells = n_cells_per_dim * n_cells_per_dim * n_cells_per_dim;
+    // SPARSE: Just clear, NO resize! Cells auto-created on first access
     cells.clear();
-    cells.resize(total_cells);
 
     // Bin local gas particles into cells
     int particles_binned = 0;
@@ -226,7 +224,7 @@ struct spatial_hash_zoom {
 
       if(inside) {
         int cell_idx = pos_to_cell_index(pos);
-        cells[cell_idx].push_back(i);
+        cells[cell_idx].push_back(i);  // Auto-creates cell if doesn't exist
         particles_binned++;
       }
     }
@@ -236,8 +234,11 @@ struct spatial_hash_zoom {
     if(All.ThisTask == 0) {
       double volume_ratio = (bbox_size[0] * bbox_size[1] * bbox_size[2]) /
                            (box_size * box_size * box_size);
+      long long theoretical_cells = (long long)n_cells_per_dim * n_cells_per_dim * n_cells_per_dim;
       printf("[SPATIAL_HASH_ZOOM] Hash built: %d^3 cells, cell_size=%.3f kpc\n",
              n_cells_per_dim, cell_size);
+      printf("[SPATIAL_HASH_ZOOM] Sparse storage: %zu/%lld cells allocated (%.1f%%)\n",
+             cells.size(), theoretical_cells, 100.0 * cells.size() / theoretical_cells);
       printf("[SPATIAL_HASH_ZOOM] BBox volume: %.1f%% of full box\n", 100.0 * volume_ratio);
       printf("[SPATIAL_HASH_ZOOM] Memory saved: %.1f%% (vs full box hash)\n", 
              100.0 * (1.0 - volume_ratio));
@@ -245,7 +246,7 @@ struct spatial_hash_zoom {
   }
   
   /**
-   * Find nearest gas particle to a given particle
+   * Find nearest gas particle to a given particle (SPARSE VERSION)
    */
   int find_nearest_gas_particle(simparticles *Sp, int idx, double max_search_radius, 
                                  double *out_distance) const {
@@ -294,8 +295,12 @@ struct spatial_hash_zoom {
           
           int cell_idx = ix + n_cells_per_dim * (iy + n_cells_per_dim * iz);
           
+          // SPARSE: Check if cell exists in map
+          auto it = cells.find(cell_idx);
+          if(it == cells.end()) continue;  // Cell doesn't exist = empty
+
           // Search particles in this cell
-          for(int gas_idx : cells[cell_idx]) {
+          for(int gas_idx : it->second) {  // Access via iterator
             if(gas_idx == idx) continue;  // Skip self
             
             double dxyz[3];
@@ -319,7 +324,7 @@ struct spatial_hash_zoom {
   }
   
   /**
-   * Find all gas neighbors within a given radius
+   * Find all gas neighbors within a given radius (SPARSE VERSION)
    */
   void find_neighbors(simparticles *Sp, int idx, double search_radius,
                      int *neighbor_indices, double *neighbor_distances,
@@ -372,8 +377,12 @@ struct spatial_hash_zoom {
           
           int cell_idx = ix + n_cells_per_dim * (iy + n_cells_per_dim * iz);
           
+          // SPARSE: Check if cell exists in map
+          auto it = cells.find(cell_idx);
+          if(it == cells.end()) continue;  // Cell doesn't exist = empty
+          
           // Search particles in this cell
-          for(int gas_idx : cells[cell_idx]) {
+          for(int gas_idx : it->second) {  // Access via iterator
             if(gas_idx == idx) continue;  // Skip self
             
             double dxyz[3];
@@ -399,32 +408,34 @@ struct spatial_hash_zoom {
   }
 
   /**
-   * Print statistics about the spatial hash
+   * Print statistics about the spatial hash (SPARSE VERSION)
    */
   void print_stats() const {
     if(!is_built || All.ThisTask != 0) return;
     
-    int total_cells = cells.size();
-    int empty_cells = 0;
+    long long theoretical_cells = (long long)n_cells_per_dim * n_cells_per_dim * n_cells_per_dim;
+    int allocated_cells = cells.size();
+    int empty_cells = theoretical_cells - allocated_cells;  // Unallocated = empty
     int max_particles = 0;
     long long total_particles = 0;
     
-    for(const auto &cell : cells) {
-      int n = cell.size();
+    for(const auto &kv : cells) {  // Iterate over map entries
+      int n = kv.second.size();
       total_particles += n;
-      if(n == 0) empty_cells++;
       max_particles = std::max(max_particles, n);
     }
     
     printf("[SPATIAL_HASH_ZOOM] Statistics:\n");
     printf("  Bounding box: [%.1f,%.1f] × [%.1f,%.1f] × [%.1f,%.1f] kpc\n",
            bbox_min[0], bbox_max[0], bbox_min[1], bbox_max[1], bbox_min[2], bbox_max[2]);
-    printf("  Total cells: %d (%d^3)\n", total_cells, n_cells_per_dim);
+    printf("  Total cells: %lld (%d^3)\n", theoretical_cells, n_cells_per_dim);
     printf("  Cell size: %.3f kpc\n", cell_size);
-    printf("  Empty cells: %d (%.1f%%)\n", empty_cells, 100.0 * empty_cells / total_cells);
+    printf("  Allocated cells: %d (%.3f%%)\n", allocated_cells, 
+           100.0 * allocated_cells / theoretical_cells);
+    printf("  Empty cells: %d (%.1f%%)\n", empty_cells, 100.0 * empty_cells / theoretical_cells);
     printf("  Max particles in cell: %d\n", max_particles);
-    printf("  Avg particles per non-empty cell: %.1f\n", 
-           (double)total_particles / std::max(1, total_cells - empty_cells));
+    printf("  Avg particles per allocated cell: %.1f\n", 
+           (double)total_particles / std::max(1, allocated_cells));
   }
 };
 

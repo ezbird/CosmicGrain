@@ -10,6 +10,7 @@ examples/
 .venv/
 venv/
 **/.venv/
+*.pyc
 
 # Big outputs / generated artifacts
 *.hdf5
@@ -109,7 +110,7 @@ processes_*.txt
 /param.tex
 /param.param
 /*.param
-
+*.txt
 
 #Output folders
 /tests

@@ -1343,12 +1343,13 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
     }
 }
 
-#ifdef DUST
 /**
+#ifdef DUST
+
  * Process dust grain growth for all gas particles
  * Called periodically (not just on active particles)
  * This ensures dense gas on slow timebins can still grow dust
- */
+ 
 void coolsfr::process_dust_growth_all_gas(simparticles *Sp)
 {
   extern long long GlobalDustCount;
@@ -1381,6 +1382,6 @@ void coolsfr::process_dust_growth_all_gas(simparticles *Sp)
   }
 }
 #endif
-
+*/
 
 #endif

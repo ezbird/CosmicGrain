@@ -88,7 +88,9 @@ void domain<partset>::domain_countToGo(int *toGoDM, int *toGoSph)
 }
 
 #ifdef DUST
-/*! Count how many dust particles need to be moved */
+/*! Count how many dust particles need to be moved 
+ *  CRITICAL FIX: Newly created particles may not be in tree yet!
+ */
 template <typename partset>
 void domain<partset>::domain_countToGo_dust(int *toGoDust)
 {
@@ -99,8 +101,37 @@ void domain<partset>::domain_countToGo_dust(int *toGoDust)
     {
       if(Tp->P[n].getType() == 6)  // DUST_PARTICLE_TYPE
         {
+          // CRITICAL: Check if particle is in the domain tree
+          // Newly created particles may not have valid tree indices yet
+          
+          // Method 1: Check if particle was integrated this timestep
+          // Particles created this timestep haven't been through tree construction
+          if(Tp->P[n].Ti_Current != All.Ti_Current) {
+            // Fresh particle - keep on local task
+            toGoDust[ThisTask]++;
+            continue;
+          }
+          
+          // Method 2: Bounds check on tree node
           int no = n_to_no(n);
-          toGoDust[TaskOfLeaf[no]]++;
+          
+          // Sanity check: valid tree node (negative means invalid)
+          if(no < 0) {
+            // Invalid tree node - keep on local task
+            toGoDust[ThisTask]++;
+            continue;
+          }
+          
+          // Additional safety: check task is valid
+          int task = TaskOfLeaf[no];
+          if(task < 0 || task >= NTask) {
+            // Invalid task - keep on local task
+            toGoDust[ThisTask]++;
+            continue;
+          }
+          
+          // Particle is in tree, use normal decomposition
+          toGoDust[task]++;
         }
     }
 }
@@ -245,37 +276,57 @@ void domain<partset>::domain_exchange(void)
 #endif
     }
 
-  for(int n = 0; n < Tp->NumPart; n++)
-    {
-      int off, num;
-      int task = TaskOfLeaf[n_to_no(n)];
-
-      if(Tp->P[n].getType() == 0)
-        {
-          num = toGoSph[task]++;
-
-          off         = send_sph_offset[task] + num;
-          sphBuf[off] = Tp->SphP[n];
+for(int n = 0; n < Tp->NumPart; n++)
+  {
+    int off, num;
+    
+    // CRITICAL: Use same logic as domain_countToGo for task assignment
+    int task;
+    
+    // Check if particle is in tree (same checks as counting phase)
+    if(Tp->P[n].Ti_Current != All.Ti_Current) {
+      // Fresh particle - keep on local task
+      task = ThisTask;
+    } else {
+      int no = n_to_no(n);
+      if(no < 0) {
+        // Invalid tree node - keep on local task
+        task = ThisTask;
+      } else {
+        // Get task from tree
+        task = TaskOfLeaf[no];
+        // Additional safety check
+        if(task < 0 || task >= NTask) {
+          task = ThisTask;
         }
-      else
-        {
-          num = toGoDM[task]++;
-          off = send_dm_offset[task] + num;
-
-#ifdef DUST
-          // If this is a dust particle, also pack DustP
-          if(Tp->P[n].getType() == 6)
-            {
-              int dust_num = toGoDust[task]++;
-              int dust_off = send_dust_offset[task] + dust_num;
-              dustBuf[dust_off] = Tp->DustP[n];
-            }
-#endif
-        }
-
-      partBuf[off] = Tp->P[n];
-      keyBuf[off]  = domain_key[n];
+      }
     }
+
+    if(Tp->P[n].getType() == 0)
+      {
+        num = toGoSph[task]++;
+        off         = send_sph_offset[task] + num;
+        sphBuf[off] = Tp->SphP[n];
+      }
+    else
+      {
+        num = toGoDM[task]++;
+        off = send_dm_offset[task] + num;
+
+  #ifdef DUST
+        // If this is a dust particle, also pack DustP
+        if(Tp->P[n].getType() == 6)
+          {
+            int dust_num = toGoDust[task]++;
+            int dust_off = send_dust_offset[task] + dust_num;
+            dustBuf[dust_off] = Tp->DustP[n];
+          }
+  #endif
+      }
+
+    partBuf[off] = Tp->P[n];
+    keyBuf[off]  = domain_key[n];
+  }
 
   /**** now resize the storage for the P[] and SphP[] arrays if needed ****/
   domain_resize_storage(count_get_dm + count_get_sph, count_get_sph, 1);
@@ -338,15 +389,11 @@ void domain<partset>::domain_exchange(void)
       myMPI_Alltoallv_new(dustBuf, toGoDust, send_dust_offset, tp, dustBuf_recv, toGetDust, recv_dust_offset, tp, Communicator, method);
       MPI_Type_free(&tp);
     }
-#endif
 
-  MPI_Type_contiguous(sizeof(peanokey), MPI_CHAR, &tp);
-  MPI_Type_commit(&tp);
-  myMPI_Alltoallv_new(keyBuf, toGoSph, send_sph_offset, tp, domain_key, toGetSph, recv_sph_offset, tp, Communicator, method);
-  myMPI_Alltoallv_new(keyBuf, toGoDM, send_dm_offset, tp, domain_key, toGetDM, recv_dm_offset, tp, Communicator, method);
-  MPI_Type_free(&tp);
+  // CRITICAL: Zero DustP for ALL gas particles FIRST (they should never have dust properties)
+  for(int i = 0; i < count_get_sph; i++)
+    memset(&Tp->DustP[i], 0, sizeof(dust_data));
 
-#ifdef DUST
   // NOW copy DustP data to correct indices (AFTER all P[] exchanges are complete!)
   if(count_get_dust > 0)
     {
@@ -378,6 +425,13 @@ void domain<partset>::domain_exchange(void)
     }
 #endif
 
+  MPI_Type_contiguous(sizeof(peanokey), MPI_CHAR, &tp);
+  MPI_Type_commit(&tp);
+  myMPI_Alltoallv_new(keyBuf, toGoSph, send_sph_offset, tp, domain_key, toGetSph, recv_sph_offset, tp, Communicator, method);
+  myMPI_Alltoallv_new(keyBuf, toGoDM, send_dm_offset, tp, domain_key, toGetDM, recv_dm_offset, tp, Communicator, method);
+  MPI_Type_free(&tp);
+
+
 #else
   my_int_MPI_Alltoallv(partBuf, toGoSph, send_sph_offset, Tp->P, toGetSph, recv_sph_offset, sizeof(pdata), flag_big_all, Communicator);
 
@@ -404,23 +458,27 @@ void domain<partset>::domain_exchange(void)
                        Communicator);
 
 #ifdef DUST
-  // NOW copy DustP data to correct indices (AFTER all P[] exchanges are complete!)
-  if(count_get_dust > 0)
-    {
-      int dust_recv_idx = 0;
-      for(int i = count_get_sph; i < count_get_sph + count_get_dm; i++)
-        {
-          if(Tp->P[i].getType() == 6)
-            {
-              Tp->DustP[i] = dustBuf_recv[dust_recv_idx];
-              dust_recv_idx++;
-            }
-          else
-            {
-              // CRITICAL: Zero out DustP for non-dust particles!
-              memset(&Tp->DustP[i], 0, sizeof(dust_data));
-            }
-        }
+// CRITICAL: Zero DustP for ALL gas particles (they should never have dust properties)
+for(int i = 0; i < count_get_sph; i++)
+  memset(&Tp->DustP[i], 0, sizeof(dust_data));
+
+// NOW copy DustP data to correct indices (AFTER all P[] exchanges are complete!)
+if(count_get_dust > 0)
+  {
+    int dust_recv_idx = 0;
+    for(int i = count_get_sph; i < count_get_sph + count_get_dm; i++)
+      {
+        if(Tp->P[i].getType() == 6)
+          {
+            Tp->DustP[i] = dustBuf_recv[dust_recv_idx];
+            dust_recv_idx++;
+          }
+        else
+          {
+            // CRITICAL: Zero out DustP for non-dust particles!
+            memset(&Tp->DustP[i], 0, sizeof(dust_data));
+          }
+      }
       
       if(dust_recv_idx != count_get_dust)
         Terminate("DUST: Received %d dust particles but expected %d", dust_recv_idx, count_get_dust);
@@ -1051,12 +1109,16 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
                 }
 
 #ifdef DUST
-              // sanitize received slots: DustP meaningful only for type 6
-              for(int i = nlocal; i < nlocal + nimport; i++)
-                {
-                  if(Tp->P[i].getType() != 6)
-                    memset(&Tp->DustP[i], 0, sizeof(dust_data));
-                }
+// CRITICAL: Zero DustP for ALL gas particles first
+for(int i = 0; i < Tp->NumGas; i++)
+  memset(&Tp->DustP[i], 0, sizeof(dust_data));
+
+// sanitize received slots: DustP meaningful only for type 6
+for(int i = nlocal; i < nlocal + nimport; i++)
+  {
+    if(Tp->P[i].getType() != 6)
+      memset(&Tp->DustP[i], 0, sizeof(dust_data));
+  }
 #endif
 
 #ifdef DUST

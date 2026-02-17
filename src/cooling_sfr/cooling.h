@@ -66,9 +66,9 @@ class coolsfr : public setcomm
   void init_clouds(void);
 #endif
 
-#ifdef DUST
-  void process_dust_growth_all_gas(simparticles *Sp);
-#endif
+//#ifdef DUST
+  //void process_dust_growth_all_gas(simparticles *Sp);
+//#endif
 
  private:
 #define NCOOLTAB 2000

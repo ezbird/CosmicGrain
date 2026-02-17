@@ -3,28 +3,21 @@
 plotly_snapshot_viewer.py
 
 Interactive 3D Plotly viewer for Gadget-4 HDF5 snapshots with:
+- Optional halo extraction mode using halo_utils
 - radius-limited plotting
 - per-type point budgets
 - subsampling that can be applied ONLY to selected types (default: gas only)
 - robust color-by handling (log scaling, percentile clipping)
 - fixed axis ranges AND fixed aspect ratio so toggling traces doesn't rescale the scene
-- prints available/plotted counts per PartType and shows them near title
-- shows *input output folder* (derived from CLI path) + redshift near title
 
 Examples:
+  # Normal mode (full snapshot):
   python plotly_snapshot_viewer.py ../snapdir_015 --snap 15 \
       --types 0 4 6 --color-by DustTemperature \
-      --out snap015.html \
-      --center 25000 25000 25000 --rmax 3000 \
-      --subsample density --subsample-types 0 \
-      --density-field Density --density-power 1.0 \
-      --max-points 200000 80000 80000
+      --center 25000 25000 25000 --rmax 3000
 
-  # stride subsample gas only (keep every 5th gas particle), keep all stars/dust:
-  python plotly_snapshot_viewer.py ../snapdir_015 --snap 15 \
-      --types 0 4 6 --out snap015_stride.html \
-      --rmax 3000 --center 25000 25000 25000 \
-      --subsample stride --stride 5 --subsample-types 0
+  # HALO MODE (extract target halo automatically):
+  python plotly_snapshot_single_halo.py ../7_output_zoom_2048_halo569_50Mpc_dust/snapdir_009 --snap 9 --catalog ../7_output_zoom_2048_halo569_50Mpc_dust/groups_009/fof_subhalo_tab_009.0.hdf5 --types 0 1 4 6 --rmax 200 --out my_halo.html
 """
 
 import argparse
@@ -46,6 +39,14 @@ try:
 except ImportError:
     print("ERROR: This script requires plotly. Try: pip install plotly", file=sys.stderr)
     sys.exit(1)
+
+# Try to import halo_utils
+HALO_UTILS_AVAILABLE = False
+try:
+    from halo_utils import load_target_halo, extract_dust_spatially, convert_to_physical_units
+    HALO_UTILS_AVAILABLE = True
+except ImportError:
+    pass
 
 
 # -------------------------
@@ -95,6 +96,33 @@ def _find_snapshot_files(path: str, snap: Optional[int]) -> List[str]:
     return files
 
 
+def _get_snapshot_base(path: str, snap: Optional[int]) -> str:
+    """Get the snapshot base path for halo_utils (e.g., 'snapdir_049/snapshot_049')."""
+    if os.path.isfile(path):
+        # Remove .X.hdf5 suffix if present
+        base = path
+        if '.hdf5' in base:
+            base = base[:base.rfind('.hdf5')]
+            # If it ends with .0, .1, etc., remove that too
+            if base[-2:].startswith('.') and base[-1].isdigit():
+                base = base[:-2]
+        return base
+    
+    # Directory path
+    if snap is None:
+        raise ValueError("Must provide --snap when using directory path with --catalog")
+    
+    s = f"{snap:03d}"
+    # Try different naming conventions
+    for prefix in ['snapshot', 'snap']:
+        candidate = os.path.join(path, f"{prefix}_{s}")
+        test_files = glob.glob(f"{candidate}.*.hdf5") or glob.glob(f"{candidate}.hdf5")
+        if test_files:
+            return candidate
+    
+    raise FileNotFoundError(f"Cannot determine snapshot base in {path} for snap {snap}")
+
+
 def _read_block(files: List[str], ptype: int, block: str) -> Optional[np.ndarray]:
     """Read a dataset for a given PartType across snapshot pieces and concatenate.
     Returns None if the dataset does not exist.
@@ -127,16 +155,6 @@ def _read_header_attr(files: List[str], key: str) -> Optional[np.ndarray]:
     return None
 
 
-def _get_boxsize(files: List[str]) -> Optional[float]:
-    bs = _read_header_attr(files, "BoxSize")
-    if bs is None:
-        return None
-    try:
-        return float(np.array(bs).squeeze())
-    except Exception:
-        return None
-
-
 def _get_redshift(files: List[str]) -> Optional[float]:
     z = _read_header_attr(files, "Redshift")
     if z is not None:
@@ -155,18 +173,6 @@ def _get_redshift(files: List[str]) -> Optional[float]:
             pass
 
     return None
-
-
-def _infer_display_folder(input_path: str) -> str:
-    """Show the *simulation output folder* derived from the CLI path."""
-    p = os.path.abspath(input_path)
-    if os.path.isfile(p):
-        return os.path.dirname(p) or "."
-    # if they pass .../snapdir_015, show its parent folder (the run output folder)
-    base = os.path.basename(p.rstrip("/"))
-    if base.startswith("snapdir_"):
-        return os.path.dirname(p) or "."
-    return p
 
 
 # -------------------------
@@ -274,7 +280,7 @@ def _default_marker_size(pt: int) -> float:
         0: 1.0,   # gas
         1: 0.9,   # DM
         4: 3.0,   # stars
-        6: 3.2,   # dust
+        6: 2.0,   # dust
     }.get(pt, 1.0)
 
 
@@ -303,7 +309,6 @@ def _lock_scene_ranges_from_data(per_trace_xyz: List[Tuple[np.ndarray, np.ndarra
 
 
 def _aspectratio_from_ranges(xr, yr, zr) -> Dict[str, float]:
-    # Manual aspect ratio: normalize by max span so it doesn't deform.
     sx = max(1e-12, float(xr[1] - xr[0]))
     sy = max(1e-12, float(yr[1] - yr[0]))
     sz = max(1e-12, float(zr[1] - zr[0]))
@@ -322,18 +327,25 @@ def build_figure(traces: List[go.Scatter3d],
 
     fig.update_layout(
         title=title_html,
-        uirevision="lock",  # <- keeps ranges/aspect stable across legend toggles
+        uirevision="lock",
         scene=dict(
-            xaxis=dict(title="x", range=[xr[0], xr[1]], autorange=False),
-            yaxis=dict(title="y", range=[yr[0], yr[1]], autorange=False),
-            zaxis=dict(title="z", range=[zr[0], zr[1]], autorange=False),
+            xaxis=dict(title="x [kpc]", range=[xr[0], xr[1]], autorange=False),
+            yaxis=dict(title="y [kpc]", range=[yr[0], yr[1]], autorange=False),
+            zaxis=dict(title="z [kpc]", range=[zr[0], zr[1]], autorange=False),
             aspectmode="manual",
             aspectratio=aspectratio,
             dragmode="orbit",
         ),
         scene_camera=dict(eye=dict(x=1.4, y=1.4, z=1.15)),
-        margin=dict(l=0, r=0, t=80, b=0),
-        legend=dict(itemsizing="constant"),
+        margin=dict(l=0, r=0, t=120, b=0),  # Increased top margin to make room
+        legend=dict(
+            orientation="h",      # Horizontal layout
+            yanchor="bottom",
+            y=1.02,               # Just above the plot area
+            xanchor="center",
+            x=0.5,                # Centered
+            itemsizing="constant"
+        ),
     )
     return fig
 
@@ -348,6 +360,11 @@ def parse_args():
     ap.add_argument("path", help="Snapshot .hdf5 file OR snapdir directory.")
     ap.add_argument("--snap", type=int, default=None, help="Snapshot number (used when path is a snapdir).")
 
+    # HALO MODE
+    ap.add_argument("--catalog", default=None, 
+                    help="Subfind catalog (e.g., fof_subhalo_tab_049.0.hdf5) to extract target halo. "
+                         "Enables halo extraction mode.")
+
     ap.add_argument("--types", type=int, nargs="+", default=[0, 4, 6],
                     help="PartTypes to plot (e.g. 0 4 6). Default: 0 4 6")
 
@@ -355,10 +372,10 @@ def parse_args():
     ap.add_argument("--plotlyjs", choices=["embed", "cdn"], default="embed",
                     help="embed=offline self-contained, cdn=smaller HTML. Default: embed")
 
-    ap.add_argument("--center", type=float, nargs=3, default=[0.0, 0.0, 0.0],
-                    help="Center for radius cut (same units as Coordinates). Default: 0 0 0")
+    ap.add_argument("--center", type=float, nargs=3, default=None,
+                    help="Center for radius cut. In halo mode, defaults to halo center. Otherwise: 0 0 0")
     ap.add_argument("--rmax", type=float, default=None,
-                    help="Max radius to include (same units as Coordinates). Omit for no radius cut.")
+                    help="Max radius to include. In halo mode, defaults to 2*halfmass_rad.")
 
     ap.add_argument("--color-by", default=None,
                     help="Dataset name inside each PartType group to color points by.")
@@ -368,7 +385,6 @@ def parse_args():
     ap.add_argument("--clip", type=float, nargs=2, default=[1.0, 99.0],
                     help="Percentile clip for color range. Default: 1 99")
 
-    # Subsampling (can be applied only to selected types)
     ap.add_argument("--subsample", choices=["none", "stride", "fraction", "density"], default="density",
                     help="Subsampling mode. Default: density")
     ap.add_argument("--subsample-types", type=int, nargs="+", default=[0],
@@ -380,8 +396,7 @@ def parse_args():
                     help="Fraction for --subsample fraction. Default: 0.05")
 
     ap.add_argument("--max-points", type=int, nargs="*", default=None,
-                    help=("Max points per type, same length as --types (e.g. 200000 80000 80000). "
-                          "If omitted, uses a reasonable default per type."))
+                    help="Max points per type, same length as --types.")
 
     ap.add_argument("--density-field", default="Density",
                     help="Field to use for density-weighted subsampling. Default: Density")
@@ -390,6 +405,9 @@ def parse_args():
 
     ap.add_argument("--seed", type=int, default=42, help="Random seed. Default: 42")
     ap.add_argument("--show", action="store_true", help="Open in browser.")
+    
+    ap.add_argument("--convert-mass", action="store_true",
+                    help="Convert masses from code units (1e10 Msun) to Msun. Only in halo mode.")
 
     return ap.parse_args()
 
@@ -402,12 +420,15 @@ def main():
     args = parse_args()
     rng = np.random.default_rng(args.seed)
 
-    files = _find_snapshot_files(args.path, args.snap)
-    boxsize = _get_boxsize(files)
-    redshift = _get_redshift(files)
+    # Check if halo mode is requested
+    halo_mode = args.catalog is not None
+    
+    if halo_mode and not HALO_UTILS_AVAILABLE:
+        print("ERROR: --catalog requires halo_utils.py. Make sure it's in the same directory.", file=sys.stderr)
+        sys.exit(1)
 
-    center = np.array(args.center, dtype=np.float64)
-    subsample_types = set(int(x) for x in args.subsample_types)
+    files = _find_snapshot_files(args.path, args.snap)
+    redshift = _get_redshift(files)
 
     # Default budgets
     default_budget = {
@@ -428,15 +449,92 @@ def main():
         else:
             max_points_map = {pt: int(m) for pt, m in zip(args.types, args.max_points)}
 
+    subsample_types = set(int(x) for x in args.subsample_types)
+
+    # ======================
+    # HALO EXTRACTION MODE
+    # ======================
+    if halo_mode:
+        print("=" * 60)
+        print("HALO EXTRACTION MODE")
+        print("=" * 60)
+        
+        snapshot_base = _get_snapshot_base(args.path, args.snap)
+        print(f"Snapshot base: {snapshot_base}")
+        print(f"Catalog: {args.catalog}")
+        print()
+        
+        # Extract halo
+        halo = load_target_halo(
+            args.catalog,
+            snapshot_base,
+            particle_types=args.types,
+            verbose=True
+        )
+        
+        # Get halo properties
+        halo_info = halo['halo_info']
+        halo_pos = halo_info['position']
+        halo_mass = halo_info['mass']
+        halo_halfmass = halo_info['halfmass_rad']
+        
+        # Set defaults for center and rmax
+        center = np.array(args.center) if args.center is not None else halo_pos
+        rmax = args.rmax if args.rmax is not None else (halo_halfmass * 2.0)
+        
+        print(f"\nUsing center: {center}")
+        print(f"Using rmax: {rmax:.2f} kpc")
+        
+        # Extract dust spatially if requested
+        if 6 in args.types:
+            print("\nExtracting dust spatially (Subfind doesn't track PartType6)...")
+            dust_data = extract_dust_spatially(snapshot_base, halo_pos, radius_kpc=rmax, verbose=True)
+            if dust_data is not None:
+                halo['dust'] = dust_data
+        
+        # Convert units if requested
+        if args.convert_mass:
+            print("\nConverting masses to M_sun...")
+            ptype_names = {0: 'gas', 1: 'dm', 2: 'dm2', 4: 'stars', 5: 'bh', 6: 'dust'}
+            for pt in args.types:
+                pname = ptype_names.get(pt)
+                if pname and pname in halo:
+                    convert_to_physical_units(halo[pname], mass_in_msun=True)
+        
+        # Prepare data dict for plotting
+        # Map particle type numbers to names
+        ptype_names = {0: 'gas', 1: 'dm', 2: 'dm2', 4: 'stars', 5: 'bh', 6: 'dust'}
+        halo_data = {}
+        for pt in args.types:
+            pname = ptype_names.get(pt)
+            if pname and pname in halo:
+                halo_data[pt] = halo[pname]
+        
+        print("\n" + "=" * 60)
+    else:
+        # Normal mode
+        center = np.array(args.center) if args.center is not None else np.array([0.0, 0.0, 0.0])
+        rmax = args.rmax
+        halo_data = None
+        halo_info = None
+
+    # ======================
+    # PLOTTING
+    # ======================
     traces: List[go.Scatter3d] = []
     per_trace_xyz: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
 
-    available_counts: Dict[int, int] = {}  # after radius cut
-    plotted_counts: Dict[int, int] = {}    # after subsampling + budget
+    available_counts: Dict[int, int] = {}
+    plotted_counts: Dict[int, int] = {}
     total_plotted = 0
 
     for pt in args.types:
-        coords = _read_block(files, pt, "Coordinates")
+        # Get coordinates
+        if halo_mode and halo_data and pt in halo_data:
+            coords = halo_data[pt]['Coordinates']
+        else:
+            coords = _read_block(files, pt, "Coordinates")
+        
         if coords is None:
             print(f"Warning: PartType{pt} has no Coordinates. Skipping.")
             continue
@@ -446,8 +544,8 @@ def main():
             print(f"Warning: PartType{pt} Coordinates shape {coords.shape} unexpected. Skipping.")
             continue
 
-        # Radius cut
-        rad_mask = _apply_radius_cut(coords, center, args.rmax)
+        # Radius cut (in halo mode, this is already applied, but user might specify additional rmax)
+        rad_mask = _apply_radius_cut(coords, center, rmax)
         idx0 = np.nonzero(rad_mask)[0]
         n_in = int(idx0.size)
         available_counts[pt] = n_in
@@ -459,18 +557,21 @@ def main():
         budget = int(max_points_map.get(pt, 80_000))
         budget = max(0, budget)
 
-        # Decide whether subsampling applies to this type
+        # Decide whether subsampling applies
         do_subsample = (args.subsample != "none") and (pt in subsample_types)
 
-        # If subsampling is off for this type, we keep all (then apply budget cap only if needed)
         rel = np.arange(n_in, dtype=np.int64)
 
         if do_subsample:
             density = None
             if args.subsample == "density":
-                density = _read_block(files, pt, args.density_field)
+                if halo_mode and halo_data and pt in halo_data:
+                    density = halo_data[pt].get(args.density_field)
+                else:
+                    density = _read_block(files, pt, args.density_field)
+                
                 if density is None:
-                    print(f"Warning: PartType{pt} missing '{args.density_field}' for density subsample. Falling back to uniform.")
+                    print(f"Warning: PartType{pt} missing '{args.density_field}' for density subsample.")
                     density = None
 
             if args.subsample == "stride":
@@ -488,7 +589,7 @@ def main():
                     w = _compute_density_weights(d_in, power=args.density_power)
                     rel = _subsample_indices_weighted(w, k=min(k, n_in), rng=rng)
 
-        # Enforce budget if needed (even if not subsampling)
+        # Enforce budget
         if budget > 0 and rel.size > budget:
             rel = rng.choice(rel, size=budget, replace=False)
 
@@ -499,7 +600,11 @@ def main():
         showscale = False
         ctitle = None
         if args.color_by is not None:
-            c_raw = _read_block(files, pt, args.color_by)
+            if halo_mode and halo_data and pt in halo_data:
+                c_raw = halo_data[pt].get(args.color_by)
+            else:
+                c_raw = _read_block(files, pt, args.color_by)
+            
             if c_raw is None:
                 print(f"Warning: PartType{pt} missing '{args.color_by}'. Using uniform color.")
                 c = np.zeros(coords_sel.shape[0], dtype=np.float64)
@@ -525,7 +630,7 @@ def main():
         plotted_counts[pt] = int(coords_sel.shape[0])
         total_plotted += coords_sel.shape[0]
 
-        mode_note = args.subsample if do_subsample else "none(for this type)"
+        mode_note = args.subsample if do_subsample else "none"
         print(f"{label}: in r-cut = {n_in:,}, plotted = {coords_sel.shape[0]:,} "
               f"(budget={budget:,}, subsample={mode_note})")
 
@@ -534,7 +639,7 @@ def main():
             opacity=1.0,
         )
 
-        # One shared colorbar (on first plotted trace)
+        # Shared colorbar on first trace
         if args.color_by is not None and showscale:
             first_pt_with_scale = None
             for tpt in args.types:
@@ -566,20 +671,16 @@ def main():
         per_trace_xyz.append((coords_sel[:, 0], coords_sel[:, 1], coords_sel[:, 2]))
 
     if not traces:
-        print("ERROR: No traces to plot. Check --types, --rmax/--center, and file path.", file=sys.stderr)
+        print("ERROR: No traces to plot.", file=sys.stderr)
         sys.exit(3)
 
-    # Lock axis ranges from the full plotted dataset (before any toggling)
+    # Lock axis ranges
     xr, yr, zr = _lock_scene_ranges_from_data(per_trace_xyz, pad_frac=0.02)
 
-    # Title/subtitle content
+    # Title
     snap_str = f"{args.snap:03d}" if args.snap is not None else "N/A"
     z_str = f"{redshift:.6g}" if redshift is not None else "N/A"
-    bs_str = f"{boxsize:g}" if boxsize is not None else "N/A"
 
-    display_folder = _infer_display_folder(args.path)
-
-    # show "available/plotted" so it's unambiguous
     parts_lines = []
     for pt in args.types:
         a = available_counts.get(pt, 0)
@@ -587,16 +688,25 @@ def main():
         parts_lines.append(f"{_ptype_label(pt)}: {a:,} avail / {p:,} plotted")
     counts_str = " | ".join(parts_lines)
 
-    title_html = (
-        "Gadget-4 Snapshot Viewer"
-        f"<br><sup>"
-        f"snap={snap_str} | z={z_str} | BoxSize={bs_str}"
-        f"<br>input={display_folder}"
-        f"<br>{counts_str}"
-        f"<br>center=({center[0]:g},{center[1]:g},{center[2]:g})"
-        + (f" | rmax={args.rmax:g}" if args.rmax is not None else "")
-        + f"</sup>"
-    )
+    if halo_mode and halo_info:
+        title_html = (
+            f"Target Halo (ID={halo_info['id']}, M={halo_info['mass']:.2e})"
+            f"<br><sup>"
+            f"snap={snap_str} | z={z_str}"
+            f"<br>{counts_str}"
+            f"<br>center=({center[0]:.1f},{center[1]:.1f},{center[2]:.1f}) | rmax={rmax:.1f} kpc"
+            f"</sup>"
+        )
+    else:
+        title_html = (
+            "Gadget-4 Snapshot Viewer"
+            f"<br><sup>"
+            f"snap={snap_str} | z={z_str}"
+            f"<br>{counts_str}"
+            f"<br>center=({center[0]:.1f},{center[1]:.1f},{center[2]:.1f})"
+            + (f" | rmax={rmax:.1f}" if rmax is not None else "")
+            + f"</sup>"
+        )
 
     fig = build_figure(traces, title_html, xr, yr, zr)
 
@@ -610,15 +720,16 @@ def main():
     include_plotlyjs = "cdn" if args.plotlyjs == "embed" else "True"
     fig.write_html(args.out, include_plotlyjs=include_plotlyjs, full_html=True, config=config)
 
-    print("\nCounts summary (radius-cut then plotted):")
+    print("\nCounts summary:")
     for pt in args.types:
         a = available_counts.get(pt, 0)
         p = plotted_counts.get(pt, 0)
         print(f"  {_ptype_label(pt)} (PartType{pt}): {a:,} avail / {p:,} plotted")
 
     print(f"\nSaved: {args.out}")
-    print(f"Input folder shown: {display_folder}")
-    print(f"Redshift z: {z_str}")
+    if halo_mode and halo_info:
+        print(f"Halo mass: {halo_info['mass']:.2e} (code units)")
+        print(f"Halfmass radius: {halo_info['halfmass_rad']:.2f} kpc")
     print(f"Total plotted points: {total_plotted:,}")
 
     if args.show:
@@ -627,5 +738,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

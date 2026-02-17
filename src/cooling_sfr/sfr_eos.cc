@@ -165,9 +165,9 @@ void coolsfr::cooling_and_starformation(simparticles *Sp)
     } /* end of main loop over active particles */
 
   // Run process to grow dust in all gas particles
-  #ifdef DUST
-    process_dust_growth_all_gas(Sp);
-  #endif
+  //#ifdef DUST
+  //  process_dust_growth_all_gas(Sp);
+  //#endif
 
   TIMER_STOP(CPU_COOLING_SFR);
 }

@@ -28,6 +28,12 @@
 #include "../logs/timer.h"
 #include "../system/system.h"
 #include "../time_integration/timestep.h"
+#include "../cooling_sfr/cooling.h"
+#include "../data/allvars.h"
+
+#ifdef DUST
+#include "../dust/dust.h"  // NEW: For consume_dust_by_astration()
+#endif
 
 #define SF_PRINT(...) do{ if(All.StarformationDebugLevel){ \
   printf("[STARFORMATION|T=%d|a=%.6g z=%.3f] ", All.ThisTask, (double)All.Time, 1.0/All.Time-1.0); \
@@ -369,6 +375,13 @@ void coolsfr::make_star(simparticles *Sp, int i, double prob, MyDouble mass_of_s
           *sum_mass_stars += Sp->P[i].getMass();
 
           convert_sph_particle_into_star(Sp, i, All.Time);
+          
+          // ============================================================
+          // NEW: Consume dust by astration (gas → star locks up dust)
+          // ============================================================
+          #ifdef DUST
+          consume_dust_by_astration(Sp, i, mass_of_star);
+          #endif
         }
       else
         {
@@ -383,6 +396,13 @@ void coolsfr::make_star(simparticles *Sp, int i, double prob, MyDouble mass_of_s
 
           *sum_mass_stars += mass_of_star;
           stars_spawned++;
+          
+          // ============================================================
+          // NEW: Consume dust by astration (gas → star locks up dust)
+          // ============================================================
+          #ifdef DUST
+          consume_dust_by_astration(Sp, i, mass_of_star);
+          #endif
         }
     }
 }

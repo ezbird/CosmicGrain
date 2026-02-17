@@ -23,6 +23,10 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#ifdef DUST
+#include "../dust/dust.h"
+#endif
+
 #include "../data/allvars.h"
 #include "../data/dtypes.h"
 #include "../data/mymalloc.h"
@@ -417,6 +421,22 @@ void restart::contents_restart_file(int modus)
       /* Sph-Particle data  */
       byten(&Sim->Sp.SphP[0], Sim->Sp.NumGas * sizeof(sph_particle_data), modus);
     }
+
+    #ifdef DUST
+    // Count dust particles
+    int NumDust = 0;
+    for(int i = 0; i < Sim->Sp.NumPart; i++)
+        if(Sim->Sp.P[i].getType() == 6)
+            NumDust++;
+
+    in(&NumDust, modus);
+
+    if(NumDust > 0)
+    {
+        // Save/load DustP array for all dust particles
+        byten(&Sim->Sp.DustP[0], NumDust * sizeof(dust_data), modus);
+    }
+    #endif
 
 #if defined(MERGERTREE) && defined(SUBFIND)
   byten(&Sim->MergerTree.PrevTotNsubhalos, sizeof(long long), modus);

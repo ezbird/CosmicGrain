@@ -1,31 +1,24 @@
-%----  Relevant files
+%----  Relevant files --------------------------------------------------
+
 InitCondFile         ICs/IC_zoom_1024_halo569_50Mpc_music_ellipsoid_with_dust
-OutputDir            ./7_output_zoom_1024_halo569_50Mpc_dust_grain_size
+OutputDir            ./2_output_1024
 SnapshotFileBase     snapshot
 OutputListFilename   output_snapshots.txt
 TreecoolFile         data/TREECOOL_fg_dec11
 MetalcoolFile        data/METALCOOL
 AGByieldFile         data/agb_yield_table.txt
 
-%---- File formats
-ICFormat             3
-SnapFormat           3
-
-%---- CPU-time limits
-TimeLimitCPU              1728000   
-CpuTimeBetRestartFile     7200    % 2h,  in seconds
-
-%----- Memory allocation
-MaxMemSize                2000    % in MByte
-
-%---- Characteristics of run
+%---- Characteristics of run --------------------------------------------------
 TimeBegin                 0.01    % z=99 (1/(1+z) = 1/100)
 TimeMax	                  1.0     % End of the simulation,   z = 0
-
-%---- Basic code options that set the type of simulation
+ICFormat                  3
+SnapFormat                3
+TimeLimitCPU              1728000   
+CpuTimeBetRestartFile     7200    % 2h,  in seconds
+MaxMemSize                4000    % Memory allocation in MByte
 ComovingIntegrationOn     1
 
-%---- Cosmological parameters
+%---- Cosmological parameters --------------------------------------------------
 Omega0	                  0.3158
 OmegaLambda               0.6842
 OmegaBaryon               0.04936
@@ -33,7 +26,7 @@ HubbleParam               0.6732
 Hubble                    0.1      % 100 km/s/Mpc in code units (kpc)
 BoxSize                   50000    % kpc (matches IC numbers)
 
-%---- Output frequency and output paramaters
+%---- Output frequency and output parameters --------------------------------------------------
 OutputListOn              1
 TimeBetSnapshot           1.067
 TimeOfFirstSnapshot       0.02
@@ -41,19 +34,19 @@ TimeBetStatistics         0.01
 NumFilesPerSnapshot       4
 MaxFilesWithConcurrentIO  4
 
-%---- Accuracy of time integration
+%---- Accuracy of time integration --------------------------------------------------
 MaxSizeTimestep          0.025
 MinSizeTimestep          1e-9      
 ErrTolIntAccuracy        0.05       # Higher = less accurate but faster
 CourantFac               0.1        # this is just an initial placeholder
 
-%---- Redshift-dependent Courant factor
+%---- Redshift-dependent Courant factor --------------------------------------------------
 CourantFac_z20           0.5      # z > 20 (early universe, smooth)
 CourantFac_z10           0.4     # 20 > z > 10 (structure forming)
 CourantFac_z2            0.3     # 10 > z > 2 (cooling, shocks)
 CourantFac_z0            0.1     # z < 2 (star formation, feedback)
 
-%---- Tree algorithm, force accuracy, domain update frequency
+%---- Tree algorithm, force accuracy, domain update frequency --------------------------------------------------
 TypeOfOpeningCriterion                1
 ErrTolTheta                           0.7
 ErrTolThetaMax                        1.0
@@ -62,23 +55,24 @@ TopNodeFactor                         4.0      # zoom sims: values of 3.0-5.0 ar
 ActivePartFracForNewDomainDecomp      0.1
 ActivePartFracForPMinsteadOfEwald     0.05
 
-%---- System of units
+%---- System of units --------------------------------------------------
 UnitLength_in_cm         3.085678e21        ;  kpc/h
 UnitMass_in_g            1.989e43           ;  1.0e10 Msun/h
 UnitVelocity_in_cm_per_s 1e5                ;  1 km/sec
 GravityConstantInternal  0
 
-%---- SPH 
-DesNumNgb                       48      % Standard SPH neighbors; AGORA uses 128 ± 8
-MaxNumNgbDeviation              8      % Standard deviation
+%---- SPH  --------------------------------------------------
+DesNumNgb                       48      % Standard SPH neighbors; i.e. AGORA uses 128 ± 8
+MaxNumNgbDeviation              8       % Standard deviation
 DesLinkNgb                      32
 ArtBulkViscConst                1.0     % Viscosity parameter
 MinGasHsml                      1.0     % 1 kpc
-MaxGasHsml                      1000     % maybe silly to keep this?      
-InitGasTemp                     462       
+MaxGasHsml                      1000         
+InitGasTemp                     462     % K
 
 
-% --- Adaptive gas softening (gravitational)
+% --- Adaptive gas softening (gravitational) --------------------------------------------------
+
 GasSoftFactor                   1.5
 AdaptiveHydroSofteningSpacing   1.05       % epsilon_gas ≈ Hsml / 2
 MinimumComovingHydroSoftening   2.0        % 1 kpc/h floor
@@ -112,7 +106,9 @@ SofteningMaxPhysClass5          16.0
 SofteningComovingClass6         3           
 SofteningMaxPhysClass6          1.5          
 
-% ---- Map particle types to classes
+
+% ---- Map particle types to classes --------------------------------------------------
+
 SofteningClassOfPartType0   0   ; Gas
 SofteningClassOfPartType1   1   ; HR DM
 SofteningClassOfPartType2   2   ; LR DM (use 3/5 for outer shells if present)
@@ -122,48 +118,67 @@ SofteningClassOfPartType5   5   ; (unused / outer LR)
 SofteningClassOfPartType6   6   ; Dust
 
 
-%----- Cooling and Star formation
+%----- Cooling and Star formation --------------------------------------------------
+
 MaxSfrTimescale       1.5        % usually 1.5; Gas consumption timescale (multi-phase model)
-FactorSN              0.1        % 0.193 is default; beta, mass fraction of massive stars (multi-phase model)
-FactorEVP             250        % A_0, evaporation parameter (multi-phase model); smaller value means lower pressure support, making it easier for gas to collapse
+FactorSN              0.1        % 0.1 is default; beta, mass fraction of massive stars (multi-phase model)
+FactorEVP             1000        % A_0, evaporation parameter (multi-phase model); smaller value means lower pressure support, making it easier for gas to collapse
 TempSupernova         1e8        % T_SN, effective "supernova temperature",sets feedback energy (multi-phase model)
 TempClouds            1000       % temperature of cold clouds (multi-phase model)
 CritOverDensity       57.7       % default is 57.7; overdensity threshold value for cosmological sims; lower value means conditions easier to reach for SF
-CritPhysDensity       0.02      % consider 0.001; critical physical density for star formation (in cm^(-3))
-                                 % if set to 0 == Gadget-4 compute a threshold from  Springel & Hernquist 03 model, which at low resolution will pick a lower effective density.
-MinEgySpec            0.1        % No minimum energy; 0.1 is 10K (depends on whether neutral or ionized?)
+CritPhysDensity       0.1        % Critical physical density for star formation (cm^-3)
+                                 % SH03 used ~0.13 cm^-3 for gas particles of ~10^7 M☉
+                                 % Scale proportionally with your gas particle mass: rho_crit ~ 0.1 * (10^7 M☉ / m_gas)
+                                 % This ensures you only form stars when gas is actually resolved (M_Jeans > m_particle)
+                                 % TYPICAL VALUES BY RESOLUTION:
+                                 % - 512^3  (m_gas ~ 10^7 M☉): 0.1 cm^-3 (Illustris, SH03)
+                                 % - 1024^3 (m_gas ~ 10^6 M☉): 0.5-1.0 cm^-3  
+                                 % - 2048^3 (m_gas ~ 10^5 M☉): 0.5-1.0 cm^-3 (this run)
+                                 % - 4096^3 (m_gas ~ 10^4 M☉): 1.0-5.0 cm^-3
+MinEgySpec            0.1        % K; 0.1 is 10 K (depends on whether neutral or ionized?)
 
 
-%----- Debugging
+%---- Dust physics switches (1=enable, 0=disable) --------------------------------------------------
+
+DustEnableCreation         1
+DustEnableDrag             1
+DustEnableGrowth           1
+DustEnableClumping         0
+DustEnableCoagulation      0        % Enable grain coagulation in dense gas
+DustEnableSputtering       0
+DustEnableShockDestruction 0
+DustEnableAstration        0
+
+
+%---- Dust Model Parameters --------------------------------------------------
+
+
+DustThermalSputteringTemp      5.0e5    % K; Threshold for gradual thermal erosion
+                                        % Instant destruction at T>1e6 K hardcoded in dust.cc
+                                        % Draine & Salpeter 1979: sputtering important at T>1e5 K
+DustVelocitySNII               30.0     % Velocity kick for Type II SN dust in addition to the star's velocity (km/s)
+DustVelocityAGB                10.0     % Velocity kick for AGB wind dust in addition to the star's velocity  (km/s)
+DustYieldSNII                  0.2      % Dust mass fraction from Type II SN; 10% of metals → dust (Todini & Ferrara 2001)
+DustYieldAGB                   0.4      % Dust mass fraction from AGB stars; 20% of metals → dust (Zhukovska et al. 2008)
+DustGrowthCalibration          0.1      % Lower = faster growth; Calibration factor for growth timescale; 1.0 = Asano+2013 prescription; Tune to match observed D/Z evolution
+DustOffsetMinSNII              0.02     % kpc; Minimum offset of new dust from the parent supernova
+DustOffsetMaxSNII              0.10     % kpc; Maximum
+DustOffsetMinAGB               0.01     % kpc; Minimum offset of new dust from the parent AGB star (gentler winds, closer to star)
+DustOffsetMaxAGB               0.05     % kpc; Maximum
+DustParticlesPerSNII           3        % Num of dust particles created per Type II SN; Recommended: 6-12 for science runs, 3-5 for tests
+DustParticlesPerAGB            5        % Num of dust particles created per AGB star; Recommended: 8-15 for science runs, 4-8 for tests
+DustCoagulationDensityThresh   100.0    % cm^-3; Minimum density for coagulation (GMC: ~100-1000 cm^-3)
+DustCoagulationCalibration     1.0      % Calibration factor for coagulation timescale (1.0 = fiducial)
+DustCoagulationMaxSize         1000.0   % nm; Maximum grain size from coagulation (1 micron)
+
+#DustClumpingFactor             30        % parameter "C" from Hopkins & Lee 2016; without it, accretion is too slow in subgrid MCs
+#DustOrphanCleanupCenterX       23937.27  % kpc; halo X coordinate; use for zooms where you know the center so orphan removal has fixed center point
+#DustOrphanCleanupCenterY       24238.31  % kpc; halo Y coordinate  
+#DustOrphanCleanupCenterZ       24548.18  % kpc; halo Z coordinate 
+
+%----- Debugging --------------------------------------------------
+
 StarformationDebugLevel  1       % 0=off, 1=on
 FeedbackDebugLevel       1     
 DustDebugLevel           1
-
-%----- Kinetic feedback (skip for now?)
-#TargetGasMass         1.0e5      % Target gas particle mass in code units
-#WindEfficiency        2.0
-#WindEnergyFraction    0.5
-#WindFreeTravelLength  30
-#WindFreeTravelDensFac 0.1  
-
-%---- Velocity Limiter Parameters
-#LimitExtremeVelocities     1       % Prevent runaway particles
-#LimitVelocitiesOnlyForGas  0       
-#MaxAllowedVelocity         1000    % Higher for zoom (km/s in code units)
-
-%---- Dust Model Parameters
-DustThermalSputteringTemp      1e6      % K; Temp for thermal sputtering destruction; Hu et al. 2019 suggest 1e6K; At 5e6, only very hot gas destroys dust
-DustVelocitySNII               30.0     % Velocity kick for Type II SN dust in addition to the star's velocity (km/s)
-DustVelocityAGB                10.0     % Velocity kick for AGB wind dust in addition to the star's velocity  (km/s)
-DustYieldSNII                  0.1      % Dust mass fraction from Type II SN; 10% of metals → dust (Todini & Ferrara 2001)
-DustYieldAGB                   0.2      % Dust mass fraction from AGB stars; 20% of metals → dust (Zhukovska et al. 2008)
-DustGrowthCalibration          1.0      % Calibration factor for growth timescale; 1.0 = Asano+2013 prescription; Tune to match observed D/Z evolution
-DustOffsetMinSNII              0.2      % kpc; Minimum offset of newly created dust from the parent supernova
-DustOffsetMaxSNII              0.4      % kpc; Maximum
-DustOffsetMinAGB               0.1      % kpc; Minimum offset of newly created dust from the parent AGB star
-DustOffsetMaxAGB               0.3      % kpc; Maximum
-DustClumpingFactor             30       % parameter "C" from Hopkins & Lee 2016; without it, accretion is too slow in subgrid MCs
-#DustCouplingRadiusKpc   consider this for "find nearest gas" search max radii
-DustOrphanCleanupCenterX       23937.27  % kpc; halo X coordinate; use for zooms where you know the center so orphan removal has fixed center point
-DustOrphanCleanupCenterY       24238.31  % kpc; halo Y coordinate  
-DustOrphanCleanupCenterZ       24548.18  % kpc; halo Z coordinate 
+SpatialHashDebugLevel    1

@@ -147,6 +147,28 @@ def compute_stellar_mass(files):
 
     return total
 
+def compute_dust_mass(files):
+    """
+    Compute total dust mass in code units.
+
+    Uses PartType6/Masses if present.
+    If absent, returns 0.
+    """
+    import numpy as np
+
+    total = 0.0
+
+    for f in files:
+        with h5py.File(f, "r") as h:
+            if "PartType6" not in h:
+                continue
+            g = h["PartType6"]
+
+            if "Masses" in g:
+                total += float(np.sum(g["Masses"][:]))
+
+    return total
+
 def age_of_universe_gyr(z, Om, OL, h):
     import math
     H0 = (100.0 * h) / 3.085678e19
@@ -193,8 +215,8 @@ def main():
         return
 
     headers = ["SnapshotBase", "z", "Age(Gyr)"] + \
-              [PartTypeLabels[i] for i in range(7)] + \
-              ["M*", "LastModified"]
+          [PartTypeLabels[i] for i in range(7)] + \
+          ["M*", "Mdust", "LastModified"]
 
     rows = []
 
@@ -203,10 +225,13 @@ def main():
         age = age_of_universe_gyr(z, Om, OL, hh)
 
         mstar_code = compute_stellar_mass(series.files)
+        mdust_code = compute_dust_mass(series.files)
 
         # Convert code units -> Msun
         mstar_msun = mstar_code * 1.0e10
         mstar_str = f"{mstar_msun:.3e}"
+        mdust_msun = mdust_code * 1.0e10
+        mdust_str = f"{mdust_msun:.3e}"
 
         dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
         if args.tz == "local":
@@ -219,6 +244,7 @@ def main():
         for i in range(7):
             row.append(f"{counts[i]:,}")
         row.append(mstar_str)
+        row.append(mdust_str)
         row.append(ts)
 
         rows.append(row)

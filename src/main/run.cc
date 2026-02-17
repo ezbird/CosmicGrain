@@ -124,9 +124,8 @@ void sim::run(void)
         Domain.domain_free();
 
         #ifdef DUST
-          // Clean up destroyed dust particles at safe synchronization point
-          //destroy_dust_particles(&Sp);
           cleanup_invalid_dust_particles(&Sp);
+          destroy_dust_particles(&Sp);
         #endif
 
         Sp.drift_all_particles();

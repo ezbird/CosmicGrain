@@ -50,7 +50,6 @@ constexpr int spatial_hash_config::MIN_CELLS_PER_DIM;
 constexpr int spatial_hash_config::MAX_CELLS_PER_DIM;
 constexpr int spatial_hash_config::TARGET_PARTICLES_PER_CELL;
 constexpr double spatial_hash_config::CELL_SIZE_SAFETY_FACTOR;
-//constexpr int spatial_hash_config::MAX_TOTAL_CELLS;
 
 // ------------------------------- Constants ----------------------------------
 static const double ESN_ERG                  = 1.0e51;  // should probably be 1e51; SN energy in erg
@@ -113,6 +112,8 @@ static inline void diag_track_dulog(double a){ if(a>FbDiag.max_abs_dulog) FbDiag
 // creates cells over that region, saving 99%+ memory in zoom simulations.
 void rebuild_feedback_spatial_hash(simparticles *Sp, double /*max_feedback_radius*/)
 {
+  static double total_rebuild_time = 0.0;
+  static int rebuild_count = 0;
   static long long last_rebuild_step = -1;
   const int REBUILD_EVERY_N_STEPS = 20;
   
@@ -144,8 +145,19 @@ void rebuild_feedback_spatial_hash(simparticles *Sp, double /*max_feedback_radiu
   const double max_search_radius = 10.0;  // kpc
   double softening = All.ForceSoftening[0];
   
+  double t_start = MPI_Wtime();
+  
   gas_hash.build(Sp, max_search_radius, softening);
   
+  double t_end = MPI_Wtime();
+  total_rebuild_time += (t_end - t_start);
+  rebuild_count++;
+  
+  if(All.ThisTask == 0) {
+    printf("[HASH_TIMING] Rebuild #%d took %.3f sec, avg %.3f sec\n",
+            rebuild_count, t_end - t_start, total_rebuild_time/rebuild_count);
+  }
+
   last_rebuild_step = All.NumCurrentTiStep;
   
   if(All.ThisTask == 0 && gas_hash.is_built) {
@@ -466,16 +478,7 @@ void find_feedback_neighbors_tree(simparticles *Sp, ngbtree * /*Tree*/,
       return;
     }
 
-  //gas_hash.find_neighbors(Sp, star_idx, search_radius, ngb_list, distances, n_ngb, max_ngb);
-  
-  for(int i = 0; i < Sp->NumGas; i++) {
-  double dxyz[3];
-  Sp->nearest_image_intpos_to_pos(Sp->P[i].IntPos, Sp->P[star_idx].IntPos, dxyz);
-  double r2 = dxyz[0]*dxyz[0] + dxyz[1]*dxyz[1] + dxyz[2]*dxyz[2];
-  if(r2 <= search_radius*search_radius) {
-    // Found neighbor
-  }
-}
+  gas_hash.find_neighbors(Sp, star_idx, search_radius, ngb_list, distances, n_ngb, max_ngb);
   
   *smoothing_length = h;
 }
@@ -788,7 +791,7 @@ static void apply_feedback_event(simparticles *Sp, ngbtree *Tree,
   double hsml=0;
   gather_neighbors(Sp, Tree, D, star_i, ngb, dist, hsml);
   if(ngb.empty()) {
-      FB_PRINT("WARNING: Star %d found no neighbors, storing energy in reservoir\n", star_i);
+      //FB_PRINT("WARNING: Star %d found no neighbors, storing energy in reservoir\n", star_i);
       
       // Store ALL energy in reservoir for later
       Sp->P[star_i].EnergyReservoir += E_code;
@@ -945,7 +948,7 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
                            ngbtree *Tree, domain<simparticles> *D)
 {
   double t_start = MPI_Wtime();
-    
+
     // Rate limiting to prevent timebin cascades
     static int particles_heated_this_step = 0;
     static long long last_heating_step = -1;
@@ -1077,6 +1080,11 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
             #endif
 
             Sp->P[p].FeedbackFlag |= 1;
+
+            if(All.ThisTask == 0 && snii_event_count < 20) {
+                printf("[SNII_FLAG_SET] Star %d: age=%.1f Myr, Flag=%d after SNII\n",
+                      p, age_Myr, Sp->P[p].FeedbackFlag);
+            }
         }
         
         // ----------------------------------------------------------------
@@ -1130,15 +1138,29 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
                     // Apply feedback event
                     apply_feedback_event(Sp, Tree, D, p, /*is_SNII=*/false, E_code, MZ_code,
                     particles_heated_this_step, MAX_PARTICLES_HEATED_PER_STEP);
-                    
+
                     #ifdef DUST
                         // Create dust from AGB winds (no shock destruction)
                         create_dust_particles_from_feedback(Sp, p, MZ_code, 2);  // 2 = AGB
                     #endif
 
-                    // Mark as done
+                    if(All.ThisTask == 0 && agb_event_count < 20) {
+                        printf("[PRE_FLAG_SET] Star %d: age=%.1f Myr, Flag BEFORE=%d, about to set bit 1\n",
+                              p, age_Myr, Sp->P[p].FeedbackFlag);
+                    }
+
                     Sp->P[p].FeedbackFlag |= 2;
+
+                    if(All.ThisTask == 0 && agb_event_count < 20) {
+                        printf("[POST_FLAG_SET] Star %d: Flag AFTER=%d\n", p, Sp->P[p].FeedbackFlag);
+                    }
                     
+                    // VERIFY IT STUCK
+                    if(!(Sp->P[p].FeedbackFlag & 2)) {
+                        printf("[FLAG_BUG_AGB] Star %d: Flag did NOT stick! Expected bit 1 set, got %d\n",
+                              p, Sp->P[p].FeedbackFlag);
+                    }
+
                     // Update diagnostics
                     agb_event_count++;
                     agb_total_metals_g += MZ_g;

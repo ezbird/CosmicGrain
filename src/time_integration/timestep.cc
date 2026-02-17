@@ -727,7 +727,7 @@ void simparticles::timebin_cleanup_list_of_active_particles(void)
       if(i < 0)
         continue;
 
-      if(P[i].ID.get() == 0 && P[i].getMass() == 0)
+      if(P[i].ID.get() == 0 && P[i].getMass() < 1e-20)
         {
           TimeBinsGravity.timebin_remove_particle(idx, P[i].TimeBinGrav);
         }
@@ -739,7 +739,7 @@ void simparticles::timebin_cleanup_list_of_active_particles(void)
       if(i < 0)
         continue;
 
-      if(P[i].ID.get() == 0 && P[i].getMass() == 0 && P[i].getType() == 0)
+      if(P[i].ID.get() == 0 && P[i].getMass() < 1e-20 && P[i].getType() == 0)
         {
           TimeBinsHydro.timebin_remove_particle(idx, P[i].getTimeBinHydro());
         }

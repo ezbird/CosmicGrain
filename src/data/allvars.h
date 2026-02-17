@@ -53,8 +53,11 @@ int SpatialHashDebugLevel;               // 0=off, 1=detailed output
   int DustEnableGrowth;          // Grain growth (accretion)
   int DustEnableCreation;        // Dust creation from stellar feedback
   int DustEnableClumping;        // Clumping factor in growth
+  int DustEnableAstration;        // Astration of dust particles
 
   int DustDebugLevel;               // 0=off, 1=detailed output
+  int DustParticlesPerSNII;         // Number of dust particles to spawn per SNII event
+  int DustParticlesPerAGB;          // Number of dust particles to spawn per AGB event
   double DustThermalSputteringTemp; // Temperature for thermal sputtering [K]
   double DustVelocitySNII;          // Ejection velocity for Type II SN dust [km/s]
   double DustVelocityAGB;           // Ejection velocity for AGB wind dust [km/s]
@@ -65,8 +68,13 @@ int SpatialHashDebugLevel;               // 0=off, 1=detailed output
   double DustOffsetMaxSNII;         // Maximum of sphere around SN to spawn dust particles [kpc]
   double DustOffsetMinAGB;          // Minimum of sphere around AGB to spawn dust particles [kpc]
   double DustOffsetMaxAGB;          // Maximum of sphere around AGB to spawn dust particles [kpc]
-  double DustOrphanCleanupCenterX, DustOrphanCleanupCenterY, DustOrphanCleanupCenterZ; // Fixed center for orphan dust cleanup [kpc]
+  //double DustOrphanCleanupCenterX, DustOrphanCleanupCenterY, DustOrphanCleanupCenterZ; // Fixed center for orphan dust cleanup [kpc]
   //double DustClumpingFactor;        // Subgrid clumping factor for dust grain growth
+
+  int DustEnableCoagulation;
+  double DustCoagulationDensityThresh;
+  double DustCoagulationCalibration;
+  double DustCoagulationMaxSize;
 #endif
 
 #ifdef STARFORMATION
