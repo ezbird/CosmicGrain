@@ -1,7 +1,7 @@
 %----  Relevant files --------------------------------------------------
 
 InitCondFile         ICs/IC_zoom_1024_halo569_50Mpc_music_ellipsoid_with_dust
-OutputDir            ./2_output_1024
+OutputDir            ./3_output_1024
 SnapshotFileBase     snapshot
 OutputListFilename   output_snapshots.txt
 TreecoolFile         data/TREECOOL_fg_dec11
@@ -15,7 +15,7 @@ ICFormat                  3
 SnapFormat                3
 TimeLimitCPU              1728000   
 CpuTimeBetRestartFile     7200    % 2h,  in seconds
-MaxMemSize                4000    % Memory allocation in MByte
+MaxMemSize                3000    % Memory allocation in MByte
 ComovingIntegrationOn     1
 
 %---- Cosmological parameters --------------------------------------------------
@@ -41,10 +41,10 @@ ErrTolIntAccuracy        0.05       # Higher = less accurate but faster
 CourantFac               0.1        # this is just an initial placeholder
 
 %---- Redshift-dependent Courant factor --------------------------------------------------
-CourantFac_z20           0.5      # z > 20 (early universe, smooth)
-CourantFac_z10           0.4     # 20 > z > 10 (structure forming)
-CourantFac_z2            0.3     # 10 > z > 2 (cooling, shocks)
-CourantFac_z0            0.1     # z < 2 (star formation, feedback)
+CourantFac_z20           0.6      # z > 20 (early universe, smooth)
+CourantFac_z10           0.5     # 20 > z > 10 (structure forming)
+CourantFac_z2            0.4     # 10 > z > 2 (cooling, shocks)
+CourantFac_z0            0.2     # z < 2 (star formation, feedback)  << consider this one carefully! maybe 0.1 if becomes numerically unstable?
 
 %---- Tree algorithm, force accuracy, domain update frequency --------------------------------------------------
 TypeOfOpeningCriterion                1
@@ -66,7 +66,7 @@ DesNumNgb                       48      % Standard SPH neighbors; i.e. AGORA use
 MaxNumNgbDeviation              8       % Standard deviation
 DesLinkNgb                      32
 ArtBulkViscConst                1.0     % Viscosity parameter
-MinGasHsml                      1.0     % 1 kpc
+MinGasHsml                      0.5     % 1 kpc
 MaxGasHsml                      1000         
 InitGasTemp                     462     % K
 
@@ -143,12 +143,12 @@ MinEgySpec            0.1        % K; 0.1 is 10 K (depends on whether neutral or
 DustEnableCreation         1
 DustEnableDrag             1
 DustEnableGrowth           1
-DustEnableClumping         0
+DustEnableClumping         1
 DustEnableCoagulation      0        % Enable grain coagulation in dense gas
 DustEnableSputtering       0
 DustEnableShockDestruction 0
 DustEnableAstration        0
-
+DustEnableRadiationPressure 0
 
 %---- Dust Model Parameters --------------------------------------------------
 
@@ -165,8 +165,8 @@ DustOffsetMinSNII              0.02     % kpc; Minimum offset of new dust from t
 DustOffsetMaxSNII              0.10     % kpc; Maximum
 DustOffsetMinAGB               0.01     % kpc; Minimum offset of new dust from the parent AGB star (gentler winds, closer to star)
 DustOffsetMaxAGB               0.05     % kpc; Maximum
-DustParticlesPerSNII           3        % Num of dust particles created per Type II SN; Recommended: 6-12 for science runs, 3-5 for tests
-DustParticlesPerAGB            5        % Num of dust particles created per AGB star; Recommended: 8-15 for science runs, 4-8 for tests
+DustParticlesPerSNII           1        % Num of dust particles created per Type II SN; Recommended: 6-12 for science runs, 3-5 for tests
+DustParticlesPerAGB            1        % Num of dust particles created per AGB star; Recommended: 8-15 for science runs, 4-8 for tests
 DustCoagulationDensityThresh   100.0    % cm^-3; Minimum density for coagulation (GMC: ~100-1000 cm^-3)
 DustCoagulationCalibration     1.0      % Calibration factor for coagulation timescale (1.0 = fiducial)
 DustCoagulationMaxSize         1000.0   % nm; Maximum grain size from coagulation (1 micron)

@@ -80,6 +80,7 @@ bool AGBYieldTable::load_from_file(const char* filename) {
     
     is_loaded = true;
     
+    /*
     printf("[AGB_YIELDS] Successfully loaded yield table:\n");
     printf("[AGB_YIELDS]   File: %s\n", filename);
     printf("[AGB_YIELDS]   Entries: %zu\n", table.size());
@@ -95,7 +96,7 @@ bool AGBYieldTable::load_from_file(const char* filename) {
                table[i].mass_init, table[i].Z_init, 
                table[i].Z_yield_total, table[i].M_lost);
     }
-    
+    */
     return true;
 }
 

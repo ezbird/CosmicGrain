@@ -295,11 +295,14 @@ class simparticles : public intposconvert, public setcomm
 
   void free_memory(void)
   {
-    TimeBinsGravity.timebins_free();
-    TimeBinsHydro.timebins_free();
+      TimeBinsGravity.timebins_free();
+      TimeBinsHydro.timebins_free();
 
-    Mem.myfree(SphP);
-    Mem.myfree(P);
+      #ifdef DUST
+      Mem.myfree(DustP);   // allocated last, must free first
+      #endif
+      Mem.myfree(SphP);
+      Mem.myfree(P);
   }
 
   void reallocate_memory_maxpart(int maxpartNew)

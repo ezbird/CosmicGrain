@@ -96,6 +96,7 @@ void domain<partset>::domain_decomposition(domain_options mode)
   else if(Mode == COLL_SUBFIND)
     domain_coll_subfind_prepare_exchange();
 
+
   double t1 = Logs.second();
 
   domain_printf("DOMAIN: domain decomposition done. (took in total %g sec)\n", Logs.timediff(t0, t1));
@@ -332,23 +333,30 @@ void domain<simparticles>::domain_rearrange_particle_sequence(void)
     return;
 
   for(int i = 0; i < Tp->NumGas; i++)
-    if(Tp->P[i].getType() != 0) /*If not a gas particle, swap to the end of the list */
+    if(Tp->P[i].getType() != 0)
       {
         particle_data psave = Tp->P[i];
         peanokey key        = domain_key[i];
+#ifdef DUST
+        dust_data DustPsave = Tp->DustP[i];
+#endif
 
         Tp->P[i]      = Tp->P[Tp->NumGas - 1];
         Tp->SphP[i]   = Tp->SphP[Tp->NumGas - 1];
         domain_key[i] = domain_key[Tp->NumGas - 1];
+#ifdef DUST
+        Tp->DustP[i]  = Tp->DustP[Tp->NumGas - 1];
+#endif
 
         Tp->P[Tp->NumGas - 1]      = psave;
         domain_key[Tp->NumGas - 1] = key;
+#ifdef DUST
+        Tp->DustP[Tp->NumGas - 1]  = DustPsave;
+#endif
 
         Tp->NumGas--;
         i--;
       }
-  /*Now we have rearranged the particles,
-   *we don't need to do it again unless there are more stars*/
 }
 
 template <>

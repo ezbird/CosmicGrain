@@ -15,7 +15,7 @@
 
 
 #ifdef DUST
-void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mass_formed);
+void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mass_formed, int star_idx, double hsml);
 void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt);
 
 // ========== GLOBAL DUST STATISTICS ==========

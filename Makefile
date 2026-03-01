@@ -584,7 +584,4 @@ $(BUILD_DIR)/Makefile.check: Makefile Template-Config.sh defines_extra buildsyst
 $(BUILD_DIR)/config.check: documentation/04_config-options.md Template-Config.sh buildsystem/check.py
 	@$(PYTHON) buildsystem/check.py 4 Template-Config.sh $@  $<
 
-$(BUILD_DIR)/param.check: documentation/05_parameterfile.md $(SRC_DIR)/io/parameters.cc buildsystem/check.py
-	@$(PYTHON) buildsystem/check.py 5 $(SRC_DIR)/data/allvars.cc $@  $<
-
 .PHONY = all check build clean

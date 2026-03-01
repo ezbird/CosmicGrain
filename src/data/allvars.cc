@@ -209,6 +209,7 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustEnableCreation", &DustEnableCreation, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableClumping", &DustEnableClumping, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableAstration", &DustEnableAstration, PARAM_INT, PARAM_FIXED);
+  add_param("DustEnableRadiationPressure", &DustEnableRadiationPressure, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableCoagulation", &DustEnableCoagulation, PARAM_INT, PARAM_FIXED);
   add_param("DustCoagulationDensityThresh", &DustCoagulationDensityThresh, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustCoagulationCalibration", &DustCoagulationCalibration, PARAM_DOUBLE, PARAM_FIXED);

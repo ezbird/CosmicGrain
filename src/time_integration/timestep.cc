@@ -151,6 +151,11 @@ void sim::find_global_timesteps(void)
       int bin;
 
       Sp.timebins_get_bin_and_do_validity_checks(All.GlobalTimeStep, &bin, Sp.P[target].TimeBinGrav);
+      #ifdef DUST
+      if(Sp.P[target].getType() == 6 && bin < 18)
+          bin = 18;
+      #endif
+
       Sp.TimeBinsGravity.timebin_move_particle(target, Sp.P[target].TimeBinGrav, bin);
       Sp.P[target].TimeBinGrav = bin;
     }
@@ -164,6 +169,10 @@ void sim::find_global_timesteps(void)
       int bin;
 
       Sp.timebins_get_bin_and_do_validity_checks(All.GlobalTimeStep, &bin, Sp.P[target].getTimeBinHydro());
+      #ifdef DUST
+      if(Sp.P[target].getType() == 6 && bin < 18)
+          bin = 18;
+      #endif
       Sp.TimeBinsHydro.timebin_move_particle(target, Sp.P[target].getTimeBinHydro(), bin);
 #ifndef LEAN
       Sp.P[target].TimeBinHydro = bin;
@@ -204,7 +213,7 @@ Without this: Dust particles use gravitational timestep → get tiny timesteps n
   if(P[p].getType() == 6)
     {
       // Use fixed timestep for drag-dominated dust particles
-      double dt = All.MaxSizeTimestep * 0.25;
+      double dt = All.MaxSizeTimestep; // * 0.25;  // Optionally reduce the fixed timestep for better accuracy in drag-dominated regime
       integertime ti_step = (integertime)(dt / All.Timebase_interval);
       
       // Safety bounds: timestep must be in range [1, TIMEBASE-1]

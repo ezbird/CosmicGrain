@@ -244,6 +244,16 @@ if(tot_stars_spawned > 0 || tot_stars_converted > 0)
       Sp->TotNumPart += tot_stars_spawned;
       Sp->TotNumGas -= tot_stars_converted;
       Sp->NumPart += stars_spawned;
+
+        #ifdef DUST
+              // Zero DustP for all newly spawned star slots — these slots were
+              // just added to the live array and DustP was never initialized for them.
+              // Without this, any dust particle later occupying these indices via
+              // compaction or reorder will appear to have zeroed GrainRadius.
+              for(int k = Sp->NumPart - stars_spawned; k < Sp->NumPart; k++)
+                memset(&Sp->DustP[k], 0, sizeof(dust_data));
+        #endif
+
     }
 
   double sfrrate = 0;
@@ -373,14 +383,14 @@ void coolsfr::make_star(simparticles *Sp, int i, double prob, MyDouble mass_of_s
           stars_converted++;
 
           *sum_mass_stars += Sp->P[i].getMass();
-
+          double hsml = Sp->SphP[i].Hsml;  // cache before conversion
           convert_sph_particle_into_star(Sp, i, All.Time);
           
           // ============================================================
           // NEW: Consume dust by astration (gas → star locks up dust)
           // ============================================================
           #ifdef DUST
-          consume_dust_by_astration(Sp, i, mass_of_star);
+          consume_dust_by_astration(Sp, i, mass_of_star, i, hsml);
           #endif
         }
       else
@@ -391,8 +401,12 @@ void coolsfr::make_star(simparticles *Sp, int i, double prob, MyDouble mass_of_s
             Terminate("NumPart=%d spwawn %d particles no space left (Sp.MaxPart=%d)\n", Sp->NumPart, altogether_spawned, Sp->MaxPart);
 
           int j = Sp->NumPart + altogether_spawned; /* index of new star */
-
+          double hsml = Sp->SphP[i].Hsml;
           spawn_star_from_sph_particle(Sp, i, All.Time, j, mass_of_star);
+
+          #ifdef DUST
+              memset(&Sp->DustP[j], 0, sizeof(dust_data));  // DustP never initialized for spawned stars
+          #endif
 
           *sum_mass_stars += mass_of_star;
           stars_spawned++;
@@ -401,7 +415,7 @@ void coolsfr::make_star(simparticles *Sp, int i, double prob, MyDouble mass_of_s
           // NEW: Consume dust by astration (gas → star locks up dust)
           // ============================================================
           #ifdef DUST
-          consume_dust_by_astration(Sp, i, mass_of_star);
+          consume_dust_by_astration(Sp, i, mass_of_star, j, hsml);
           #endif
         }
     }

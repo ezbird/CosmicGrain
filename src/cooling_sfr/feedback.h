@@ -35,7 +35,7 @@ void init_stellar_feedback(void);
  *   - Stochastic heating of neighboring gas
  */
 void apply_stellar_feedback(double current_time, simparticles *Sp, 
-                           ngbtree *Tree, domain<simparticles> *D);
+                           ngbtree *Tree, domain<simparticles> *D, MPI_Comm comm);
 
 /* Print feedback statistics (called at each output) */
 void stellar_feedback_statistics(MPI_Comm comm);

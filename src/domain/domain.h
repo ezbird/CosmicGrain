@@ -153,6 +153,7 @@ class domain : public setcomm
   void domain_combine_multipledomains(void);
   void domain_init_sum_cost(void);
   void domain_countToGo(int *toGoDM, int *toGoSph);
+  inline int get_task_for_particle(int n);
   #ifdef DUST
   void domain_countToGo_dust(int *toGoDust);
   #endif

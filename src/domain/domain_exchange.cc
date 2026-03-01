@@ -34,6 +34,24 @@
 #include "../dust/dust.h"
 #endif
 
+template <typename partset>
+inline int domain<partset>::get_task_for_particle(int n)
+{
+    // Fresh particles not yet in tree - keep local
+    if(Tp->P[n].Ti_Current != All.Ti_Current)
+        return ThisTask;
+
+    int no = n_to_no(n);
+    if(no < 0)
+        return ThisTask;
+
+    int task = TaskOfLeaf[no];
+    if(task < 0 || task >= NTask)
+        return ThisTask;
+
+    return task;
+}
+
 /*! \file domain_exchange.c
  *  \brief exchanges particle data according to the new domain decomposition
  */
@@ -71,71 +89,18 @@ void domain<partset>::domain_resize_storage(int count_get_total, int count_get_s
 template <typename partset>
 void domain<partset>::domain_countToGo(int *toGoDM, int *toGoSph)
 {
-  for(int n = 0; n < NTask; n++)
-    {
-      toGoDM[n] = toGoSph[n] = 0;
-    }
+    for(int n = 0; n < NTask; n++)
+        toGoDM[n] = toGoSph[n] = 0;
 
-  for(int n = 0; n < Tp->NumPart; n++)
+    for(int n = 0; n < Tp->NumPart; n++)
     {
-      int no = n_to_no(n);
-
-      if(Tp->P[n].getType() == 0)
-        toGoSph[TaskOfLeaf[no]]++;
-      else
-        toGoDM[TaskOfLeaf[no]]++;
+        int task = this->get_task_for_particle(n);   // <-- consistent with packing loop
+        if(Tp->P[n].getType() == 0)
+            toGoSph[task]++;
+        else
+            toGoDM[task]++;
     }
 }
-
-#ifdef DUST
-/*! Count how many dust particles need to be moved 
- *  CRITICAL FIX: Newly created particles may not be in tree yet!
- */
-template <typename partset>
-void domain<partset>::domain_countToGo_dust(int *toGoDust)
-{
-  for(int n = 0; n < NTask; n++)
-    toGoDust[n] = 0;
-
-  for(int n = 0; n < Tp->NumPart; n++)
-    {
-      if(Tp->P[n].getType() == 6)  // DUST_PARTICLE_TYPE
-        {
-          // CRITICAL: Check if particle is in the domain tree
-          // Newly created particles may not have valid tree indices yet
-          
-          // Method 1: Check if particle was integrated this timestep
-          // Particles created this timestep haven't been through tree construction
-          if(Tp->P[n].Ti_Current != All.Ti_Current) {
-            // Fresh particle - keep on local task
-            toGoDust[ThisTask]++;
-            continue;
-          }
-          
-          // Method 2: Bounds check on tree node
-          int no = n_to_no(n);
-          
-          // Sanity check: valid tree node (negative means invalid)
-          if(no < 0) {
-            // Invalid tree node - keep on local task
-            toGoDust[ThisTask]++;
-            continue;
-          }
-          
-          // Additional safety: check task is valid
-          int task = TaskOfLeaf[no];
-          if(task < 0 || task >= NTask) {
-            // Invalid task - keep on local task
-            toGoDust[ThisTask]++;
-            continue;
-          }
-          
-          // Particle is in tree, use normal decomposition
-          toGoDust[task]++;
-        }
-    }
-}
-#endif
 
 template <typename partset>
 void domain<partset>::domain_coll_subfind_prepare_exchange(void)
@@ -151,8 +116,6 @@ void domain<partset>::domain_coll_subfind_prepare_exchange(void)
 #endif
 }
 
-
-
 /* Added pieces for the dust array (DustP). Gadget uses a stack-based memory allocator that requires LIFO (last-in-first-out) 
 deallocation... so carefully deallocate in reverse order. */
 template <typename partset>
@@ -160,22 +123,24 @@ void domain<partset>::domain_exchange(void)
 {
   double t0 = Logs.second();
 
-  int *toGoDM   = (int *)Mem.mymalloc_movable(&toGoDM, "toGoDM", NTask * sizeof(int));
-  int *toGoSph  = (int *)Mem.mymalloc_movable(&toGoSph, "toGoSph", NTask * sizeof(int));
-  int *toGetDM  = (int *)Mem.mymalloc_movable(&toGetDM, "toGetDM", NTask * sizeof(int));
+  int *toGoDM   = (int *)Mem.mymalloc_movable(&toGoDM,  "toGoDM",  NTask * sizeof(int));
+  int *toGoSph  = (int *)Mem.mymalloc_movable(&toGoSph,  "toGoSph",  NTask * sizeof(int));
+  int *toGetDM  = (int *)Mem.mymalloc_movable(&toGetDM,  "toGetDM",  NTask * sizeof(int));
   int *toGetSph = (int *)Mem.mymalloc_movable(&toGetSph, "toGetSph", NTask * sizeof(int));
 
   domain_countToGo(toGoDM, toGoSph);
 
 #ifdef DUST
-  int *toGoDust = (int *)Mem.mymalloc_movable(&toGoDust, "toGoDust", NTask * sizeof(int));
+  int *toGoDust  = (int *)Mem.mymalloc_movable(&toGoDust,  "toGoDust",  NTask * sizeof(int));
   int *toGetDust = (int *)Mem.mymalloc_movable(&toGetDust, "toGetDust", NTask * sizeof(int));
-  domain_countToGo_dust(toGoDust);
+  memset(toGoDust, 0, NTask * sizeof(int));
+  for(int n = 0; n < Tp->NumPart; n++)
+    if(Tp->P[n].getType() == 6)
+      toGoDust[this->get_task_for_particle(n)]++;
 #endif
 
-  int *toGo  = (int *)Mem.mymalloc("toGo", 2 * NTask * sizeof(int));
+  int *toGo  = (int *)Mem.mymalloc("toGo",  2 * NTask * sizeof(int));
   int *toGet = (int *)Mem.mymalloc("toGet", 2 * NTask * sizeof(int));
-
   for(int i = 0; i < NTask; ++i)
     {
       toGo[2 * i]     = toGoDM[i];
@@ -191,17 +156,16 @@ void domain<partset>::domain_exchange(void)
   Mem.myfree(toGo);
 
 #ifdef DUST
-  // Exchange dust counts
   myMPI_Alltoall(toGoDust, 1, MPI_INT, toGetDust, 1, MPI_INT, Communicator);
 #endif
 
   int count_togo_dm = 0, count_togo_sph = 0, count_get_dm = 0, count_get_sph = 0;
   for(int i = 0; i < NTask; i++)
     {
-      count_togo_dm += toGoDM[i];
+      count_togo_dm  += toGoDM[i];
       count_togo_sph += toGoSph[i];
-      count_get_dm += toGetDM[i];
-      count_get_sph += toGetSph[i];
+      count_get_dm   += toGetDM[i];
+      count_get_sph  += toGetSph[i];
     }
 
 #ifdef DUST
@@ -209,22 +173,22 @@ void domain<partset>::domain_exchange(void)
   for(int i = 0; i < NTask; i++)
     {
       count_togo_dust += toGoDust[i];
-      count_get_dust += toGetDust[i];
+      count_get_dust  += toGetDust[i];
     }
 #endif
 
   long long sumtogo = count_togo_dm;
   sumup_longs(1, &sumtogo, &sumtogo, Communicator);
-
   domain_printf("DOMAIN: exchange of %lld particles\n", sumtogo);
 
   if(Tp->NumPart != count_togo_dm + count_togo_sph)
     Terminate("NumPart != count_togo");
 
+  // ---- offset arrays ----
   int *send_sph_offset = (int *)Mem.mymalloc_movable(&send_sph_offset, "send_sph_offset", NTask * sizeof(int));
-  int *send_dm_offset  = (int *)Mem.mymalloc_movable(&send_dm_offset, "send_dm_offset", NTask * sizeof(int));
+  int *send_dm_offset  = (int *)Mem.mymalloc_movable(&send_dm_offset,  "send_dm_offset",  NTask * sizeof(int));
   int *recv_sph_offset = (int *)Mem.mymalloc_movable(&recv_sph_offset, "recv_sph_offset", NTask * sizeof(int));
-  int *recv_dm_offset  = (int *)Mem.mymalloc_movable(&recv_dm_offset, "recv_dm_offset", NTask * sizeof(int));
+  int *recv_dm_offset  = (int *)Mem.mymalloc_movable(&recv_dm_offset,  "recv_dm_offset",  NTask * sizeof(int));
 
 #ifdef DUST
   int *send_dust_offset = (int *)Mem.mymalloc_movable(&send_dust_offset, "send_dust_offset", NTask * sizeof(int));
@@ -235,39 +199,43 @@ void domain<partset>::domain_exchange(void)
 #ifdef DUST
   send_dust_offset[0] = recv_dust_offset[0] = 0;
 #endif
-
   for(int i = 1; i < NTask; i++)
     {
-      send_sph_offset[i] = send_sph_offset[i - 1] + toGoSph[i - 1];
-      send_dm_offset[i]  = send_dm_offset[i - 1] + toGoDM[i - 1];
-
-      recv_sph_offset[i] = recv_sph_offset[i - 1] + toGetSph[i - 1];
-      recv_dm_offset[i]  = recv_dm_offset[i - 1] + toGetDM[i - 1];
-
+      send_sph_offset[i] = send_sph_offset[i-1] + toGoSph[i-1];
+      send_dm_offset[i]  = send_dm_offset[i-1]  + toGoDM[i-1];
+      recv_sph_offset[i] = recv_sph_offset[i-1] + toGetSph[i-1];
+      recv_dm_offset[i]  = recv_dm_offset[i-1]  + toGetDM[i-1];
 #ifdef DUST
-      send_dust_offset[i] = send_dust_offset[i - 1] + toGoDust[i - 1];
-      recv_dust_offset[i] = recv_dust_offset[i - 1] + toGetDust[i - 1];
+      send_dust_offset[i] = send_dust_offset[i-1] + toGoDust[i-1];
+      recv_dust_offset[i] = recv_dust_offset[i-1] + toGetDust[i-1];
 #endif
     }
-
   for(int i = 0; i < NTask; i++)
     {
       send_dm_offset[i] += count_togo_sph;
       recv_dm_offset[i] += count_get_sph;
     }
 
+  // ---- send buffers ----
+  // Allocation order (LIFO must be freed in reverse): partBuf, sphBuf, keyBuf, dustBuf
   pdata *partBuf =
-      (typename partset::pdata *)Mem.mymalloc_movable_clear(&partBuf, "partBuf", (count_togo_dm + count_togo_sph) * sizeof(pdata));
+    (typename partset::pdata *)Mem.mymalloc_movable_clear(&partBuf, "partBuf",
+        (count_togo_dm + count_togo_sph) * sizeof(pdata));
   sph_particle_data *sphBuf =
-      (sph_particle_data *)Mem.mymalloc_movable_clear(&sphBuf, "sphBuf", count_togo_sph * sizeof(sph_particle_data));
-  peanokey *keyBuf = (peanokey *)Mem.mymalloc_movable_clear(&keyBuf, "keyBuf", (count_togo_dm + count_togo_sph) * sizeof(peanokey));
+    (sph_particle_data *)Mem.mymalloc_movable_clear(&sphBuf, "sphBuf",
+        count_togo_sph * sizeof(sph_particle_data));
+  peanokey *keyBuf =
+    (peanokey *)Mem.mymalloc_movable_clear(&keyBuf, "keyBuf",
+        (count_togo_dm + count_togo_sph) * sizeof(peanokey));
 
 #ifdef DUST
-  dust_data *dustBuf = NULL;
-  if(count_togo_dust > 0)
-    dustBuf = (dust_data *)Mem.mymalloc_movable_clear(&dustBuf, "dustBuf", count_togo_dust * sizeof(dust_data));
+  // Allocate at least 1 element so the send pointer is always valid for the collective.
+  dust_data *dustBuf =
+    (dust_data *)Mem.mymalloc_movable_clear(&dustBuf, "dustBuf",
+        std::max(1, count_togo_dust) * sizeof(dust_data));
 #endif
 
+  // ---- pack loop ----
   for(int i = 0; i < NTask; i++)
     {
       toGoSph[i] = toGoDM[i] = 0;
@@ -276,261 +244,201 @@ void domain<partset>::domain_exchange(void)
 #endif
     }
 
-for(int n = 0; n < Tp->NumPart; n++)
-  {
-    int off, num;
-    
-    // CRITICAL: Use same logic as domain_countToGo for task assignment
-    int task;
-    
-    // Check if particle is in tree (same checks as counting phase)
-    if(Tp->P[n].Ti_Current != All.Ti_Current) {
-      // Fresh particle - keep on local task
-      task = ThisTask;
-    } else {
-      int no = n_to_no(n);
-      if(no < 0) {
-        // Invalid tree node - keep on local task
-        task = ThisTask;
-      } else {
-        // Get task from tree
-        task = TaskOfLeaf[no];
-        // Additional safety check
-        if(task < 0 || task >= NTask) {
-          task = ThisTask;
+  for(int n = 0; n < Tp->NumPart; n++)
+    {
+      int off, num;
+      int task = this->get_task_for_particle(n);
+
+      if(Tp->P[n].getType() == 0)
+        {
+          num        = toGoSph[task]++;
+          off        = send_sph_offset[task] + num;
+          sphBuf[off] = Tp->SphP[n];
         }
-      }
+      else
+        {
+          num = toGoDM[task]++;
+          off = send_dm_offset[task] + num;
+#ifdef DUST
+          if(Tp->P[n].getType() == 6)
+            {
+              int dust_off = send_dust_offset[task] + toGoDust[task]++;
+              dustBuf[dust_off] = Tp->DustP[n];
+            }
+#endif
+        }
+      partBuf[off] = Tp->P[n];
+      keyBuf[off]  = domain_key[n];
     }
 
-    if(Tp->P[n].getType() == 0)
-      {
-        num = toGoSph[task]++;
-        off         = send_sph_offset[task] + num;
-        sphBuf[off] = Tp->SphP[n];
-      }
-    else
-      {
-        num = toGoDM[task]++;
-        off = send_dm_offset[task] + num;
-
-  #ifdef DUST
-        // If this is a dust particle, also pack DustP
-        if(Tp->P[n].getType() == 6)
-          {
-            int dust_num = toGoDust[task]++;
-            int dust_off = send_dust_offset[task] + dust_num;
-            dustBuf[dust_off] = Tp->DustP[n];
-          }
-  #endif
-      }
-
-    partBuf[off] = Tp->P[n];
-    keyBuf[off]  = domain_key[n];
-  }
-
-  /**** now resize the storage for the P[] and SphP[] arrays if needed ****/
+  // ---- resize storage if needed ----
   domain_resize_storage(count_get_dm + count_get_sph, count_get_sph, 1);
 
-  /*****  space has been created, now we can do the actual exchange *****/
-
-  /* produce a flag if any of the send sizes is above our transfer limit, in this case we will
-   * transfer the data in chunks.
-   */
-
+  // ---- big-message flag ----
   int flag_big = 0, flag_big_all;
   for(int i = 0; i < NTask; i++)
     {
       if(toGoSph[i] * sizeof(sph_particle_data) > MPI_MESSAGE_SIZELIMIT_IN_BYTES)
         flag_big = 1;
-
       if(std::max<int>(toGoSph[i], toGoDM[i]) * sizeof(typename partset::pdata) > MPI_MESSAGE_SIZELIMIT_IN_BYTES)
         flag_big = 1;
-
 #ifdef DUST
       if(toGoDust[i] * sizeof(dust_data) > MPI_MESSAGE_SIZELIMIT_IN_BYTES)
         flag_big = 1;
 #endif
     }
-
   MPI_Allreduce(&flag_big, &flag_big_all, 1, MPI_INT, MPI_MAX, Communicator);
 
+  // ====================================================================
+  // Exchange
+  // ====================================================================
+
 #if 1
+  // ---------- primary path: myMPI_Alltoallv_new ----------
 #ifdef USE_MPIALLTOALLV_IN_DOMAINDECOMP
   int method = 0;
 #else
-#ifndef ISEND_IRECV_IN_DOMAIN /* synchronous communication */
+#ifndef ISEND_IRECV_IN_DOMAIN
   int method = 1;
 #else
-  int method = 2; /* asynchronous communication */
+  int method = 2;
 #endif
 #endif
+
   MPI_Datatype tp;
+
   MPI_Type_contiguous(sizeof(typename partset::pdata), MPI_CHAR, &tp);
   MPI_Type_commit(&tp);
   myMPI_Alltoallv_new(partBuf, toGoSph, send_sph_offset, tp, Tp->P, toGetSph, recv_sph_offset, tp, Communicator, method);
-  myMPI_Alltoallv_new(partBuf, toGoDM, send_dm_offset, tp, Tp->P, toGetDM, recv_dm_offset, tp, Communicator, method);
+  myMPI_Alltoallv_new(partBuf, toGoDM,  send_dm_offset,  tp, Tp->P, toGetDM,  recv_dm_offset,  tp, Communicator, method);
   MPI_Type_free(&tp);
-  
+
   MPI_Type_contiguous(sizeof(sph_particle_data), MPI_CHAR, &tp);
   MPI_Type_commit(&tp);
   myMPI_Alltoallv_new(sphBuf, toGoSph, send_sph_offset, tp, Tp->SphP, toGetSph, recv_sph_offset, tp, Communicator, method);
   MPI_Type_free(&tp);
 
 #ifdef DUST
-  // Receive dust data into temporary buffer (not directly into DustP)
-  dust_data *dustBuf_recv = NULL;
-  if(count_get_dust > 0)
-    dustBuf_recv = (dust_data *)Mem.mymalloc("dustBuf_recv", count_get_dust * sizeof(dust_data));
-  
-  if(count_togo_dust > 0 || count_get_dust > 0)
-    {
-      MPI_Type_contiguous(sizeof(dust_data), MPI_CHAR, &tp);
-      MPI_Type_commit(&tp);
-      myMPI_Alltoallv_new(dustBuf, toGoDust, send_dust_offset, tp, dustBuf_recv, toGetDust, recv_dust_offset, tp, Communicator, method);
-      MPI_Type_free(&tp);
-    }
+  // dustBuf_recv allocated AFTER dustBuf → must be freed BEFORE dustBuf (LIFO)
+  dust_data *dustBuf_recv =
+    (dust_data *)Mem.mymalloc("dustBuf_recv",
+        std::max(1, count_get_dust) * sizeof(dust_data));
 
-  // CRITICAL: Zero DustP for ALL gas particles FIRST (they should never have dust properties)
+  // Unconditional collective — every task must call this regardless of local counts
+  MPI_Type_contiguous(sizeof(dust_data), MPI_CHAR, &tp);
+  MPI_Type_commit(&tp);
+  myMPI_Alltoallv_new(dustBuf, toGoDust, send_dust_offset, tp,
+                      dustBuf_recv, toGetDust, recv_dust_offset, tp,
+                      Communicator, method);
+  MPI_Type_free(&tp);
+
+  // Zero DustP for all incoming gas slots
   for(int i = 0; i < count_get_sph; i++)
     memset(&Tp->DustP[i], 0, sizeof(dust_data));
 
-  // NOW copy DustP data to correct indices (AFTER all P[] exchanges are complete!)
-  if(count_get_dust > 0)
-    {
-      int dust_recv_idx = 0;
-      for(int i = count_get_sph; i < count_get_sph + count_get_dm; i++)
-        {
-          if(Tp->P[i].getType() == 6)
-            {
-              Tp->DustP[i] = dustBuf_recv[dust_recv_idx];
-              dust_recv_idx++;
-            }
-          else
-            {
-              // CRITICAL: Zero out DustP for non-dust particles!
-              memset(&Tp->DustP[i], 0, sizeof(dust_data));
-            }
-        }
-      
-      if(dust_recv_idx != count_get_dust)
-        Terminate("DUST: Received %d dust particles but expected %d", dust_recv_idx, count_get_dust);
-      
-      Mem.myfree(dustBuf_recv);
-    }
-  else
-    {
-      // No dust received - zero ALL DustP entries for DM particles
-      for(int i = count_get_sph; i < count_get_sph + count_get_dm; i++)
-        memset(&Tp->DustP[i], 0, sizeof(dust_data));
-    }
-#endif
-
-  MPI_Type_contiguous(sizeof(peanokey), MPI_CHAR, &tp);
-  MPI_Type_commit(&tp);
-  myMPI_Alltoallv_new(keyBuf, toGoSph, send_sph_offset, tp, domain_key, toGetSph, recv_sph_offset, tp, Communicator, method);
-  myMPI_Alltoallv_new(keyBuf, toGoDM, send_dm_offset, tp, domain_key, toGetDM, recv_dm_offset, tp, Communicator, method);
-  MPI_Type_free(&tp);
-
-
-#else
-  my_int_MPI_Alltoallv(partBuf, toGoSph, send_sph_offset, Tp->P, toGetSph, recv_sph_offset, sizeof(pdata), flag_big_all, Communicator);
-
-  my_int_MPI_Alltoallv(sphBuf, toGoSph, send_sph_offset, Tp->SphP, toGetSph, recv_sph_offset, sizeof(sph_particle_data), flag_big_all,
-                       Communicator);
-
-#ifdef DUST
-  // Receive dust data into temporary buffer
-  dust_data *dustBuf_recv = NULL;
-  if(count_get_dust > 0)
-    dustBuf_recv = (dust_data *)Mem.mymalloc("dustBuf_recv", count_get_dust * sizeof(dust_data));
-    
-  if(count_togo_dust > 0 || count_get_dust > 0)
-    my_int_MPI_Alltoallv(dustBuf, toGoDust, send_dust_offset, dustBuf_recv, toGetDust, recv_dust_offset, sizeof(dust_data), flag_big_all,
-                         Communicator);
-#endif
-
-  my_int_MPI_Alltoallv(keyBuf, toGoSph, send_sph_offset, domain_key, toGetSph, recv_sph_offset, sizeof(peanokey), flag_big_all,
-                       Communicator);
-
-  my_int_MPI_Alltoallv(partBuf, toGoDM, send_dm_offset, Tp->P, toGetDM, recv_dm_offset, sizeof(pdata), flag_big_all, Communicator);
-
-  my_int_MPI_Alltoallv(keyBuf, toGoDM, send_dm_offset, domain_key, toGetDM, recv_dm_offset, sizeof(peanokey), flag_big_all,
-                       Communicator);
-
-#ifdef DUST
-// CRITICAL: Zero DustP for ALL gas particles (they should never have dust properties)
-for(int i = 0; i < count_get_sph; i++)
-  memset(&Tp->DustP[i], 0, sizeof(dust_data));
-
-// NOW copy DustP data to correct indices (AFTER all P[] exchanges are complete!)
-if(count_get_dust > 0)
+  // Unpack: walk the DM/dust receive slots and assign DustP where type==6
   {
     int dust_recv_idx = 0;
     for(int i = count_get_sph; i < count_get_sph + count_get_dm; i++)
       {
         if(Tp->P[i].getType() == 6)
-          {
-            Tp->DustP[i] = dustBuf_recv[dust_recv_idx];
-            dust_recv_idx++;
-          }
+          Tp->DustP[i] = dustBuf_recv[dust_recv_idx++];
         else
-          {
-            // CRITICAL: Zero out DustP for non-dust particles!
-            memset(&Tp->DustP[i], 0, sizeof(dust_data));
-          }
+          memset(&Tp->DustP[i], 0, sizeof(dust_data));
       }
-      
-      if(dust_recv_idx != count_get_dust)
-        Terminate("DUST: Received %d dust particles but expected %d", dust_recv_idx, count_get_dust);
-      
-      Mem.myfree(dustBuf_recv);
-    }
-  else
-    {
-      // No dust received - zero ALL DustP entries for DM particles
-      for(int i = count_get_sph; i < count_get_sph + count_get_dm; i++)
-        memset(&Tp->DustP[i], 0, sizeof(dust_data));
-    }
+    if(dust_recv_idx != count_get_dust)
+      Terminate("DUST domain_exchange: unpacked %d but expected %d",
+                dust_recv_idx, count_get_dust);
+  }
+
+  Mem.myfree(dustBuf_recv);  // LIFO: allocated after dustBuf, freed before dustBuf
 #endif
 
+  MPI_Type_contiguous(sizeof(peanokey), MPI_CHAR, &tp);
+  MPI_Type_commit(&tp);
+  myMPI_Alltoallv_new(keyBuf, toGoSph, send_sph_offset, tp, domain_key, toGetSph, recv_sph_offset, tp, Communicator, method);
+  myMPI_Alltoallv_new(keyBuf, toGoDM,  send_dm_offset,  tp, domain_key, toGetDM,  recv_dm_offset,  tp, Communicator, method);
+  MPI_Type_free(&tp);
+
+#else
+  // ---------- fallback path: my_int_MPI_Alltoallv ----------
+  my_int_MPI_Alltoallv(partBuf, toGoSph, send_sph_offset, Tp->P,    toGetSph, recv_sph_offset, sizeof(pdata),             flag_big_all, Communicator);
+  my_int_MPI_Alltoallv(sphBuf,  toGoSph, send_sph_offset, Tp->SphP, toGetSph, recv_sph_offset, sizeof(sph_particle_data), flag_big_all, Communicator);
+
+#ifdef DUST
+  dust_data *dustBuf_recv =
+    (dust_data *)Mem.mymalloc("dustBuf_recv",
+        std::max(1, count_get_dust) * sizeof(dust_data));
+
+  // Unconditional collective
+  my_int_MPI_Alltoallv(dustBuf, toGoDust, send_dust_offset,
+                       dustBuf_recv, toGetDust, recv_dust_offset,
+                       sizeof(dust_data), flag_big_all, Communicator);
 #endif
+
+  my_int_MPI_Alltoallv(keyBuf, toGoSph, send_sph_offset, domain_key, toGetSph, recv_sph_offset, sizeof(peanokey), flag_big_all, Communicator);
+  my_int_MPI_Alltoallv(partBuf, toGoDM, send_dm_offset,  Tp->P,      toGetDM,  recv_dm_offset,  sizeof(pdata),    flag_big_all, Communicator);
+  my_int_MPI_Alltoallv(keyBuf,  toGoDM, send_dm_offset,  domain_key, toGetDM,  recv_dm_offset,  sizeof(peanokey), flag_big_all, Communicator);
+
+#ifdef DUST
+  // Zero DustP for all incoming gas slots
+  for(int i = 0; i < count_get_sph; i++)
+    memset(&Tp->DustP[i], 0, sizeof(dust_data));
+
+  // Unpack
+  {
+    int dust_recv_idx = 0;
+    for(int i = count_get_sph; i < count_get_sph + count_get_dm; i++)
+      {
+        if(Tp->P[i].getType() == 6)
+          Tp->DustP[i] = dustBuf_recv[dust_recv_idx++];
+        else
+          memset(&Tp->DustP[i], 0, sizeof(dust_data));
+      }
+    if(dust_recv_idx != count_get_dust)
+      Terminate("DUST domain_exchange (fallback): unpacked %d but expected %d",
+                dust_recv_idx, count_get_dust);
+  }
+
+  Mem.myfree(dustBuf_recv);  // LIFO: allocated after dustBuf, freed before dustBuf
+#endif
+
+#endif  // end primary/fallback branch
 
   Tp->NumPart = count_get_dm + count_get_sph;
   Tp->NumGas  = count_get_sph;
 
-  // Free in REVERSE order of allocation (LIFO for stack-based allocator)
+  // ---- free send buffers in REVERSE allocation order ----
+  // Allocation order was: partBuf, sphBuf, keyBuf, dustBuf
+  // Free order must be:   dustBuf, keyBuf, sphBuf, partBuf
 #ifdef DUST
-  if(dustBuf)
-    Mem.myfree(dustBuf);      // dustBuf allocated last, so free first
-  // dustBuf_recv already freed above
+  Mem.myfree(dustBuf);
 #endif
-
   Mem.myfree(keyBuf);
   Mem.myfree(sphBuf);
   Mem.myfree(partBuf);
 
+  // ---- free offset arrays in REVERSE allocation order ----
 #ifdef DUST
   Mem.myfree(recv_dust_offset);
   Mem.myfree(send_dust_offset);
 #endif
-
   Mem.myfree(recv_dm_offset);
   Mem.myfree(recv_sph_offset);
   Mem.myfree(send_dm_offset);
   Mem.myfree(send_sph_offset);
 
+  // ---- free count arrays in REVERSE allocation order ----
 #ifdef DUST
   Mem.myfree(toGetDust);
   Mem.myfree(toGoDust);
 #endif
-
   Mem.myfree(toGetSph);
   Mem.myfree(toGetDM);
   Mem.myfree(toGoSph);
   Mem.myfree(toGoDM);
 
   double t1 = Logs.second();
-
   domain_printf("DOMAIN: particle exchange done. (took %g sec)\n", Logs.timediff(t0, t1));
 }
 

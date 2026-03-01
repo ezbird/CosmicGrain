@@ -44,7 +44,17 @@
 
 #ifdef DUST
 #include "../dust/dust.h"
+#include "../cooling_sfr/spatial_hash_zoom.h"
+extern spatial_hash_zoom gas_hash, star_hash;
 #endif
+
+      // FOR DEBUGGING WHY multiple nodes on supercomputers is not working
+      #ifdef DUST
+      #define MPI_CHECKPOINT(tag) do { \
+        mpi_printf("CHECKPOINT: %s\n", tag); \
+        MPI_Barrier(Communicator); \
+      } while(0)
+      #endif
 
 /*!
  * Main driver routine for advancing the simulation forward in time.
@@ -124,9 +134,23 @@ void sim::run(void)
         Domain.domain_free();
 
         #ifdef DUST
+          //mpi_printf("DUST: before cleanup_invalid_dust_particles\n");
           cleanup_invalid_dust_particles(&Sp);
-          destroy_dust_particles(&Sp);
+          //mpi_printf("DUST: after cleanup_invalid_dust_particles\n");
+
+          //mpi_printf("DUST: before destroy_dust_particles\n");
+          //destroy_dust_particles(&Sp);
+          //mpi_printf("DUST: after destroy_dust_particles\n");
+
+          // CRITICAL: Array compaction above shifts particle indices.
+          // Mark the hash stale so update_dust_dynamics rebuilds it before
+          // the next neighbor search. Without this, the hash returns indices
+          // that now point to stars or wrong particles after compaction.
+          gas_hash.is_built = false;
+          star_hash.is_built = false;
+          //mpi_printf("DUST: spatial hashes invalidated after array compaction\n");
         #endif
+
 
         Sp.drift_all_particles();
 
@@ -145,6 +169,7 @@ void sim::run(void)
 
         NgbTree.treeallocate(Sp.NumGas, &Sp, &Domain);
         NgbTree.treebuild(Sp.NumGas, NULL);
+
       }
 
       /* compute SPH densities and smoothing lengths for active SPH particles, and optionally those
@@ -163,7 +188,11 @@ void sim::run(void)
       do_gravity_step_second_half();
 
       /* do any extra physics, in a Strang-split way, for the timesteps that are finished */
+      //mpi_printf("DEBUG: entering calculate_non_standard_physics_end_of_step\n");
+      MPI_Barrier(Communicator);
       calculate_non_standard_physics_end_of_step();
+      //mpi_printf("DEBUG: past calculate_non_standard_physics_end_of_step\n");
+      MPI_Barrier(Communicator);
 
 #ifdef DEBUG_MD5
       Logs.log_debug_md5("A");
@@ -207,13 +236,25 @@ void sim::run(void)
        * but it can change how they are distributed over timebins. */
       find_hydro_timesteps();
 
+
+
       #ifdef DUST
-        // Update dust physics - particles may be marked for destruction here
-        // but they won't be compacted until next domain decomposition
-        update_dust_dynamics(&Sp, All.TimeStep, Communicator);
-        dust_global_synchronization(&Sp, Communicator, LocalDustCreatedThisStep, 
-                                    LocalDustDestroyedThisStep, LocalDustMassChange);
+          //MPI_CHECKPOINT("before update_dust_dynamics");
+          update_dust_dynamics(&Sp, All.TimeStep, Communicator);
+          //MPI_CHECKPOINT("after update_dust_dynamics");
+          //MPI_CHECKPOINT("before dust_global_synchronization");
+          dust_global_synchronization(&Sp, Communicator,
+                                  LocalDustCreatedThisStep,
+                                  LocalDustDestroyedThisStep,
+                                  LocalDustMassChange);
+          //MPI_CHECKPOINT("after dust_global_synchronization");
+
+          // Reset per-step counters on every rank (important!)
+          LocalDustCreatedThisStep = 0.0;
+          LocalDustDestroyedThisStep = 0.0;
+          LocalDustMassChange = 0.0;
       #endif
+
 
       /* Print timebin distribution for diagnostics */
       print_timestep_distribution(); 
@@ -267,21 +308,21 @@ void sim::set_non_standard_physics_for_current_time(void)
  */
 void sim::calculate_non_standard_physics_end_of_step(void)
 {
-#ifdef COOLING
-#ifdef STARFORMATION
-  CoolSfr.cooling_and_starformation(&Sp);
-  CoolSfr.sfr_create_star_particles(&Sp);   // marks + spawns (no type flips for full conversions)
-#endif
-#endif
+  #ifdef COOLING
+  #ifdef STARFORMATION
+    CoolSfr.cooling_and_starformation(&Sp);
+    CoolSfr.sfr_create_star_particles(&Sp);
+  #endif
+  #endif
 
-#ifdef FEEDBACK
-  apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain);
-  feedback_diag_try_flush(Communicator, /*cadence=*/50);
-#endif
+  #ifdef FEEDBACK
+    apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain, Communicator);
+    feedback_diag_try_flush(Communicator, /*cadence=*/50);
+  #endif
 
-#ifdef MEASURE_TOTAL_MOMENTUM
-  Logs.compute_total_momentum();
-#endif
+  #ifdef MEASURE_TOTAL_MOMENTUM
+    Logs.compute_total_momentum();
+  #endif
 }
 
 /*! \brief checks whether the run must interrupted
@@ -550,9 +591,13 @@ void sim::create_snapshot_if_desired(void)
             Terminate("P[i].Ti_Current != All.Ti_Current");
 
 #if defined(STARFORMATION) && defined(FOF)
-        // do an extra domain decomposition here to make sure that there are no new stars among the block of gas particles
         NgbTree.treefree();
         Domain.domain_free();
+        #ifdef DUST
+          cleanup_invalid_dust_particles(&Sp);
+          gas_hash.is_built = false;
+          star_hash.is_built = false;
+        #endif
         Domain.domain_decomposition(STANDARD);
         NgbTree.treeallocate(Sp.NumGas, &Sp, &Domain);
         NgbTree.treebuild(Sp.NumGas, NULL);
@@ -579,6 +624,24 @@ void sim::create_snapshot_if_desired(void)
           }
 
         fof<simparticles> FoF{Communicator, &Sp, &Domain};
+
+        #ifdef DUST
+        /* Back up DustP by particle ID before SUBFIND scrambles it.
+         * SUBFIND's collective algorithm exchanges particles through split
+         * communicators without carrying DustP, corrupting grain data.
+         * After the return exchange P[i] is back in its original slot;
+         * we restore DustP[i] using this map. */
+        std::unordered_map<MyIDType, dust_data> dust_backup;
+        {
+          int ndust = 0;
+          for(int i = 0; i < Sp.NumPart; i++)
+            if(Sp.P[i].getType() == 6) ndust++;
+          dust_backup.reserve(ndust * 2);
+          for(int i = 0; i < Sp.NumPart; i++)
+            if(Sp.P[i].getType() == 6)
+              dust_backup[Sp.P[i].ID.get()] = Sp.DustP[i];
+        }
+        #endif
 
         FoF.fof_fof(All.SnapshotFileCount, "fof", "groups", 0);
 
@@ -637,6 +700,25 @@ void sim::create_snapshot_if_desired(void)
         Domain.particle_exchange_based_on_PS(Communicator);
 
         TIMER_STOP(CPU_FOF);
+
+        #ifdef DUST
+                /* Restore DustP now that particles are back in their original slots. */
+                for(int i = 0; i < Sp.NumPart; i++)
+                  if(Sp.P[i].getType() == 6)
+                    {
+                      auto it = dust_backup.find(Sp.P[i].ID.get());
+                      if(it != dust_backup.end())
+                        Sp.DustP[i] = it->second;
+                      else
+                        memset(&Sp.DustP[i], 0, sizeof(dust_data));
+                    }
+                dust_backup.clear();
+                /* cleanup_invalid call below is now just a sanity check, should find 0 */
+
+          cleanup_invalid_dust_particles(&Sp);
+          gas_hash.is_built = false;
+          star_hash.is_built = false;
+        #endif
 
         Mem.myfree(Sp.PS);
 #endif

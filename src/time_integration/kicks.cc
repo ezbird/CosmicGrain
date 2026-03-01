@@ -236,6 +236,11 @@ void sim::find_timesteps_and_do_gravity_step_first_half(void)
 
       Sp.timebins_get_bin_and_do_validity_checks(ti_step, &timebin, Sp.P[target].TimeBinGrav);
 
+      #ifdef DUST
+      if(Sp.P[target].getType() == 6 && timebin < 18)
+          timebin = 18;
+      #endif
+
       ti_step = timebin ? (((integertime)1) << timebin) : 0;
 
       Sp.TimeBinsGravity.timebin_move_particle(target, Sp.P[target].TimeBinGrav, timebin);

@@ -54,6 +54,7 @@ int SpatialHashDebugLevel;               // 0=off, 1=detailed output
   int DustEnableCreation;        // Dust creation from stellar feedback
   int DustEnableClumping;        // Clumping factor in growth
   int DustEnableAstration;        // Astration of dust particles
+  int DustEnableRadiationPressure; // Radiation pressure on dust grains
 
   int DustDebugLevel;               // 0=off, 1=detailed output
   int DustParticlesPerSNII;         // Number of dust particles to spawn per SNII event
