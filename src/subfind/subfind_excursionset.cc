@@ -55,7 +55,7 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
 
   FoFGravTree.treeallocate(Tp->NumPart, Tp, SubDomain);
   FoFGravTree.treebuild(NumPartGroup, IndexList);
-
+  
   /* determine the radius that encloses a certain number of link particles */
   subfind_find_linkngb(SubDomain, NumPartGroup, IndexList);
 

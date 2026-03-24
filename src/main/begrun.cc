@@ -421,13 +421,15 @@ void sim::set_units(void)
   #ifdef DUST
     mpi_printf("=== DUST PHYSICS CONFIGURATION ===\n");
     mpi_printf("  Dust creation:    %s\n", All.DustEnableCreation ? "ON" : "OFF");
+    mpi_printf("  Dust cooling:     %s\n", All.DustEnableCooling ? "ON" : "OFF");
+    mpi_printf("  Gas drag:         %s\n", All.DustEnableDrag ? "ON" : "OFF");
+    mpi_printf("  Grain growth:     %s\n", All.DustEnableGrowth ? "ON" : "OFF");
+    mpi_printf("  Clumping:         %s\n", All.DustEnableClumping ? "ON" : "OFF");
+    mpi_printf("  Coagulation:      %s\n", All.DustEnableCoagulation ? "ON" : "OFF");
     mpi_printf("  Sputtering:       %s\n", All.DustEnableSputtering ? "ON" : "OFF");
     mpi_printf("  Shock destruction: %s\n", All.DustEnableShockDestruction ? "ON" : "OFF");
     mpi_printf("  Astration:        %s\n", All.DustEnableAstration ? "ON" : "OFF");
-    mpi_printf("  Gas drag:         %s\n", All.DustEnableDrag ? "ON" : "OFF");
     mpi_printf("  Radiation pressure: %s\n", All.DustEnableRadiationPressure ? "ON" : "OFF");
-    mpi_printf("  Grain growth:     %s\n", All.DustEnableGrowth ? "ON" : "OFF");
-    mpi_printf("  Clumping:         %s\n", All.DustEnableClumping ? "ON" : "OFF");
     mpi_printf("==================================\n\n");
   #endif
 

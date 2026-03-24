@@ -5,6 +5,7 @@ output_*/
 snapdir_*/
 ICs/
 examples/
+documentation/
 
 # Python venvs
 .venv/

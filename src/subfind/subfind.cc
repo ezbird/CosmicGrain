@@ -317,6 +317,7 @@ void fof<partset>::subfind_find_subhalos(int num, const char *basename, const ch
   Mem.myfree(count_task);
   Mem.myfree(count_loc_task);
 
+
   #ifdef DUST
     /* Pin dust particles to their current task. SUBFIND has no use for dust
     * particles and moving them through the SubComm exchanges (which operate
@@ -407,14 +408,12 @@ void fof<partset>::subfind_find_subhalos(int num, const char *basename, const ch
         Mem.myfree(as);
 
         #ifdef DUST
-            /* Pin dust again — the density-sort above reassigned TargetTask for all
-            * particles including dust. SubComm covers only a subset of tasks so
-            * moving dust through it is both unnecessary and dangerous. */
-            for(int i = 0; i < Tp->NumPart; i++)
-              if(Tp->P[i].getType() == 6)
-                Tp->PS[i].TargetTask = SubThisTask;  // SubThisTask, not ThisTask, since we're in SubComm
+          // Block 2: after density-sort, before SubDomain->particle_exchange_based_on_PS(SubComm)
+          for(int i = 0; i < Tp->NumPart; i++)
+            if(Tp->P[i].getType() == 6)
+              Tp->PS[i].TargetTask = SubThisTask;
         #endif
-
+       
         SubDomain.particle_exchange_based_on_PS(SubComm);
 
         if(SubDomain.NumNodes != 0)

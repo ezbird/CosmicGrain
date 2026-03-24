@@ -31,12 +31,12 @@
 
 // Configuration constants for spatial hash behavior
 struct spatial_hash_config {
-  static constexpr int    MIN_CELLS_PER_DIM          = 8;
-  static constexpr int    MAX_CELLS_PER_DIM          = 768;
-  static constexpr int    MAX_TOTAL_CELLS             = 452984832;  // 768^3
-  static constexpr int    TARGET_PARTICLES_PER_CELL  = 32;
-  static constexpr double CELL_SIZE_SAFETY_FACTOR    = 2.5;
-  static constexpr double BBOX_PADDING_FACTOR        = 1.2;
+  static constexpr int       MIN_CELLS_PER_DIM         = 8;
+  static constexpr int       MAX_CELLS_PER_DIM         = 4096;
+  static constexpr long long MAX_TOTAL_CELLS            = 68719476736LL;  // 4096^3
+  static constexpr int       TARGET_PARTICLES_PER_CELL = 32;
+  static constexpr double    CELL_SIZE_SAFETY_FACTOR   = 2.5;
+  static constexpr double    BBOX_PADDING_FACTOR       = 1.2;
 };
 
 /**
@@ -64,7 +64,7 @@ struct spatial_hash_zoom {
   int total_particles;
 
   // Sparse cell storage: key = flat cell index, value = local gas particle indices
-  std::unordered_map<int, std::vector<int>> cells;
+  std::unordered_map<long long, std::vector<int>> cells;
 
   bool is_built;
 
@@ -103,28 +103,22 @@ struct spatial_hash_zoom {
     return n_cells;
   }
 
-  // -------------------------------------------------------------------------
-  // Always computes bounding box from gas particles, regardless of what
-  // particle type the hash will store. Gas traces the zoom region and
-  // provides the correct spatial extent for all hash types.
-  // -------------------------------------------------------------------------
-  void detect_extent_collective(simparticles *Sp, int local_gas, MPI_Comm comm)
+  void detect_extent_collective(simparticles *Sp, int part_type, MPI_Comm comm)
   {
     double local_min[3], local_max[3];
     for(int d = 0; d < 3; d++) { local_min[d] = 1e30; local_max[d] = -1e30; }
 
-    if(local_gas > 0) {
-      for(int i = 0; i < Sp->NumGas; i++) {
-        double pos[3];
-        Sp->intpos_to_pos(Sp->P[i].IntPos, pos);
-        for(int d = 0; d < 3; d++) {
-          if(pos[d] < local_min[d]) local_min[d] = pos[d];
-          if(pos[d] > local_max[d]) local_max[d] = pos[d];
-        }
+    // For gas use the fast contiguous path; for other types scan full array
+    int n_scan = (part_type == 0) ? Sp->NumGas : Sp->NumPart;
+    for(int i = 0; i < n_scan; i++) {
+      if(Sp->P[i].getType() != part_type) continue;
+      double pos[3];
+      Sp->intpos_to_pos(Sp->P[i].IntPos, pos);
+      for(int d = 0; d < 3; d++) {
+        if(pos[d] < local_min[d]) local_min[d] = pos[d];
+        if(pos[d] > local_max[d]) local_max[d] = pos[d];
       }
     }
-    // local_gas == 0: local_min/max stay at sentinel values,
-    // which are neutral elements for MPI_MIN/MPI_MAX reductions
 
     double global_min[3], global_max[3];
     MPI_Allreduce(local_min, global_min, 3, MPI_DOUBLE, MPI_MIN, comm);
@@ -135,7 +129,6 @@ struct spatial_hash_zoom {
       bbox_max[d] = global_max[d];
     }
 
-    // Pad bounding box by BBOX_PADDING_FACTOR so particles near the edges aren't missed
     for(int d = 0; d < 3; d++) {
       double center     = 0.5 * (bbox_min[d] + bbox_max[d]);
       double half_width = 0.5 * (bbox_max[d] - bbox_min[d]) *
@@ -149,7 +142,7 @@ struct spatial_hash_zoom {
   // -------------------------------------------------------------------------
   // Convert 3D position to flat cell index
   // -------------------------------------------------------------------------
-  int pos_to_cell_index(double pos[3]) const
+  long long pos_to_cell_index(double pos[3]) const
   {
     int ix = (int)std::floor((pos[0] - bbox_min[0]) / cell_size);
     int iy = (int)std::floor((pos[1] - bbox_min[1]) / cell_size);
@@ -186,7 +179,7 @@ struct spatial_hash_zoom {
 
     if(global_count == 0) { is_built = false; cells.clear(); return; }
 
-    detect_extent_collective(Sp, Sp->NumGas, comm);
+    detect_extent_collective(Sp, part_type, comm);
 
     n_cells_per_dim = calculate_optimal_cells(global_count, max_search_radius, softening);
     double max_bbox = std::max({bbox_size[0], bbox_size[1], bbox_size[2]});
@@ -287,10 +280,35 @@ struct spatial_hash_zoom {
                       int *n_neighbors, int max_neighbors) const
   {
     *n_neighbors = 0;
+
+
+    // TEMP — must be before any early returns
+    static int hash_diag_count = 0;
+    if(All.ThisTask == 0 && hash_diag_count < 200) {
+        double pos_tmp[3];
+        Sp->intpos_to_pos(Sp->P[idx].IntPos, pos_tmp);
+        bool outside = false;
+        for(int d = 0; d < 3; d++)
+            if(pos_tmp[d] < bbox_min[d] || pos_tmp[d] > bbox_max[d]) { outside = true; break; }
+        printf("[HASH_DIAG|T=%d] #%d is_built=%d search_r=%.4e cell_size=%.4e ratio=%.2f "
+               "outside=%d pos=[%.3e,%.3e,%.3e] bbox=[%.3e,%.3e]\n",
+               All.ThisTask, hash_diag_count, (int)is_built, search_radius, cell_size,
+               cell_size > 0 ? search_radius/cell_size : -1.0,
+               (int)outside, pos_tmp[0], pos_tmp[1], pos_tmp[2],
+               bbox_min[0], bbox_max[0]);
+        hash_diag_count++;
+    }
+
+
+
     if(!is_built) return;
 
     double pos[3];
     Sp->intpos_to_pos(Sp->P[idx].IntPos, pos);
+
+
+
+
 
     for(int d = 0; d < 3; d++)
       if(pos[d] < bbox_min[d] || pos[d] > bbox_max[d]) return;
@@ -334,6 +352,9 @@ struct spatial_hash_zoom {
                 count++;
               } else {
                 *n_neighbors = count;
+
+
+                
                 return;
               }
             }
@@ -342,7 +363,13 @@ struct spatial_hash_zoom {
       }
     }
 
+
+
+
     *n_neighbors = count;
+
+
+    
   }
 
   // -------------------------------------------------------------------------

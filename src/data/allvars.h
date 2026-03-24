@@ -48,10 +48,13 @@ int SpatialHashDebugLevel;               // 0=off, 1=detailed output
 
   // Dust physics switches (1=on, 0=off)
   int DustEnableSputtering;      // Thermal erosion
+  int DustEnableShattering;
   int DustEnableShockDestruction; // SN shock destruction/erosion  
   int DustEnableDrag;            // Gas-dust drag coupling
   int DustEnableGrowth;          // Grain growth (accretion)
   int DustEnableCreation;        // Dust creation from stellar feedback
+  int DustEnableCoagulation;
+  int DustEnableCooling;         // Dust cooling via thermal emission
   int DustEnableClumping;        // Clumping factor in growth
   int DustEnableAstration;        // Astration of dust particles
   int DustEnableRadiationPressure; // Radiation pressure on dust grains
@@ -69,12 +72,11 @@ int SpatialHashDebugLevel;               // 0=off, 1=detailed output
   double DustOffsetMaxSNII;         // Maximum of sphere around SN to spawn dust particles [kpc]
   double DustOffsetMinAGB;          // Minimum of sphere around AGB to spawn dust particles [kpc]
   double DustOffsetMaxAGB;          // Maximum of sphere around AGB to spawn dust particles [kpc]
-  //double DustOrphanCleanupCenterX, DustOrphanCleanupCenterY, DustOrphanCleanupCenterZ; // Fixed center for orphan dust cleanup [kpc]
-  //double DustClumpingFactor;        // Subgrid clumping factor for dust grain growth
-
-  int DustEnableCoagulation;
-  double DustCoagulationDensityThresh;
+  double DustAccommodationCoeff;    // Thermal accommodation coefficient for gas-grain collisions (alpha in Hollenbach & McKee 1979, ApJS 41 555)
+  double DustShockAmbientDensity;   // Ambient density for shock destruction calculations (g/cm^3)
+  double DustCollisionDensityThresh;
   double DustCoagulationCalibration;
+  double DustShatteringCalibration;
   double DustCoagulationMaxSize;
 #endif
 

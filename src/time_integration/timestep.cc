@@ -68,7 +68,6 @@ void sim::find_hydro_timesteps(void)
 
 void simparticles::assign_hydro_timesteps(void)
 {
-  /* Now assign new timesteps for the hydro particles that are synchronized */
   for(int i = 0; i < TimeBinsHydro.NActiveParticles; i++)
     {
       int target = TimeBinsHydro.ActiveParticleList[i];
@@ -83,12 +82,27 @@ void simparticles::assign_hydro_timesteps(void)
           timebins_get_bin_and_do_validity_checks(ti_step, &bin, P[target].getTimeBinHydro());
 
 #ifdef SELFGRAVITY
-          /* we enforce that the hydro timestep is nested inside the gravity step */
           if(bin > P[target].TimeBinGrav)
             bin = P[target].TimeBinGrav;
 #endif
 
           TimeBinsHydro.timebin_move_particle(target, P[target].getTimeBinHydro(), bin);
+
+          /* ---- BIN_FLOOR diagnostic ---- */
+          if(bin <= 13) {
+            double u_cgs = get_utherm_from_entropy(target) 
+               * All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s;
+            double T = u_cgs / (1.5 * BOLTZMANN / (0.62 * PROTONMASS));
+            double nH = SphP[target].Density * All.cf_a3inv
+                        * All.UnitDensity_in_cgs * HYDROGEN_MASSFRAC / PROTONMASS;
+            static long long bin_floor_hits = 0;
+            if(++bin_floor_hits % 100 == 0 && All.ThisTask == 0)
+              printf("[BIN_FLOOR|Step=%d] bin=%d T=%.2e K nH=%.2e cm^-3 "
+                     "h=%.3f kpc SFR=%.2e count=%lld\n",
+                     All.NumCurrentTiStep, bin, T, nH,
+                     SphP[target].Hsml, SphP[target].Sfr, bin_floor_hits);
+          }
+          /* ------------------------------ */
 
           P[target].setTimeBinHydro(bin);
         }
@@ -356,7 +370,6 @@ integertime simparticles::get_timestep_hydro(int p /*!< particle index */)
   double dt_kin = sqrt(2 * All.ErrTolIntAccuracy * All.cf_atime * SphP[p].Hsml / ac);
 
   /* calculate local Courant timestep and treebased maximum timestep in physical units */
-
   double dt_courant = (All.cf_atime / All.cf_afac3) * All.CourantFac * 2.0 * SphP[p].Hsml / (SphP[p].MaxSignalVel + MIN_FLOAT_NUMBER);
 
   double dt_treebased = (All.cf_atime / All.cf_afac3) * SphP[p].CurrentMaxTiStep;

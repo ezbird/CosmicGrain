@@ -381,6 +381,30 @@ void sim::init(int RestartSnapNum)
   recreate_unique_ids();
 #endif
 
+#ifdef DUST
+  // Ensure All.MaxID is globally correct before any dust particle creation.
+  // Without this, dust spawned after a restart gets IDs starting from 0
+  // (the uninitialized value) and collides with existing gas/star IDs.
+  {
+    MyIDType local_maxid = 0;
+    for(int i = 0; i < Sp.NumPart; i++)
+      if(Sp.P[i].ID.get() > local_maxid)
+        local_maxid = Sp.P[i].ID.get();
+
+    MyIDType *tmp = (MyIDType *)Mem.mymalloc("tmp", NTask * sizeof(MyIDType));
+    MPI_Allgather(&local_maxid, sizeof(MyIDType), MPI_BYTE, tmp, sizeof(MyIDType), MPI_BYTE, Communicator);
+
+    MyIDType global_maxid = 0;
+    for(int i = 0; i < NTask; i++)
+      if(tmp[i] > global_maxid)
+        global_maxid = tmp[i];
+
+    Mem.myfree(tmp);
+    All.MaxID = global_maxid;
+    mpi_printf("INIT: All.MaxID initialized to %lld\n", (long long)All.MaxID);
+  }
+#endif
+
   test_id_uniqueness();
 
   Domain.domain_decomposition(STANDARD); /* do initial domain decomposition (gives equal numbers of particles) */

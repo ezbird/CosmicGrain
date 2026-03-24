@@ -349,7 +349,7 @@ def analyze_dust_distribution(halo, halo_pos):
     }
 
 
-def plot_radial_profiles(profile, halo_mass, redshift, dust_analysis=None, output_file=None):
+def plot_radial_profiles(profile, halo_mass, redshift, dust_analysis=None, output_file=None, show_plot=0):
     """Create comprehensive radial profile plots with temperature-filtered ratios."""
     
     fig = plt.figure(figsize=(18, 12))
@@ -542,7 +542,10 @@ Gas (warm ISM):     {profile['gas_count_warm'].sum():,}
         plt.savefig(output_file, dpi=150, bbox_inches='tight')
         print(f"\nSaved: {output_file}")
     
-    plt.show()
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 def main():
@@ -555,7 +558,9 @@ def main():
                        help='Output filename')
     parser.add_argument('--rmax', type=float, default=200, 
                        help='Maximum radius for analysis (kpc). Default: 200')
-    
+    parser.add_argument('--show_plot', type=int, default=0,
+                    help='Show plot interactively (1=yes, 0=no). Default: 0')
+
     args = parser.parse_args()
     
     print("="*60)
@@ -605,7 +610,8 @@ def main():
     print("\nCreating plots...")
     plot_radial_profiles(profile, halo_mass, redshift, 
                         dust_analysis=dust_analysis, 
-                        output_file=args.out)
+                        output_file=args.out,
+                        show_plot=args.show_plot)
     
     # Save data
     npz_file = args.out.replace('.png', '.npz')

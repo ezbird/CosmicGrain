@@ -203,16 +203,19 @@ void global_data_all_processes::register_parameters(void)
 
 #ifdef DUST
   add_param("DustEnableSputtering", &DustEnableSputtering, PARAM_INT, PARAM_FIXED);
+  add_param("DustEnableShattering", &DustEnableShattering, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableShockDestruction", &DustEnableShockDestruction, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableDrag", &DustEnableDrag, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableGrowth", &DustEnableGrowth, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableCreation", &DustEnableCreation, PARAM_INT, PARAM_FIXED);
+  add_param("DustEnableCooling", &DustEnableCooling, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableClumping", &DustEnableClumping, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableAstration", &DustEnableAstration, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableRadiationPressure", &DustEnableRadiationPressure, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableCoagulation", &DustEnableCoagulation, PARAM_INT, PARAM_FIXED);
-  add_param("DustCoagulationDensityThresh", &DustCoagulationDensityThresh, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustCollisionDensityThresh", &DustCollisionDensityThresh, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustCoagulationCalibration", &DustCoagulationCalibration, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustShatteringCalibration", &DustShatteringCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustCoagulationMaxSize", &DustCoagulationMaxSize, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustDebugLevel", &DustDebugLevel, PARAM_INT, PARAM_FIXED);
   add_param("DustParticlesPerSNII", &DustParticlesPerSNII, PARAM_INT, PARAM_FIXED);
@@ -223,6 +226,8 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustYieldSNII", &DustYieldSNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustYieldAGB", &DustYieldAGB, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustGrowthCalibration", &DustGrowthCalibration, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustAccommodationCoeff", &DustAccommodationCoeff, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustShockAmbientDensity", &DustShockAmbientDensity, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMinSNII", &DustOffsetMinSNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMaxSNII", &DustOffsetMaxSNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMinAGB", &DustOffsetMinAGB, PARAM_DOUBLE, PARAM_FIXED);

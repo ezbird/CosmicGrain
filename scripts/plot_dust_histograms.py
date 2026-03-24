@@ -160,7 +160,9 @@ def main():
     parser.add_argument('--dpi', type=int, default=150, help='Output DPI')
     parser.add_argument('--figsize', type=float, nargs=2, default=[14, 9], 
                         help='Figure size in inches (width height)')
-    
+    parser.add_argument('--show_plot', type=int, default=0,
+                    help='Show plot interactively (1=yes, 0=no). Default: 0')
+
     args = parser.parse_args()
     
     print("="*60)
@@ -359,7 +361,10 @@ def main():
     print(f"Temperature (K):      min={dust_temp.min():.1f}, max={dust_temp.max():.1f}, median={np.median(dust_temp):.1f}")
     print(f"Age (Gyr):            min={dust_age_gyr.min():.3f}, max={dust_age_gyr.max():.3f}, median={np.median(dust_age_gyr):.3f}")
     
-    plt.show()
+    if args.show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 if __name__ == "__main__":

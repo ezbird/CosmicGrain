@@ -617,7 +617,7 @@ double coolsfr::CoolingRate(double logT, double rho, double *nelec, gas_state *g
                   }
 
                 // metal_lambda is in erg cm^3 s^-1, already in units of Lambda
-                Lambda += metal_lambda * gs->nHcgs;  // Scale by hydrogen density
+                Lambda += metal_lambda;
               }
       #endif
 
@@ -934,6 +934,37 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
 
   double unew    = DoCooling(std::max<double>(All.MinEgySpec, utherm), dens * All.cf_a3inv, dtime, &ne, gs, DoCool);
   Sp->SphP[i].Ne = ne;
+
+  #ifdef DUST
+  if(Sp->SphP[i].DustSurfDensLocal > 0)
+  {
+      double ne_temp = Sp->SphP[i].Ne;
+      double rho_cgs = dens * All.cf_a3inv
+                    * All.UnitDensity_in_cgs
+                    * All.HubbleParam * All.HubbleParam;
+      double u_cgs   = unew * All.UnitPressure_in_cgs / All.UnitDensity_in_cgs;
+      double T_gas   = convert_u_to_temp(u_cgs, rho_cgs, &ne_temp, gs, DoCool);
+      double T_dust  = Sp->SphP[i].DustTempLocal;
+
+      if(T_gas > T_dust && T_gas > 0)
+      {
+          double nH_cgs    = GasState.XH * rho_cgs / PROTONMASS;
+          double v_th      = sqrt(8.0 * BOLTZMANN * T_gas / (M_PI * PROTONMASS));
+          double alpha_acc = All.DustAccommodationCoeff;
+
+          // erg s^-1 cm^-3
+          double Lambda_gd = Sp->SphP[i].DustSurfDensLocal
+                          * 2.0 * BOLTZMANN * (T_gas - T_dust)
+                          * v_th * alpha_acc * nH_cgs;
+
+          // specific energy change in code units
+          double du_gd = -(Lambda_gd / rho_cgs) * dtime
+                      * (All.UnitDensity_in_cgs / All.UnitPressure_in_cgs);
+
+          unew = std::max(All.MinEgySpec, unew + du_gd);
+      }
+  }
+  #endif
 
   if(unew < 0)
     Terminate("invalid temperature: i=%d unew=%g\n", i, unew);

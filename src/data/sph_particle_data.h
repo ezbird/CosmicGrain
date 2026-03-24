@@ -108,6 +108,12 @@ struct sph_particle_data : public sph_particle_data_hydrocore
                  indirectly mean molecular weight. */
 #endif
 
+#ifdef DUST
+  // Need these 2 for dust to cool gas
+  MyFloat DustTempLocal;       /*!< dust temperature interpolated from nearby PartType6 particles */
+  MyFloat DustSurfDensLocal;   /*!< local grain cross-section density sum(n_d * pi * a^2), cgs */
+#endif
+
 #ifdef OUTPUT_COOLHEAT
   MyFloat CoolHeat;
 #endif

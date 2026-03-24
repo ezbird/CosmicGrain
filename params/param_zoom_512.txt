@@ -1,7 +1,7 @@
 %----  Relevant files --------------------------------------------------
 
 InitCondFile         ICs/IC_zoom_512_halo569_50Mpc_music_ellipsoid_with_dust
-OutputDir            ./1_output_512
+OutputDir            ./7_output_512
 SnapshotFileBase     snapshot
 OutputListFilename   output_snapshots.txt
 TreecoolFile         data/TREECOOL_fg_dec11
@@ -141,14 +141,16 @@ MinEgySpec            0.1        % K; 0.1 is 10 K (depends on whether neutral or
 %---- Dust physics switches (1=enable, 0=disable) --------------------------------------------------
 
 DustEnableCreation          1
+DustEnableCooling           1
 DustEnableDrag              1
-DustEnableGrowth            0
-DustEnableClumping          0
-DustEnableCoagulation       0        % Enable grain coagulation in dense gas
-DustEnableSputtering        0
-DustEnableShockDestruction  0
-DustEnableAstration         0
-DustEnableRadiationPressure 0
+DustEnableGrowth            1
+DustEnableClumping          1
+DustEnableCoagulation       1        % Enable grain coagulation in dense gas
+DustEnableSputtering        1
+DustEnableShattering        1
+DustEnableShockDestruction  1
+DustEnableAstration         1
+DustEnableRadiationPressure 1
 
 %---- Dust Model Parameters --------------------------------------------------
 
@@ -160,16 +162,27 @@ DustVelocitySNII               30.0     % Velocity kick for Type II SN dust in a
 DustVelocityAGB                10.0     % Velocity kick for AGB wind dust in addition to the star's velocity  (km/s)
 DustYieldSNII                  0.2      % Dust mass fraction from Type II SN; 10% of metals → dust (Todini & Ferrara 2001)
 DustYieldAGB                   0.4      % Dust mass fraction from AGB stars; 20% of metals → dust (Zhukovska et al. 2008)
-DustGrowthCalibration          0.1      % Lower = faster growth; Calibration factor for growth timescale; 1.0 = Asano+2013 prescription; Tune to match observed D/Z evolution
+DustGrowthCalibration          0.05     % Calibration factor for growth timescale; Lower = faster growth; 
+                                        % Tune to match observed D/Z evolution; 1.0 = Asano+2013 prescription; 
+                                        % consider doubling with every resolution jump: 0.05 at 512^3, 0.1 at 1024^3, etc; could maybe tie to local Jeans length rather than a fixed calibration?
 DustOffsetMinSNII              0.02     % kpc; Minimum offset of new dust from the parent supernova
 DustOffsetMaxSNII              0.10     % kpc; Maximum
 DustOffsetMinAGB               0.01     % kpc; Minimum offset of new dust from the parent AGB star (gentler winds, closer to star)
 DustOffsetMaxAGB               0.05     % kpc; Maximum
-DustParticlesPerSNII           1        % Num of dust particles created per Type II SN; Recommended: 6-12 for science runs, 3-5 for tests
-DustParticlesPerAGB            1        % Num of dust particles created per AGB star; Recommended: 8-15 for science runs, 4-8 for tests
-DustCoagulationDensityThresh   100.0    % cm^-3; Minimum density for coagulation (GMC: ~100-1000 cm^-3)
-DustCoagulationCalibration     1.0      % Calibration factor for coagulation timescale (1.0 = fiducial)
+DustParticlesPerSNII           7        % Num of dust particles created per Type II SN; Recommended: 6-12 for science runs, 3-5 for tests
+DustParticlesPerAGB            10        % Num of dust particles created per AGB star; Recommended: 8-15 for science runs, 4-8 for tests
+%DustCoagulationDensityThresh   100.0    % cm^-3; Minimum density for coagulation (GMC: ~100-1000 cm^-3)
+
+DustCollisionDensityThresh     50.0     % The transition density where dust grains either coagulate (<) or shatter (>)
+
+DustCoagulationCalibration     1.0      % These 2 calibration factors let us tune the effective rate without changing the functional form (1.0 = fiducial)
+DustShatteringCalibration      1.0      % Adjust due to assumptions about grain size distributions, velocity dispersions, sticking coefficients, etc 
 DustCoagulationMaxSize         1000.0   % nm; Maximum grain size from coagulation (1 micron)
+
+DustAccommodationCoeff         0.3      % Thermal accommodation coefficient for gas-grain collisions (alpha in
+                                        % Hollenbach & McKee 1979, ApJS 41 555). Fraction of kinetic energy
+                                        % transferred per collision; 0.3 is the standard value for silicate/
+                                        % carbonaceous grains in the warm neutral medium. Range ~0.1-0.5.
 
 #DustClumpingFactor             30        % parameter "C" from Hopkins & Lee 2016; without it, accretion is too slow in subgrid MCs
 #DustOrphanCleanupCenterX       23937.27  % kpc; halo X coordinate; use for zooms where you know the center so orphan removal has fixed center point

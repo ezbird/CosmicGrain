@@ -126,6 +126,10 @@ class nearest_comm : public generic_comm<nearest_in, nearest_out, T_tree, T_doma
 
                 no = Tree->get_nextnodep(shmrank)[no]; /* note: here shmrank cannot change */
 
+                /* ── DUST FIX: skip custom dust particles from link-neighbor count ── */
+                if(P->getType() == 6)
+                  continue;
+
                 double dxyz[3];
                 Tp->nearest_image_intpos_to_pos(P->IntPos, intpos, dxyz); /* converts the integer distance to floating point */
 
@@ -143,8 +147,16 @@ class nearest_comm : public generic_comm<nearest_in, nearest_out, T_tree, T_doma
                 if(r2 > h2)
                   continue;
 
+                /* ── DIAGNOSTIC: print before crash so we can see what triggered it ── */
                 if(numngb >= Tp->NumPart)
-                  Terminate("numngb >= Tp->NumPart");
+                  {
+                    printf("[SUBFIND_CRASH] numngb=%d >= NumPart=%d  target_type=%d  P_type=%d  hsml=%g\n",
+                          numngb, Tp->NumPart,
+                          (target >= 0) ? Tp->P[target].getType() : -1,
+                          P->getType(), hsml);
+                    myflush(stdout);
+                    Terminate("numngb >= Tp->NumPart");
+                  }
 
                 Dist2list[numngb++] = r2;
               }

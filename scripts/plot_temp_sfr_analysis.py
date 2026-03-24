@@ -327,7 +327,7 @@ def analyze_temperature_distribution(halo, halo_pos):
     }
 
 
-def plot_thermal_profiles(profile, halo_info, redshift, temp_analysis=None, output_file=None):
+def plot_thermal_profiles(profile, halo_info, redshift, temp_analysis=None, output_file=None, show_plot=0):
     """Create comprehensive temperature and SFR plots."""
     
     fig = plt.figure(figsize=(16, 10))
@@ -529,7 +529,10 @@ SF gas cells:  {profile['star_count'].sum():,}
         plt.savefig(output_file, dpi=150, bbox_inches='tight')
         print(f"\nSaved: {output_file}")
     
-    plt.show()
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 def print_focus_region_analysis(profile, r_min=40, r_max=60):
@@ -611,7 +614,9 @@ def main():
     parser.add_argument('--sfr-time-window', type=float, default=0.1,
                        help='Time window for SFR calculation (scale factor units). Default: 0.1. '
                             'Use larger values (e.g., 0.3) at low redshift.')
-    
+    parser.add_argument('--show_plot', type=int, default=0,
+                    help='Show plot interactively (1=yes, 0=no). Default: 0')
+
     args = parser.parse_args()
     
     print("="*60)
@@ -655,7 +660,8 @@ def main():
     print("\nCreating plots...")
     plot_thermal_profiles(profile, halo_info, redshift, 
                          temp_analysis=temp_analysis,
-                         output_file=args.out)
+                         output_file=args.out,
+                         show_plot=args.show_plot)
     
     # Save data
     npz_file = args.out.replace('.png', '.npz')

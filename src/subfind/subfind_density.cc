@@ -335,7 +335,7 @@ double fof<partset>::subfind_density(void)
       if(is_type_primary_link_type(Tp->P[i].getType()) || is_type_secondary_link_type(Tp->P[i].getType()))
         targetlist[ntodo++] = i;
 #else
-      if(Tp->PS[i].GroupNr.get() != HALONR_MAX) /* do it only for particles is in a group */
+      if(Tp->PS[i].GroupNr.get() != HALONR_MAX && Tp->P[i].getType() != 6)   // exclude dust particles from density calculation and from target list!
         targetlist[ntodo++] = i;
 #endif
     }
@@ -488,6 +488,13 @@ void fof<partset>::subfind_density_hsml_guess(void) /* set the initial guess for
 
   for(int i = 0; i < Tp->NumPart; i++)
     {
+        if (Tp->P[i].getType() == 6)   // exclude dust particles from density calculation and from hsml guess!
+          {
+            Tp->PS[i].v.DM_Hsml = 0;
+            continue;
+          }
+
+
       if(is_type_primary_link_type(Tp->P[i].getType()))
         {
           int no = FoFGravTree.Father[i];

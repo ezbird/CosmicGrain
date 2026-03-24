@@ -144,7 +144,7 @@ if(tot_stars_spawned > 0 || tot_stars_converted > 0)
     for(int i = 0; i < Sp->NumPart; i++)
     {
         int ptype = Sp->P[i].getType();
-        if(ptype == 1 || ptype == 2 || ptype == 3 || ptype == 5)
+        if(ptype == 1 || ptype == 2 || ptype == 5)
             local_dm_mass += Sp->P[i].getMass();
     }
 
@@ -384,14 +384,15 @@ void coolsfr::make_star(simparticles *Sp, int i, double prob, MyDouble mass_of_s
 
           *sum_mass_stars += Sp->P[i].getMass();
           double hsml = Sp->SphP[i].Hsml;  // cache before conversion
-          convert_sph_particle_into_star(Sp, i, All.Time);
-          
+
           // ============================================================
-          // NEW: Consume dust by astration (gas → star locks up dust)
+          // Consume dust by astration (gas → star locks up dust)
           // ============================================================
           #ifdef DUST
           consume_dust_by_astration(Sp, i, mass_of_star, i, hsml);
           #endif
+
+          convert_sph_particle_into_star(Sp, i, All.Time);
         }
       else
         {

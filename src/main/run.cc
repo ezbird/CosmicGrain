@@ -45,7 +45,7 @@
 #ifdef DUST
 #include "../dust/dust.h"
 #include "../cooling_sfr/spatial_hash_zoom.h"
-extern spatial_hash_zoom gas_hash, star_hash;
+extern spatial_hash_zoom gas_hash, star_hash, dust_hash;
 #endif
 
       // FOR DEBUGGING WHY multiple nodes on supercomputers is not working
@@ -134,23 +134,11 @@ void sim::run(void)
         Domain.domain_free();
 
         #ifdef DUST
-          //mpi_printf("DUST: before cleanup_invalid_dust_particles\n");
           cleanup_invalid_dust_particles(&Sp);
-          //mpi_printf("DUST: after cleanup_invalid_dust_particles\n");
-
-          //mpi_printf("DUST: before destroy_dust_particles\n");
-          //destroy_dust_particles(&Sp);
-          //mpi_printf("DUST: after destroy_dust_particles\n");
-
-          // CRITICAL: Array compaction above shifts particle indices.
-          // Mark the hash stale so update_dust_dynamics rebuilds it before
-          // the next neighbor search. Without this, the hash returns indices
-          // that now point to stars or wrong particles after compaction.
+          destroy_dust_particles(&Sp);  // ← uncomment this
           gas_hash.is_built = false;
           star_hash.is_built = false;
-          //mpi_printf("DUST: spatial hashes invalidated after array compaction\n");
         #endif
-
 
         Sp.drift_all_particles();
 
@@ -188,11 +176,9 @@ void sim::run(void)
       do_gravity_step_second_half();
 
       /* do any extra physics, in a Strang-split way, for the timesteps that are finished */
-      //mpi_printf("DEBUG: entering calculate_non_standard_physics_end_of_step\n");
-      MPI_Barrier(Communicator);
+      //MPI_Barrier(Communicator);
       calculate_non_standard_physics_end_of_step();
-      //mpi_printf("DEBUG: past calculate_non_standard_physics_end_of_step\n");
-      MPI_Barrier(Communicator);
+      //MPI_Barrier(Communicator);
 
 #ifdef DEBUG_MD5
       Logs.log_debug_md5("A");
@@ -671,6 +657,20 @@ void sim::create_snapshot_if_desired(void)
 #endif
 #endif
 
+        // ── Pre-snapshot DustP restore ─────────────────────────────────────
+        // Particles are currently in SUBFIND order.  Restore DustP by ID
+        // so the snapshot contains correct grain data, not stale slot values.
+        #ifdef DUST
+        for(int i = 0; i < Sp.NumPart; i++)
+          if(Sp.P[i].getType() == 6)
+            {
+              auto it = dust_backup.find(Sp.P[i].ID.get());
+              if(it != dust_backup.end())
+                Sp.DustP[i] = it->second;
+              // if not found: newly created particle, leave as-is
+            }
+        #endif
+        
         if(All.DumpFlag_nextoutput)
           {
             snap_io Snap(&Sp, Communicator, All.SnapFormat);             /* get an I/O object */

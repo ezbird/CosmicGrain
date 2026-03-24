@@ -14,9 +14,6 @@
  *   FEEDBACK_LIMIT_DULOG   - Clamp |Δlog10 u| per heating event
  *   FEEDBACK_T_CAP         - Soft temperature cap for debugging
  *
- * Notes:
- *   - Stars store birth scale factor in P[i].StellarAge
- *   - Reservoir threshold tunable near try_release_reservoir (currently 0.0001*E_need)
  * ============================================================================ */
 
 #include "gadgetconfig.h"
@@ -118,9 +115,10 @@ static inline void diag_track_dulog(double a)   { if(a > FbDiag.max_abs_dulog) F
 
 
 // -------------------- Feedback Spatial Hash Rebuild -------------------------
+// BUILDS THREE SPATIAL HASHES: gas, star, and dust. Each hash is built only over the zoom region.
 // Shared between feedback and dust modules to avoid redundant neighbor searches.
-// Hash is built only over the zoom region, saving 99%+ memory.
-void rebuild_feedback_spatial_hash(simparticles *Sp, double max_search_radius, MPI_Comm comm)
+void rebuild_feedback_spatial_hash(simparticles *Sp, double max_search_radius, 
+                                    double dust_search_radius, MPI_Comm comm)
 {
   static double    total_rebuild_time  = 0.0;
   static int       rebuild_count       = 0;
@@ -142,8 +140,8 @@ void rebuild_feedback_spatial_hash(simparticles *Sp, double max_search_radius, M
 
   double t_start = MPI_Wtime();
   gas_hash.build(Sp, max_search_radius, All.SofteningTable[0], comm, 0);
-  star_hash.build(Sp, max_search_radius, All.SofteningTable[4], comm, 4);  // type 4 = stars
-  dust_hash.build(Sp, max_search_radius, All.SofteningTable[6], comm, 6);
+  star_hash.build(Sp, std::min(max_search_radius, 10.0), All.SofteningTable[4], comm, 4);  // type 4 = stars, capping to 10 kpc to avoid huge search radii at low z
+  dust_hash.build(Sp, dust_search_radius, All.SofteningTable[6], comm, 6);
   double t_end = MPI_Wtime();
 
   total_rebuild_time += (t_end - t_start);
@@ -494,27 +492,48 @@ static double deposit_energy_stochastic(simparticles *Sp,
 
     double u_new = u_old + du_code;
 
-#ifdef FEEDBACK_LIMIT_DULOG
-    double du_log10 = log10(u_new) - log10(u_old);
-    if(fabs(du_log10) > FEEDBACK_MAX_DULOG) {
-      double clamped = fb_clamp(du_log10, -FEEDBACK_MAX_DULOG, FEEDBACK_MAX_DULOG);
-      u_new = u_old * pow(10.0, clamped);
-      diag_track_dulog(fabs(clamped));
-    }
-#endif
+    
 
-#ifdef FEEDBACK_T_CAP
-    {
-      double T_new = ucode_to_TK(u_new);
-      if(T_new > FEEDBACK_T_CAP_K) {
-        double u_cap = TK_to_ucode(FEEDBACK_T_CAP_K);
-        if(u_cap < u_new) u_new = u_cap;
-      }
-    }
-#endif
+    
+
+    #ifdef FEEDBACK_LIMIT_DULOG
+        double du_log10 = log10(u_new) - log10(u_old);
+        if(fabs(du_log10) > FEEDBACK_MAX_DULOG) {
+          double clamped = fb_clamp(du_log10, -FEEDBACK_MAX_DULOG, FEEDBACK_MAX_DULOG);
+          u_new = u_old * pow(10.0, clamped);
+          diag_track_dulog(fabs(clamped));
+        }
+    #endif
+
+    #ifdef FEEDBACK_T_CAP
+        {
+          double T_new = ucode_to_TK(u_new);
+          if(T_new > FEEDBACK_T_CAP_K) {
+            double u_cap = TK_to_ucode(FEEDBACK_T_CAP_K);
+            if(u_cap < u_new) u_new = u_cap;
+          }
+        }
+    #endif
 
     const double u_max_particle = TK_to_ucode(1.0e8);
     if(u_new > u_max_particle) u_new = u_max_particle;
+
+      double h_j      = Sp->SphP[j].Hsml;
+      double T_new_K  = ucode_to_TK(u_new);
+      double cs_after = sqrt((5.0/3.0) * BOLTZMANN * T_new_K / (0.62 * PROTONMASS));
+      double h_j_cgs  = h_j * All.UnitLength_in_cm;
+      double dt_after = All.CourantFac * h_j_cgs / cs_after / All.UnitTime_in_s;
+
+      // Don't heat if it would push this particle below bin 14
+      const double DT_HYDRO_FLOOR = 1.41e-04;  // bin 14 dt in code units
+      if(dt_after < DT_HYDRO_FLOOR) {
+        //Sp->P[star_idx].EnergyReservoir += dE_code;  // bank it for later; (no, I think this is happening in apply feedback too)
+        static long long skips = 0;
+        if(++skips % 1000 == 0 && All.ThisTask == 0)
+          printf("[FB_COURANT_SKIP] %lld events banked: h=%.3f kpc T=%.2e K dt=%.2e\n",
+                skips, h_j, T_new_K, dt_after);
+        continue;
+      }
 
     Sp->set_entropy_from_utherm(u_new, j);
     set_thermodynamic_variables_safe(Sp, j);
@@ -595,6 +614,9 @@ static void apply_feedback_event(simparticles *Sp, ngbtree *Tree,
            All.ThisTask, star_i, leftover, Sp->P[star_i].EnergyReservoir);
 }
 
+/* This function attempts to release energy from a star's reservoir. 
+It was originally intended to diagnose trouble with feedback imparting too much energy
+too quickly and crashing the simulation, but it may be somewhat extraneous now. */
 static void try_release_reservoir(simparticles *Sp, ngbtree *Tree,
                                   domain<simparticles> *D, int star_i,
                                   int &particles_heated_global,
@@ -603,55 +625,172 @@ static void try_release_reservoir(simparticles *Sp, ngbtree *Tree,
   double E_code = Sp->P[star_i].EnergyReservoir;
   if(E_code <= 0) return;
 
+  const double E_floor_code = 1e46 / All.UnitEnergy_in_cgs;  // ~1e-7 code units
+  if(E_code < E_floor_code) return;
+
+  // Track diagnostics for the periodic FB_STATS printout
   reservoir_release_attempts++;
   if(E_code > reservoir_max_size) reservoir_max_size = E_code;
 
+  // =========================================================================
+  // Step 1: Find gas neighbors around this star.
+  //
+  // gather_neighbors() uses the spatial hash to find all gas particles within
+  // 2×hsml of the star. If none are found the star is isolated (e.g. kicked
+  // into a void by a previous feedback event), and we handle that separately.
+  // =========================================================================
   std::vector<int>    ngb;
   std::vector<double> dist;
   double hsml = 0;
   gather_neighbors(Sp, Tree, D, star_i, ngb, dist, hsml);
 
   if(ngb.empty()) {
-    // Isolated star — slowly vent energy rather than accumulating forever
-    if(E_code > 0.5) {
+    // Isolated star: no neighbors to heat. Rather than letting the reservoir
+    // grow without bound, slowly vent 2% per call. This energy is lost, but
+    // an isolated star has no physical channel to deposit it anyway.
+    // The "half a supernova" threshold prevents venting tiny numerical residuals.
+    if(E_code > (0.5 * (1e51 / All.UnitEnergy_in_cgs))) {
       double vented = E_code * 0.02;
       Sp->P[star_i].EnergyReservoir -= vented;
       diag_add_EfromRes(vented * All.UnitEnergy_in_cgs);
       static int vent_count = 0;
-      if(vent_count < 10 && All.ThisTask == 0) {
-        printf("[RESERVOIR_VENT] Star %d: isolated, venting %.2e\n", star_i, vented);
-        vent_count++;
-      }
+      if(vent_count < 10 && All.ThisTask == 0)
+        printf("[RESERVOIR_VENT] Star %d: isolated, venting %.2e (remaining %.2e)\n",
+               star_i, vented, Sp->P[star_i].EnergyReservoir);
+      vent_count++;
     }
     return;
   }
 
-  // Release threshold: need at least 0.0001× the energy to heat Nheat neighbors by ΔT
+  // =========================================================================
+  // Step 2: Compute E_need — the energy required to heat Nheat neighbors by
+  // DELTA_T_TARGET (the ΔT-target heating scheme from EAGLE).
+  //
+  // This is computed FIRST because it is needed by both the overflow vent
+  // check (Step 3) and the release threshold check (Step 4). Computing it
+  // once here avoids the use-before-initialization bug that results from
+  // placing the overflow check before this calculation.
+  //
+  // Nheat is the same clamp used in deposit_energy_stochastic so that
+  // E_need represents the actual heating budget, not a hypothetical one.
+  // =========================================================================
   int Nheat = fb_clamp((int)(ngb.size() / 8), HEAT_N_MIN, HEAT_N_MAX);
   if(Nheat < 1) Nheat = 1;
 
+  // Sample the first Nheat neighbors to estimate a representative gas mass.
+  // These are already sorted by distance from the star by the hash search,
+  // so this is a reasonable local average.
   double total_mass = 0.0;
   int n_sample = std::min(Nheat, (int)ngb.size());
   for(int i = 0; i < n_sample; i++) total_mass += Sp->P[ngb[i]].getMass();
-  double m_g_code = total_mass / n_sample;
+  double m_g_code = total_mass / n_sample;  // mean gas particle mass [code units]
 
+  // E_need: total thermal energy to raise Nheat particles by DELTA_T_TARGET.
+  // c_v(mu) = (3/2) k_B / (mu m_p), the specific heat at constant volume.
+  // The factor (m_g_code × UnitMass) converts mass to cgs for the c_v product.
   double E_need = (c_v(mu_default(DELTA_T_TARGET)) * DELTA_T_TARGET *
                    (m_g_code * All.UnitMass_in_g) * Nheat) / All.UnitEnergy_in_cgs;
 
-  if(E_code < 0.0001 * E_need) return;
+  // =========================================================================
+  // Step 3: Overflow vent — prevent indefinite reservoir accumulation in
+  // dense star-forming regions.
+  //
+  // The Courant-skip logic in deposit_energy_stochastic (which protects the
+  // timebin hierarchy by refusing to heat small-h particles) can cause
+  // reservoirs to grow without bound if ALL nearby gas cells are dense and
+  // small-h. Without this safety valve, a star embedded in a dense clump
+  // could accumulate unbounded energy and then dump it all at once when the
+  // clump disperses, causing a numerically violent heating event.
+  //
+  // If the reservoir exceeds MAX_RESERVOIR_FACTOR × E_need, we vent 5% per
+  // call directly to the largest-h (most diffuse) neighbor, bypassing the
+  // Courant floor. The T_cap is still respected. This is a deliberate
+  // numerical approximation: a slow continuous drain is physically and
+  // numerically better than an eventual catastrophic dump.
+  // =========================================================================
+  const double E_overflow = 100.0 * (1e51 / All.UnitEnergy_in_cgs);
+  if(E_code > E_overflow) {
+
+    double vented = E_code * 0.05;  // 5% per call — slow enough to be stable
+    Sp->P[star_i].EnergyReservoir -= vented;
+
+    // Find the neighbor with the largest smoothing length (most diffuse gas).
+    // Heating diffuse gas produces the longest post-heating Courant step and
+    // therefore causes the least damage to the timebin hierarchy.
+    int    best_j = ngb[0];
+    double best_h = 0.0;
+    for(int i = 0; i < (int)ngb.size(); i++) {
+      if(Sp->SphP[ngb[i]].Hsml > best_h) {
+        best_h = Sp->SphP[ngb[i]].Hsml;
+        best_j = ngb[i];
+      }
+    }
+
+    double u_old  = Sp->get_utherm_from_entropy(best_j);
+    double du_cgs = (vented * All.UnitEnergy_in_cgs)
+                    / (Sp->P[best_j].getMass() * All.UnitMass_in_g);
+    double du     = du_cgs / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
+
+    // Still respect the temperature cap even during forced venting
+    #ifdef FEEDBACK_T_CAP
+      double u_cap = TK_to_ucode(FEEDBACK_T_CAP_K);
+    #else
+      double u_cap = TK_to_ucode(1.0e8);  // same hard cap used elsewhere
+    #endif
+    double u_new = std::min(u_old + du, u_cap);
+
+    Sp->set_entropy_from_utherm(u_new, best_j);
+    set_thermodynamic_variables_safe(Sp, best_j);
+
+    diag_add_EfromRes(vented * All.UnitEnergy_in_cgs);
+    diag_add_Edep(vented * All.UnitEnergy_in_cgs);
+
+    static long long overflow_vents = 0;
+    overflow_vents++;
+    if(overflow_vents % 500 == 0 && All.ThisTask == 0)
+      printf("[RESERVOIR_OVERFLOW|T=%d|Step=%d] %lld overflow vents: "
+             "star=%d E_res=%.2e E_need=%.2e ratio=%.1f "
+             "vented_to=j=%d h=%.3f kpc T_after=%.2e K\n",
+             All.ThisTask, All.NumCurrentTiStep, overflow_vents,
+             star_i, E_code, E_need, E_code / E_need,
+             best_j, best_h, ucode_to_TK(u_new));
+
+    // Return after venting — don't also attempt a normal release this call.
+    // This keeps the logic clean: each call either vents (overflow) or
+    // does a normal stochastic release, never both.
+    return;
+  }
 
   reservoir_release_successes++;
 
+  // =========================================================================
+  // Step 4: Stochastic deposit.
+  //
+  // Release at most 2× E_need per call. This prevents a large accumulated
+  // reservoir from dumping all its energy in a single step (which would heat
+  // particles to extreme temperatures). The remainder stays in the reservoir
+  // and is released on subsequent calls.
+  //
+  // deposit_energy_stochastic() handles the Courant-skip logic internally:
+  // any energy it refuses to deposit (because the target particle's post-
+  // heating Courant step would be too short) is NOT reflected in `used`,
+  // so it naturally ends up back in the reservoir via the max(0, E_code-used)
+  // line below. No double-banking occurs.
+  // =========================================================================
   double E_to_release = std::min(E_code, E_need * 2.0);
   double used = deposit_energy_stochastic(Sp, ngb, dist, hsml, star_i,
-                                          E_to_release, 0.0,
+                                          E_to_release, /*MZ_code=*/0.0,
                                           particles_heated_global,
                                           max_particles_allowed);
 
   diag_add_EfromRes(used * All.UnitEnergy_in_cgs);
   diag_add_Edep(used * All.UnitEnergy_in_cgs);
+
+  // Update reservoir: subtract only what was actually deposited.
+  // Courant-skipped energy (not in `used`) stays in the reservoir automatically.
   Sp->P[star_i].EnergyReservoir = std::max(0.0, E_code - used);
 }
+
 
 // ---------------------------- Public API ------------------------------------
 
@@ -707,22 +846,23 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
   if(!global_has_stars)
     return;
 
-  // Compute typical smoothing length for hash build radius
   double max_radius = 10.0;
   if(Sp->NumGas > 0) {
     double h_sum  = 0;
     int    h_count = 0;
-
-      // Sample up to 100 gas particles evenly
-      int sample_stride = std::max(1, Sp->NumGas / 100);
-      for(int i = 0; i < Sp->NumGas && h_count < 100; i += sample_stride) {
-          if(Sp->SphP[i].Hsml > 0) { h_sum += Sp->SphP[i].Hsml; h_count++; }
-      }
-
+    int sample_stride = std::max(1, Sp->NumGas / 100);
+    for(int i = 0; i < Sp->NumGas && h_count < 100; i += sample_stride) {
+        if(Sp->SphP[i].Hsml > 0) { h_sum += Sp->SphP[i].Hsml; h_count++; }
+    }
     if(h_count > 0) max_radius = 2.5 * h_sum / h_count;
   }
 
-  rebuild_feedback_spatial_hash(Sp, max_radius, comm);
+  // Star hash only needs to cover local stellar interactions (radiation
+  // pressure, astration) — cap at 10 kpc so cell size stays ~few kpc
+  // rather than inheriting the full feedback search radius.
+  double star_hash_radius = std::min(max_radius, 10.0);
+
+  rebuild_feedback_spatial_hash(Sp, max_radius, 0.1, comm);
 
   // Reset per-call reservoir diagnostics
   reservoir_release_attempts  = 0;
@@ -776,7 +916,7 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
 
 #ifdef DUST
       create_dust_particles_from_feedback(Sp, p, MZ_code, 1);
-      destroy_dust_from_sn_shocks(Sp, p, E_code, MZ_code);
+      destroy_dust_from_sn_shocks(Sp, p, E_code, MZ_code, comm);
 #endif
 
       Sp->P[p].FeedbackFlag |= 1;

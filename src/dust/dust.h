@@ -38,7 +38,10 @@ extern long long NDustDestroyedByShock;
 extern long long NGrainGrowthEvents;
 extern long long NGrainErosionEvents;
 extern double    TotalMassGrown;
-extern double    TotalMassEroded;
+extern double TotalMassDestroyedByThermal; // full thermal destructions
+extern double TotalMassDestroyedByShock;   // full shock destructions
+extern double TotalMassErodedByThermal;    // partial sputtering events
+extern double TotalMassErodedByShock;      // partial shock erosion events
 
 // ========== CORE DUST FUNCTIONS (dust.cc) ==========
 
@@ -52,6 +55,7 @@ void cleanup_invalid_dust_particles(simparticles *Sp);
 
 // Dust dynamics and interaction
 void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator);
+void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double dt);
 int dust_gas_interaction(simparticles *Sp, int dust_idx, double dt);
 void dust_global_synchronization(simparticles *Sp, MPI_Comm Communicator,
                                  long long dust_created,
@@ -62,7 +66,6 @@ void dust_global_synchronization(simparticles *Sp, MPI_Comm Communicator,
 
 // Dust grain growth (subgrid model)
 void dust_grain_growth_subgrid(simparticles *Sp, int gas_idx, double dt);
-double estimate_molecular_fraction(double n_H, double Z, double T);
 
 // Grain growth in cold, dense ISM
 void dust_grain_growth(simparticles *Sp, int gas_idx, double dt);
@@ -70,16 +73,17 @@ void dust_grain_growth(simparticles *Sp, int gas_idx, double dt);
 // Gradual erosion functions
 int erode_dust_grain_thermal(simparticles *Sp, int dust_idx, double T_gas, double dt);
 int erode_dust_grain_shock(simparticles *Sp, int dust_idx, double shock_velocity_km_s, 
-                           double distance_to_sn, double shock_radius);
+                           double distance_to_sn, double shock_radius, int nearest_gas_hint);
 
 // ========== SHOCK DESTRUCTION ==========
 
 void destroy_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx, 
-                                 double sn_energy, double metals_produced);
+                                 double sn_energy, double metals_produced, MPI_Comm comm);
 double calculate_sn_shock_radius(double sn_energy_erg, double gas_density_cgs, double time_myr);
-double calculate_current_sn_shock_radius(simparticles *Sp, int sn_star_idx);
-double calculate_shock_velocity(double sn_energy_erg, double gas_density_cgs, double time_myr);
-double get_shock_destruction_efficiency(double shock_velocity_km_s);
+double calculate_current_sn_shock_radius(simparticles *Sp, int sn_star_idx,
+                                          double *out_density_cgs,
+                                          int    *out_nearest_gas);
+double get_shock_destruction_efficiency(double shock_velocity_km_s, double carbon_fraction);
 double get_size_dependent_destruction_efficiency(double shock_velocity_km_s, 
                                                  simparticles *Sp, int dust_idx);
 
@@ -96,9 +100,9 @@ double get_dust_destruction_rate(double temperature, double density);
 
 // ========== DIAGNOSTICS ==========
 
-void print_dust_statistics(simparticles *Sp);
+void print_dust_statistics(simparticles *Sp, MPI_Comm Communicator);
 void analyze_dust_gas_coupling(simparticles *Sp);
-void analyze_dust_gas_coupling_global(simparticles *Sp);
+void analyze_dust_gas_coupling_local(simparticles *Sp);
 void analyze_grain_size_distribution(simparticles *Sp);
 
 #endif /* DUST */
