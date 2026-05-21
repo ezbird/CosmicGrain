@@ -63,12 +63,19 @@ def compute_velocity_magnitude(velocities):
 
 
 def make_age_coded_histogram(ax, data, age_gyr, xlabel, title,
-                              bins=50, log_x=False, color_all='#BBBBBB'):
+                              bins=50, log_x=False, color_all='#BBBBBB',
+                              xlim=None):
     """
     Plot a histogram with overlaid age-bin histograms.
 
     The full population is drawn in light grey first, then age bins are
     overlaid oldest-first so the youngest bin sits on top visually.
+
+    Parameters
+    ----------
+    xlim : tuple (lo, hi) or None
+        If given, fixes both the bin range and the displayed x-axis limits.
+        For log_x panels, values are in data units (not log).
     """
     data    = np.asarray(data)
     age_gyr = np.asarray(age_gyr)
@@ -82,7 +89,7 @@ def make_age_coded_histogram(ax, data, age_gyr, xlabel, title,
         ax.set_title(title)
         return
 
-    # Build shared bin edges from the full population
+    # ── Build shared bin edges ────────────────────────────────────────────────
     if log_x:
         data_pos = data[data > 0]
         if len(data_pos) == 0:
@@ -90,19 +97,25 @@ def make_age_coded_histogram(ax, data, age_gyr, xlabel, title,
                     transform=ax.transAxes)
             ax.set_title(title)
             return
-        bin_edges = np.logspace(np.log10(data_pos.min()), np.log10(data_pos.max()), bins + 1)
+        if xlim is not None:
+            bin_edges = np.logspace(np.log10(xlim[0]), np.log10(xlim[1]), bins + 1)
+        else:
+            bin_edges = np.logspace(np.log10(data_pos.min()), np.log10(data_pos.max()), bins + 1)
         data_full = data_pos
         age_full  = age_gyr[data > 0]
     else:
-        bin_edges = np.linspace(data.min(), data.max(), bins + 1)
+        if xlim is not None:
+            bin_edges = np.linspace(xlim[0], xlim[1], bins + 1)
+        else:
+            bin_edges = np.linspace(data.min(), data.max(), bins + 1)
         data_full = data
         age_full  = age_gyr
 
-    # Full population (grey outline, behind everything)
+    # ── Full population (grey outline, behind everything) ─────────────────────
     ax.hist(data_full, bins=bin_edges, histtype='step',
             color='#999', linewidth=1.2, label='All')
 
-    # Draw oldest bin first so younger bins layer on top
+    # ── Draw oldest bin first so younger bins layer on top ────────────────────
     for (a_lo, a_hi, label, color) in reversed(AGE_BINS):
         mask   = (age_full >= a_lo) & (age_full < a_hi)
         subset = data_full[mask]
@@ -114,17 +127,19 @@ def make_age_coded_histogram(ax, data, age_gyr, xlabel, title,
     if log_x:
         ax.set_xscale('log')
 
+    if xlim is not None:
+        ax.set_xlim(xlim)
+
     ax.set_xlabel(xlabel, fontsize=10)
     ax.set_ylabel('Count', fontsize=10)
     ax.set_title(title, fontsize=11, fontweight='bold')
     ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.5)
 
-    # Stats box for full population
-    stats_text = (f'N = {len(data_full):,}\n'
-                  f'Median = {np.median(data_full):.2e}\n'
-                  f'Mean = {np.mean(data_full):.2e}')
-    ax.text(0.97, 0.97, stats_text, transform=ax.transAxes,
-            fontsize=7.5, va='top', ha='right',
+    # ── Stats box — top-left, larger font ────────────────────────────────────
+    stats_text = (f'Median = {np.median(data_full):.2e}\n'
+                  f'Mean   = {np.mean(data_full):.2e}')
+    ax.text(0.03, 0.97, stats_text, transform=ax.transAxes,
+            fontsize=9.5, va='top', ha='left',
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.85))
 
 
@@ -238,7 +253,7 @@ def main():
 
     # ── Figure ───────────────────────────────────────────────────────────────
     fig = plt.figure(figsize=args.figsize)
-    gs  = GridSpec(2, 3, figure=fig, hspace=0.38, wspace=0.3, top=0.87)
+    gs  = GridSpec(2, 3, figure=fig, hspace=0.30, wspace=0.3, top=0.83)
 
     ax1 = fig.add_subplot(gs[0, 0])
     ax2 = fig.add_subplot(gs[0, 1])
@@ -247,19 +262,21 @@ def main():
     ax5 = fig.add_subplot(gs[1, 1])
     ax6 = fig.add_subplot(gs[1, 2])
 
+    # xlim=(lo, hi) pins both the bin range and axis limits;
+    # None means derive limits from the data.
     panels = [
-        (ax1, grain_radius, 'Grain Radius (nm)',  'Grain Radius',       False),
-        (ax2, carbon_frac,  'Carbon Fraction',     'Carbon Fraction',    False),
-        (ax3, masses,       'Mass (M$_\\odot$)',    'Mass',               True),
-        (ax4, vel_mag,      'Velocity (km/s)',      'Velocity Magnitude', False),
-        (ax5, dust_temp,    'Temperature (K)',      'Temperature',        False),
-        (ax6, dust_age_gyr, age_xlabel,             age_title,            False),
+        (ax1, grain_radius, 'Grain Radius (nm)',   'Grain Radius',       False, None),
+        (ax2, carbon_frac,  'Carbon Fraction',      'Carbon Fraction',    False, None),
+        (ax3, masses,       'Mass (M$_\\odot$)',     'Mass',               True,  (1e-3, 1e5)),
+        (ax4, vel_mag,      'Velocity (km/s)',       'Velocity Magnitude', False, (0, 500)),
+        (ax5, dust_temp,    'Temperature (K)',       'Temperature',        False, (16, 19)),
+        (ax6, dust_age_gyr, age_xlabel,              age_title,            False, None),
     ]
 
-    for (ax, data, xlabel, title, log_x) in panels:
+    for (ax, data, xlabel, title, log_x, xlim) in panels:
         make_age_coded_histogram(ax, data, dust_age_gyr,
                                   xlabel=xlabel, title=title,
-                                  bins=args.bins, log_x=log_x)
+                                  bins=args.bins, log_x=log_x, xlim=xlim)
 
     # ── Shared legend — listed young→old to match intuitive reading order ────
     legend_handles = [
@@ -275,14 +292,16 @@ def main():
     fig.legend(handles=legend_handles,
                loc='upper center', ncol=len(legend_handles),
                fontsize=9, framealpha=0.9,
-               bbox_to_anchor=(0.5, 0.935))
+               bbox_to_anchor=(0.5, 0.905))
 
-    # ── Titles ───────────────────────────────────────────────────────────────
+    # ── Supra-figure titles ───────────────────────────────────────────────────
     halo_mass *= 1e10
     fig.text(0.5, 0.985, 'Dust Properties',
              fontsize=16, fontweight='bold', ha='center', va='top')
-    fig.text(0.5, 0.955,
-             f'Target Halo (M={halo_mass:.2e}, R<{rmax:.1f} kpc, z={redshift:.1f})',
+    fig.text(0.5, 0.958,
+             (f'Halo 569  $\\cdot$  $1024^3$  $\\cdot$  '
+              f'M$_{{200}}$={halo_mass:.2e} M$_\\odot$  $\\cdot$  '
+              f'R$<${rmax:.0f} kpc  $\\cdot$  z={redshift:.2f}'),
              fontsize=10, ha='center', va='top')
 
     plt.savefig(args.out, dpi=args.dpi, bbox_inches='tight')

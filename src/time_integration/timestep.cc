@@ -30,6 +30,10 @@
 #include "../time_integration/driftfac.h"
 #include "../time_integration/timestep.h"
 
+#ifdef DUST
+#include "../dust/dust.h"
+#endif
+
 /*! This function advances the system in momentum space, i.e. it does apply the 'kick' operation after the
  *  forces have been computed. Additionally, it assigns new timesteps to particles. At start-up, a
  *  half-timestep is carried out, as well as at the end of the simulation. In between, the half-step kick that
@@ -138,15 +142,6 @@ void sim::find_global_timesteps(void)
   for(int idx = 0; idx < Sp.TimeBinsHydro.NActiveParticles; idx++)
     {
       int i = Sp.TimeBinsHydro.ActiveParticleList[idx];
-      if(Sp.P[i].getType() != 0)
-        continue;
-
-        #ifdef DUST
-        // Skip dust from hydro timestep constraint:
-              if(Sp.P[i].getType() == 6)
-                continue;
-        #endif
-
       integertime ti_step = Sp.get_timestep_hydro(i);
       if(ti_step < globTimeStep)
         globTimeStep = ti_step;
@@ -165,11 +160,6 @@ void sim::find_global_timesteps(void)
       int bin;
 
       Sp.timebins_get_bin_and_do_validity_checks(All.GlobalTimeStep, &bin, Sp.P[target].TimeBinGrav);
-      #ifdef DUST
-      if(Sp.P[target].getType() == 6 && bin < 18)
-          bin = 18;
-      #endif
-
       Sp.TimeBinsGravity.timebin_move_particle(target, Sp.P[target].TimeBinGrav, bin);
       Sp.P[target].TimeBinGrav = bin;
     }
@@ -183,10 +173,6 @@ void sim::find_global_timesteps(void)
       int bin;
 
       Sp.timebins_get_bin_and_do_validity_checks(All.GlobalTimeStep, &bin, Sp.P[target].getTimeBinHydro());
-      #ifdef DUST
-      if(Sp.P[target].getType() == 6 && bin < 18)
-          bin = 18;
-      #endif
       Sp.TimeBinsHydro.timebin_move_particle(target, Sp.P[target].getTimeBinHydro(), bin);
 #ifndef LEAN
       Sp.P[target].TimeBinHydro = bin;
@@ -219,33 +205,51 @@ int simparticles::test_if_grav_timestep_is_too_large(int p, int bin)
 integertime simparticles::get_timestep_grav(int p /*!< particle index */)
 {
 
-/* This is important! Many errors happen without this!
-Without this: Dust particles use gravitational timestep → get tiny timesteps near massive objects 
-→ timebin cascade → simulation crashes or becomes super slow...
- */
-#ifdef DUST
-  if(P[p].getType() == 6)
+    // Why dust particles need special treatment here:
+    //
+    // DUST TIMEBINS
+    // Dust particles do not need acceleration-based gravity timesteps — Epstein
+    // drag handles sub-step momentum exchange, and dust gravity is not the
+    // limiting physics. Returning TIMEBASE-1 requests the longest possible
+    // integer timestep; timebins_get_bin_and_do_validity_checks then assigns
+    // dust to the highest currently-synchronized bin (typically bin 18/19),
+    // keeping dust out of the short-bin gravity tree that dominates runtime.
+    //
+    // SNAPSHOT OUTPUT PROTECTION
+    // Without the cap below, dust on bin 18/19 causes find_next_sync_point()
+    // to return Ti_Current + 2^19 — a value that can jump over Ti_nextoutput,
+    // causing snapshot output times to be permanently missed. This was the
+    // original behavior of "dust on bin 15 as accidental safety net": the
+    // short bin 15 step (2^15 << output gap) fired so frequently that output
+    // times were always caught. The fix explicitly caps ti_max so that the
+    // next sync-point never overshoots the next scheduled output time.
+    //
+    // FLOOR AT DUST_MIN_TIMEBIN
+    // When Ti_nextoutput is imminent, the halving loop can reduce ti_max
+    // below 2^DUST_MIN_TIMEBIN, which would place dust on an extremely short
+    // bin and trigger a "timestep too small" crash. The floor prevents this:
+    // dust never goes below bin DUST_MIN_TIMEBIN (i.e. bin 15) regardless of how
+    // close the next output is. The snapshot will still be caught because
+    // gas and DM particles near active star formation are already on short
+    // bins and will trigger the required sync-point.
+  #ifdef DUST
+    if(P[p].getType() == DUST_PARTICLE_TYPE)
     {
-      // Use fixed timestep for drag-dominated dust particles
-      double dt = All.MaxSizeTimestep; // * 0.25;  // Optionally reduce the fixed timestep for better accuracy in drag-dominated regime
-      integertime ti_step = (integertime)(dt / All.Timebase_interval);
-      
-      // Safety bounds: timestep must be in range [1, TIMEBASE-1]
-      if(ti_step <= 0) ti_step = 1;
-      if(ti_step >= TIMEBASE) ti_step = TIMEBASE - 1;
-      
-      /* DIAGNOSTIC: Print first few dust timesteps for verification
-      static int dust_dt_count = 0;
-      if(dust_dt_count < 5) {
-        printf("[DUST_TIMESTEP] Particle %lld: returning fixed ti_step=%lld (dt=%.3e)\n",
-               (long long)P[p].ID.get(), (long long)ti_step, dt);
-        dust_dt_count++;
+      integertime ti_max = (integertime)(TIMEBASE - 1);
+      if(All.Ti_nextoutput > All.Ti_Current)
+      {
+        integertime ti_to_output = All.Ti_nextoutput - All.Ti_Current;
+        while(ti_max > ti_to_output)
+          ti_max >>= 1;
       }
-      */
-      return ti_step;  // Early return - skip gravitational timestep calculation
+      // Never go below DUST_MIN_TIMEBIN — prevents "timestep too small" crash
+      // when Ti_nextoutput is imminent and ti_to_output << 2^DUST_MIN_TIMEBIN.
+      integertime ti_floor = ((integertime)1) << DUST_MIN_TIMEBIN;
+      if(ti_max < ti_floor)
+        ti_max = ti_floor;
+      return ti_max;
     }
-#endif
-
+  #endif
 
   double ax = All.cf_a2inv * P[p].GravAccel[0];
   double ay = All.cf_a2inv * P[p].GravAccel[1];

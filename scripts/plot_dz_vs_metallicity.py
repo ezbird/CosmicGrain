@@ -2,97 +2,157 @@
 """
 plot_dz_vs_metallicity.py
 --------------------------
-Publication-quality D/Z vs. gas-phase metallicity for a Gadget-4 zoom
-simulation with N-body dust (PartType6).
+Galaxy-integrated D/Z vs. gas-phase metallicity for the CosmicGrain
+simulation ladder, compared to observations and other simulations.
 
-METHOD
-------
-For each gas particle, D/Z is estimated by summing dust (PartType6) mass
-within that particle's SPH smoothing length, then dividing by the local
-metal mass.  This is the physically correct approach for a subgrid-ISM
-simulation: we cannot compare D/Z vs n_H (the EOS prevents high densities)
-but D/Z vs Z is independent of the ISM density structure and is the
-standard diagnostic used by McKinnon+2017, Aoyama+2018, Davé+2019, etc.
+Run from anywhere — paths are anchored to the parent of this script file,
+so the working directory does not matter:
 
-LITERATURE COMPARISONS
-----------------------
-Observations (galaxy-integrated):
+    cd ~/gadget4/scripts
+    python plot_dz_vs_metallicity.py --res 1024
+    python plot_dz_vs_metallicity.py --res 512 1024 2048
+
+TWO MODES (auto-detected from --res):
+
+  Physics ladder  (--res 1024)
+      One resolution, multiple runs (S0–S10). Each run is one point,
+      colored and labelled by physics step from RUN_CONFIGS.
+
+  Convergence  (--res 512 1024 2048)
+      Multiple resolutions, one or more runs. Each (run, resolution)
+      pair is one point, styled by resolution from RES_CONFIGS.
+      Default run for this mode: S10.
+
+Each point is computed as averages within a fixed physical aperture:
+
+    Z_mass = Σ(m_gas × Z_gas) / Σ(m_gas)          [mass-weighted]
+    Z_sfr  = Σ(SFR_gas × Z_gas) / Σ(SFR_gas)      [SFR-weighted, HII-analog]
+    D/Z    = M_dust / (M_gas_metals + M_dust)        [total-metal definition]
+
+Aperture is specified in physical kpc (--aperture, default 20 pkpc), motivated
+by the stellar surface density break at ~20–25 pkpc in Halo 569. An optional
+minimum hydrogen number density cut (--nh-min, default 0.1 cm^-3) restricts
+the sample to ISM gas, matching the observational comparisons which all measure
+disk/ISM properties rather than CGM.
+
+R200 is still read from the FOF catalog to locate the halo center, but does
+not enter the aperture calculation.
+
+SFR-weighting more faithfully mimics strong-line observational metallicities
+(O3N2, R23, etc.) which trace HII regions proportional to instantaneous SFR.
+Falls back to mass-weighting for runs with no star-forming gas (e.g. S0).
+
+REFERENCES
+----------
+Observations:
   Rémy-Ruyer+2014 (A&A 563, A31)  — 126 DGS+KINGFISH galaxies, BPL fit
-  De Vis+2019 (A&A 623, A5)       — extended DustPedia+RR14 compilation
+  De Vis+2019 (A&A 623, A5)       — DustPedia+RR14 compilation
 
-Simulations (subgrid-ISM class, comparable to this work):
-  McKinnon+2017 (MNRAS 468, 1505) — AREPO, moving-mesh, sputtering
-  Aoyama+2018  (MNRAS 478, 4905) — Gadget, two-size grain distribution
-  Davé+2019    (MNRAS 486, 2827) — SIMBA/GIZMO
-
-NOTE: All three simulation comparisons use a subgrid EOS (no explicit cold
-ISM), so their D/Z vs Z trends are directly comparable to this work.
+Simulations:
+  McKinnon+2017 (MNRAS 468, 1505) — AREPO subgrid ISM
+  Aoyama+2018  (MNRAS 478, 4905)  — Gadget two-size
+  Li+2019      (MNRAS 490, 1425)  — SIMBA/GIZMO
 
 Usage:
-    python plot_dz_vs_metallicity.py snapshot_base catalog [--r-max kpc]
-                                     [--output file.png]
+    # Physics ladder — one resolution, all runs
+    python plot_dz_vs_metallicity.py --res 1024
+
+    # Physics ladder — subset of runs
+    python plot_dz_vs_metallicity.py --res 1024 --runs S0 S4 S10
+
+    # Convergence — multiple resolutions, default S10
+    python plot_dz_vs_metallicity.py --res 512 1024 2048
+
+    # Convergence — multiple resolutions, specific run(s)
+    python plot_dz_vs_metallicity.py --res 512 1024 2048 --runs S10
+
+    # Common options
+    python plot_dz_vs_metallicity.py --res 1024 --aperture 20 --nh-min 0.1
+    python plot_dz_vs_metallicity.py --res 1024 --z-weight sfr
+    python plot_dz_vs_metallicity.py --res 1024 --z-weight both
+    python plot_dz_vs_metallicity.py --res 1024 --output my_dz.png
 """
 
-import argparse
+import os
+import re
 import glob
+import argparse
 import numpy as np
 import h5py
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from scipy.spatial import cKDTree
+from pathlib import Path
 
-try:
-    from halo_utils import load_target_halo, extract_dust_spatially
-except ImportError:
-    raise ImportError("halo_utils not found — ensure halo_utils.py is in PATH")
+# ─────────────────────────────────────────────────────────────────────────────
+# Path anchoring — works regardless of cwd
+# ─────────────────────────────────────────────────────────────────────────────
+# This script lives in  ~/gadget4/scripts/
+# Simulation data lives in ~/gadget4/  (one level up)
+SCRIPT_DIR = Path(__file__).resolve().parent   # .../gadget4/scripts
+BASE_DIR   = SCRIPT_DIR.parent                 # .../gadget4
 
-# ============================================================
+FIGDIR = BASE_DIR / "dust_figures"
+FIGDIR.mkdir(parents=True, exist_ok=True)
+
+plt.style.use(str(SCRIPT_DIR / "sleek.mplstyle"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Styling — physics ladder (one res, multiple runs)
+# ─────────────────────────────────────────────────────────────────────────────
+RUN_CONFIGS = {
+    "S0":  {"label": "S0: Creation only",           "color": "#888888", "marker": "o", "ms": 80},
+    "S1":  {"label": "S1: + Cooling",               "color": "#1f77b4", "marker": "o", "ms": 80},
+    "S2":  {"label": "S2: + Drag",                  "color": "#ff7f0e", "marker": "o", "ms": 80},
+    "S3":  {"label": "S3: + Astration",             "color": "#2ca02c", "marker": "o", "ms": 80},
+    "S4":  {"label": "S4: + Thermal sputtering",    "color": "#d62728", "marker": "o", "ms": 80},
+    "S5":  {"label": "S5: + Grain growth",          "color": "#9467bd", "marker": "o", "ms": 80},
+    "S6":  {"label": "S6: + Clumping factor",       "color": "#8c564b", "marker": "o", "ms": 80},
+    "S7":  {"label": "S7: + SN shock destruction",  "color": "#e377c2", "marker": "o", "ms": 80},
+    "S8":  {"label": "S8: + Coagulation",           "color": "#17becf", "marker": "o", "ms": 80},
+    "S9":  {"label": "S9: + Shattering",            "color": "#bcbd22", "marker": "o", "ms": 80},
+    "S10": {"label": "S10: + Rad. pressure (full)", "color": "#2a9d8f", "marker": "*", "ms": 350},
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Styling — convergence (multiple res, one or more runs)
+# ─────────────────────────────────────────────────────────────────────────────
+RES_CONFIGS = {
+    512:  {"label": r"$512^3$",  "color": "#7ec8c0", "marker": "o", "ms": 100},
+    1024: {"label": r"$1024^3$", "color": "#2a9d8f", "marker": "*", "ms": 350},
+    2048: {"label": r"$2048^3$", "color": "#1a6b62", "marker": "D", "ms": 100},
+    4096: {"label": r"$4096^3$", "color": "#0d3d38", "marker": "s", "ms": 100},
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Physical constants
-# ============================================================
-Z_SOLAR  = 0.0134          # Asplund+2009 solar metallicity (mass fraction)
-OH_SOLAR = 8.69            # 12+log(O/H) solar (Asplund+2009)
+# ─────────────────────────────────────────────────────────────────────────────
+Z_SOLAR  = 0.0134      # Asplund+2009
+OH_SOLAR = 8.69
+X_H      = 0.76        # hydrogen mass fraction
+M_H_G    = 1.6736e-24  # proton mass [g]
 
-# ============================================================
-# Literature: Rémy-Ruyer+2014
-# BPL parameters from their Table 1, XCO,MW scenario (most widely cited)
-#   log10(G/D) = log10(G/D)_0  + α_high * Δ(O/H)   for 12+log(O/H) ≥ 8.0
-#              = ...           + α_low  * Δ(O/H)   for 12+log(O/H) < 8.0
-#   with 12+log(O/H) expressed relative to solar
-# From Table 1: log(G/D)_0 = 2.21, α_high = 1.0, α_low = 3.15, break = 8.0
-# ============================================================
-RR14_LOGDG0  = -2.21      # log10(D/G) at solar metallicity
-RR14_ALPHA_H =  1.0       # slope above break (linear with metallicity)
-RR14_ALPHA_L =  3.15      # slope below break (steep at low Z)
-RR14_OH_BREAK = 8.0       # 12+log(O/H) at the break
+# ─────────────────────────────────────────────────────────────────────────────
+# Literature reference data
+# ─────────────────────────────────────────────────────────────────────────────
+
+RR14_LOGDG0   = -2.21
+RR14_ALPHA_H  =  1.0
+RR14_ALPHA_L  =  3.15
+RR14_OH_BREAK =  8.0
 
 def rr14_dz(Z_mass_frac):
-    """
-    Rémy-Ruyer+2014 broken-power-law D/Z as function of metal mass fraction.
-    Uses XCO,MW parameters (Table 1).
-    """
     Z   = np.atleast_1d(np.asarray(Z_mass_frac, float))
     oh  = OH_SOLAR + np.log10(np.clip(Z / Z_SOLAR, 1e-8, None))
-    Δoh = oh - OH_SOLAR
-    # Above break: slope α_high; below break: pivot off break point then α_low
+    doh = oh - OH_SOLAR
     log_dg = np.where(
         oh >= RR14_OH_BREAK,
-        RR14_LOGDG0 + RR14_ALPHA_H * Δoh,
+        RR14_LOGDG0 + RR14_ALPHA_H * doh,
         RR14_LOGDG0 + RR14_ALPHA_H * (RR14_OH_BREAK - OH_SOLAR)
                     + RR14_ALPHA_L * (oh - RR14_OH_BREAK))
-    dg = 10.0 ** log_dg
-    return dg / Z   # D/G → D/Z
+    return 10.0**log_dg / Z
 
-# Approximate 1-sigma scatter around RR14 BPL (read from their Fig. 1)
-# expressed as ±dex in D/Z, approximately constant at ~0.4 dex
-RR14_SCATTER_DEX = 0.45
-
-# ============================================================
-# Literature: De Vis+2019 (A&A 623, A5) — DustPedia compilation
-# Representative data digitized from their Fig. 9 (DTM vs metallicity)
-# Converted from 12+log(O/H) to Z mass fraction using O/H → Z proxy
-# ============================================================
+# De Vis+2019 digitized points
 _dv19_oh  = np.array([7.3, 7.5, 7.7, 7.9, 8.1, 8.2, 8.35, 8.5,
                        8.6, 8.69, 8.75, 8.85])
 _dv19_dtm = np.array([0.010, 0.018, 0.030, 0.055, 0.095, 0.130, 0.180,
@@ -100,353 +160,548 @@ _dv19_dtm = np.array([0.010, 0.018, 0.030, 0.055, 0.095, 0.130, 0.180,
 DEVIS19_Z  = Z_SOLAR * 10.0**(_dv19_oh - OH_SOLAR)
 DEVIS19_DZ = _dv19_dtm
 
-# ============================================================
-# Literature simulation median trends
-# All digitized from published figures; subgrid-ISM class only.
-# McKinnon+2017 Fig. 7 (AREPO, z=0 galaxies):
-# ============================================================
 _mk17_z  = np.array([0.001, 0.002, 0.004, 0.007, 0.012, 0.020, 0.030, 0.040])
 _mk17_dz = np.array([0.010, 0.020, 0.045, 0.100, 0.190, 0.290, 0.360, 0.400])
-MK17_Z   = _mk17_z
-MK17_DZ  = _mk17_dz
 
-# Aoyama+2018 Fig. 4 (Gadget two-size, z=0):
 _ao18_z  = np.array([0.0005, 0.001, 0.003, 0.006, 0.010, 0.018, 0.030, 0.040])
 _ao18_dz = np.array([0.005,  0.012, 0.035, 0.090, 0.170, 0.280, 0.370, 0.410])
-AO18_Z   = _ao18_z
-AO18_DZ  = _ao18_dz
 
-# Davé+2019 SIMBA Fig. 6 (GIZMO, subgrid ISM, z=0 median):
-_dv19s_z  = np.array([0.0003, 0.001, 0.003, 0.007, 0.013, 0.020, 0.030, 0.040])
-_dv19s_dz = np.array([0.003,  0.010, 0.030, 0.090, 0.180, 0.280, 0.370, 0.420])
-DAVE19_Z  = _dv19s_z
-DAVE19_DZ = _dv19s_dz
+_li19_z  = np.array([0.0003, 0.001, 0.003, 0.007, 0.013, 0.020, 0.030, 0.040])
+_li19_dz = np.array([0.003,  0.010, 0.030, 0.090, 0.180, 0.280, 0.370, 0.420])
 
 
-# ============================================================
-# Snapshot utilities
-# ============================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Snapshot / catalog helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-def get_units(snapshot_base):
-    files = sorted(glob.glob(f"{snapshot_base}.*.hdf5"))
+def output_dir(run, resolution):
+    return BASE_DIR / f"{run}_output_{resolution}"
+
+
+def find_snapshots(run, resolution):
+    odir = output_dir(run, resolution)
+    if not odir.is_dir():
+        return []
+    seen, bases = set(), []
+    for snapdir in sorted(glob.glob(str(odir / "snapdir_*"))):
+        for f in sorted(glob.glob(os.path.join(snapdir, "snapshot_*.0.hdf5"))):
+            base = re.sub(r"\.0\.hdf5$", "", f)
+            if base not in seen:
+                seen.add(base); bases.append(base)
+        for f in sorted(glob.glob(os.path.join(snapdir, "snapshot_*.hdf5"))):
+            if ".0.hdf5" in f: continue
+            base = re.sub(r"\.hdf5$", "", f)
+            if base not in seen:
+                seen.add(base); bases.append(base)
+    return sorted(bases)
+
+
+def snap_redshift(snap_base):
+    for suffix in [".hdf5", ".0.hdf5"]:
+        f = snap_base + suffix
+        if os.path.exists(f):
+            try:
+                with h5py.File(f, "r") as hf:
+                    z = hf["Header"].attrs.get("Redshift", None)
+                    if z is not None: return float(z)
+            except Exception:
+                pass
+    return None
+
+
+def find_snap_near_z(snap_bases, target_z):
+    best, best_dz = None, 1e30
+    for sb in snap_bases:
+        z = snap_redshift(sb)
+        if z is not None and abs(z - target_z) < best_dz:
+            best_dz = abs(z - target_z); best = sb
+    return best, best_dz
+
+
+def read_header(snap_base):
+    defaults = dict(h=0.7, a=1.0, um_cgs=1.989e43, ul_cm=3.085678e21)
+    for suffix in [".0.hdf5", ".hdf5"]:
+        f = snap_base + suffix
+        if os.path.exists(f):
+            try:
+                with h5py.File(f, "r") as hf:
+                    h = float(hf["Parameters"].attrs["HubbleParam"])
+                    attrs = hf["Header"].attrs
+                    return dict(
+                        h      = h,
+                        a      = float(attrs.get("Time",             defaults["a"])),
+                        um_cgs = float(attrs.get("UnitMass_in_g",    defaults["um_cgs"])),
+                        ul_cm  = float(attrs.get("UnitLength_in_cm", defaults["ul_cm"])),
+                    )
+            except Exception:
+                pass
+    return defaults
+
+
+def subfiles(snap_base):
+    files = sorted(glob.glob(snap_base + ".*.hdf5"))
     if not files:
-        files = [snapshot_base + ".hdf5"]
-    with h5py.File(files[0], "r") as f:
-        h = f["Header"].attrs
-        return dict(
-            a            = float(h.get("Time", 1.0)),
-            hubble       = float(h.get("HubbleParam", 0.6774)),
-            unit_mass_g  = float(h.get("UnitMass_in_g",        1.989e43)),
-            unit_len_cm  = float(h.get("UnitLength_in_cm",     3.085678e21)),
-            unit_vel_cms = float(h.get("UnitVelocity_in_cm_per_s", 1e5)),
-        )
+        single = snap_base + ".hdf5"
+        files = [single] if os.path.exists(single) else []
+    return files
 
 
-def read_gas_spatially(snap_base, center_phys, r_max_kpc, units):
+def get_halo_center(run, snap_base, resolution):
+    """Return halo center in comoving kpc/h (and R200 for logging only)."""
+    m = re.search(r"snapshot_(\d+)$", snap_base)
+    if not m: return None, None
+    snap_num   = m.group(1)
+    groups_dir = output_dir(run, resolution) / f"groups_{snap_num}"
+    cats = sorted(glob.glob(
+        str(groups_dir / f"fof_subhalo_tab_{snap_num}.*.hdf5")))
+    if not cats: return None, None
+    try:
+        with h5py.File(cats[0], "r") as hf:
+            if "Group" not in hf: return None, None
+            grp = hf["Group"]
+            if "GroupPos" not in grp or grp["GroupPos"].shape[0] == 0:
+                return None, None
+            ctr  = grp["GroupPos"][0].astype(float)
+            r200 = float(grp["Group_R_Crit200"][0]) \
+                   if "Group_R_Crit200" in grp else None
+    except Exception as e:
+        print(f"  [{run}/{resolution}] catalog error: {e}")
+        return None, None
+    return ctr, r200
+
+
+def density_to_nH(rho_code, um_cgs, ul_cm, h, a):
+    """Convert Gadget-4 comoving code density to physical nH [cm^-3]."""
+    rho_cgs = rho_code * (um_cgs / ul_cm**3) * (h**2 / a**3)
+    return rho_cgs * X_H / M_H_G
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Galaxy-integrated D/Z and Z_gas
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_integrated_dz(snap_base, run, resolution,
+                          aperture_pkpc=20.0, nh_min=None):
     """
-    Read PartType0 within r_max_kpc of center_phys (physical kpc).
-    center_phys must already be in physical kpc.
-    Returns coords [kpc], mass [Msun], metallicity [fraction], hsml [kpc].
+    Compute galaxy-integrated Z_gas (mass- and SFR-weighted) and D/Z
+    within a fixed physical aperture.
+
+    Parameters
+    ----------
+    aperture_pkpc : float
+        Aperture radius in physical kpc (default 20 pkpc).
+    nh_min : float or None
+        If set, restrict gas to nH >= nh_min [cm^-3] to select ISM gas.
+
+    Returns
+    -------
+    Z_mass, Z_sfr, DZ, r200_pkpc, sfr_fallback
     """
-    a, h  = units["a"], units["hubble"]
-    kpc   = units["unit_len_cm"] / 3.085678e21 * a / h
-    msun  = units["unit_mass_g"] / 1.989e33 / h
+    hdr    = read_header(snap_base)
+    h      = hdr["h"]
+    a      = hdr["a"]
+    um_cgs = hdr["um_cgs"]
+    ul_cm  = hdr["ul_cm"]
+    to_pkpc = a / h
 
-    files = sorted(glob.glob(f"{snap_base}.*.hdf5"))
-    if not files:
-        files = [snap_base + ".hdf5"]
+    ctr, r200 = get_halo_center(run, snap_base, resolution)
+    if ctr is None:
+        return None, None, None, None, False
 
-    c_l, m_l, Z_l, hsml_l = [], [], [], []
+    r200_pkpc = r200 * to_pkpc if r200 is not None else float("nan")
+    rmax_com  = aperture_pkpc / to_pkpc   # comoving kpc/h
 
-    for fpath in files:
-        with h5py.File(fpath, "r") as f:
-            if "PartType0" not in f:
-                continue
-            pt0  = f["PartType0"]
-            cord = pt0["Coordinates"][:] * kpc
-            r    = np.sqrt(np.sum((cord - center_phys)**2, axis=1))
-            mask = r < r_max_kpc
-            if not mask.any():
-                continue
-            c_l.append(cord[mask])
-            m_l.append(pt0["Masses"][:][mask] * msun)
-            Z_l.append(pt0["Metallicity"][:][mask]
-                        if "Metallicity" in pt0 else np.zeros(mask.sum()))
-            hsml_l.append(pt0["SmoothingLength"][:][mask] * kpc
-                           if "SmoothingLength" in pt0 else None)
+    # ── Gas ──────────────────────────────────────────────────────────────────
+    gas_mass_total  = 0.0
+    gas_metal_total = 0.0
+    sfr_total       = 0.0
+    sfr_metal_total = 0.0
+    n_gas_selected  = 0
 
-    if not c_l:
-        raise RuntimeError(
-            f"No PartType0 within {r_max_kpc} kpc of {center_phys}.\n"
-            "Check that halo_pos is returned in code units by load_target_halo.")
+    for fname in subfiles(snap_base):
+        try:
+            with h5py.File(fname, "r") as hf:
+                if "PartType0" not in hf: continue
+                pt0  = hf["PartType0"]
+                pos  = pt0["Coordinates"][:]
+                r    = np.linalg.norm(pos - ctr, axis=1)
+                mask = r < rmax_com
 
-    coords = np.vstack(c_l)
-    mass   = np.concatenate(m_l)
-    Z      = np.concatenate(Z_l)
-    hsml   = np.concatenate(hsml_l) if hsml_l[0] is not None else None
-    print(f"  Gas particles: {len(mass):,}  "
-          f"(Z range: {Z.min():.2e}–{Z.max():.2e})")
-    return coords, mass, Z, hsml
+                if nh_min is not None and "Density" in pt0:
+                    rho  = pt0["Density"][:][mask]
+                    nH   = density_to_nH(rho, um_cgs, ul_cm, h, a)
+                    full_mask = np.zeros(len(r), dtype=bool)
+                    idx = np.where(mask)[0]
+                    full_mask[idx[nH >= nh_min]] = True
+                    mask = full_mask
+
+                if not mask.any(): continue
+
+                m = pt0["Masses"][:][mask]
+                Z = pt0["Metallicity"][:][mask] \
+                    if "Metallicity" in pt0 else np.zeros(mask.sum())
+                if Z.ndim == 2:
+                    Z = Z[:, 0]
+
+                gas_mass_total  += m.sum()
+                gas_metal_total += (m * Z).sum()
+                n_gas_selected  += mask.sum()
+
+                sfr = pt0["StarFormationRate"][:][mask] \
+                      if "StarFormationRate" in pt0 else np.zeros(mask.sum())
+                sfr_total       += sfr.sum()
+                sfr_metal_total += (sfr * Z).sum()
+
+        except Exception as e:
+            print(f"  [{run}/{resolution}] gas read error: {e}")
+
+    if gas_mass_total <= 0:
+        print(f"  [{run}/{resolution}] no gas within aperture (nh_min={nh_min})")
+        return None, None, None, None, False
+
+    # ── Dust ─────────────────────────────────────────────────────────────────
+    dust_mass_total = 0.0
+
+    for fname in subfiles(snap_base):
+        try:
+            with h5py.File(fname, "r") as hf:
+                if "PartType6" not in hf: continue
+                pt6  = hf["PartType6"]
+                pos  = pt6["Coordinates"][:]
+                r    = np.linalg.norm(pos - ctr, axis=1)
+                mask = r < rmax_com
+                if not mask.any(): continue
+                dust_mass_total += pt6["Masses"][:][mask].sum()
+        except Exception as e:
+            print(f"  [{run}/{resolution}] dust read error: {e}")
+
+    # ── Integrated quantities ─────────────────────────────────────────────────
+    Z_mass = gas_metal_total / gas_mass_total
+
+    sfr_fallback = sfr_total <= 0.0
+    Z_sfr = Z_mass if sfr_fallback else sfr_metal_total / sfr_total
+
+    M_metals_total = gas_metal_total + dust_mass_total
+    DZ = dust_mass_total / M_metals_total if M_metals_total > 0 else 0.0
+
+    nh_str = f"  nH≥{nh_min}" if nh_min is not None else ""
+    fb_str = " [SFR→mass fallback]" if sfr_fallback else \
+             f" Z_sfr={Z_sfr:.4f} ({Z_sfr/Z_SOLAR:.2f} Z☉)"
+    print(f"  [{run}/{resolution}]  R200={r200_pkpc:.0f} pkpc  "
+          f"ap={aperture_pkpc:.0f} pkpc{nh_str}  N_gas={n_gas_selected}  "
+          f"M_gas={gas_mass_total:.3e}  M_dust={dust_mass_total:.3e}  "
+          f"Z_mass={Z_mass:.4f} ({Z_mass/Z_SOLAR:.2f} Z☉){fb_str}  D/Z={DZ:.3f}")
+
+    return Z_mass, Z_sfr, DZ, r200_pkpc, sfr_fallback
 
 
-# ============================================================
-# Per-gas-particle D/Z via KD-tree on dust particles
-# ============================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared plot helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-def assign_dz_kdtree(gas_coords, gas_mass, gas_Z, gas_hsml,
-                     dust_coords, dust_mass):
-    """
-    For each gas particle, sum dust mass within its SPH smoothing length.
-    Returns per-particle DZ array (same length as gas_mass).
-    Particles with no metallicity, no smoothing length, or zero kernel mass
-    get DZ=0 and are excluded by the caller.
-    """
-    if gas_hsml is None or np.all(gas_hsml == 0):
-        # Fallback: geometric mean nearest-neighbour spacing
-        n       = max(len(gas_mass), 1)
-        span    = np.ptp(gas_coords, axis=0)
-        vol     = max(span[0] * span[1] * span[2], 1.0)
-        fallback = (vol / n) ** (1.0 / 3.0)
-        gas_hsml = np.full(len(gas_mass), fallback)
-        print(f"  No smoothing lengths — using fallback r = {fallback:.3f} kpc")
-
-    DZ = np.zeros(len(gas_mass))
-    if len(dust_mass) == 0:
-        print("  WARNING: no dust particles found — D/Z = 0 everywhere")
-        return DZ
-
-    tree = cKDTree(dust_coords)
-    n_dust_assigned = 0
-    n_capped = 0
-
-    for i in range(len(gas_mass)):
-        if gas_Z[i] <= 0 or gas_mass[i] <= 0:
-            continue
-        nbrs = tree.query_ball_point(gas_coords[i], r=gas_hsml[i])
-        local_dust = dust_mass[nbrs].sum() if nbrs else 0.0
-        if local_dust > 0:
-            n_dust_assigned += 1
-        raw = local_dust / (gas_mass[i] * gas_Z[i])
-        if raw > 1.0:
-            n_capped += 1
-        DZ[i] = min(raw, 1.0)   # D/Z = 1 is the hard physical ceiling
-
-    frac_capped = 100 * n_capped / max(n_dust_assigned, 1)
-    print(f"  Gas particles with dust in kernel: {n_dust_assigned:,} "
-          f"/ {len(gas_mass):,} ({100*n_dust_assigned/max(len(gas_mass),1):.1f}%)")
-    print(f"  Particles capped at D/Z = 1.0: {n_capped:,} ({frac_capped:.1f}% of assigned)")
-    return DZ
+def _draw_reference_data(ax):
+    Z_fit = np.logspace(-4.0, np.log10(0.08), 300)
+    ax.plot(Z_fit, rr14_dz(Z_fit), color="black", lw=1.6, ls="--", zorder=5,
+            label="Rémy-Ruyer et al. 2014 (DGS+KINGFISH)")
+    ax.scatter(DEVIS19_Z, DEVIS19_DZ,
+               color="dimgray", marker="o", s=22, zorder=4,
+               edgecolors="none", alpha=0.7,
+               label="De Vis et al. 2019 (DustPedia)")
+    ax.plot(_mk17_z, _mk17_dz, color="firebrick",  lw=1.6, ls="-.", zorder=3,
+            label="McKinnon et al. 2017 (AREPO)")
+    ax.plot(_ao18_z, _ao18_dz, color="darkorange", lw=1.6, ls=":",  zorder=3,
+            label="Aoyama et al. 2018 (Gadget)")
+    ax.plot(_li19_z, _li19_dz, color="darkorchid", lw=1.6,
+            ls=(0,(4,2,1,2)), zorder=3, label="Li et al. 2019 (SIMBA)")
+    ax.axhline(0.4, color="gray", lw=0.9, ls=":", alpha=0.7, zorder=0)
+    ax.text(7e-4, 0.42, "D/Z = 0.40 (MW estimate)",
+            color="gray", fontsize=8, va="bottom")
+    ax.text(Z_SOLAR * 1.07, 1.1, r"$Z_\odot$",
+            color="goldenrod", fontsize=9, va="top")
 
 
-# ============================================================
-# Plotting
-# ============================================================
+def _scatter_point(ax, Z, DZ, color, marker, ms, label,
+                   show_both=False, edge_color="white", alpha=1.0):
+    ax.scatter(Z, DZ, color=color, marker=marker, s=ms,
+               edgecolors=edge_color,
+               linewidths=1.2 if show_both else 0.6,
+               alpha=alpha, zorder=9, label=label)
 
-def make_plot(gas_Z, DZ, gas_mass, scale_factor, r_max_kpc,
-              n_dust, output_path):
 
-    z = 1.0 / scale_factor - 1.0
+def _finalize_axes(ax, aperture_pkpc, nh_min, z_weight, title_main):
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.set_xlim(5e-4, 0.06); ax.set_ylim(3e-3, 1.5)
+    ax.set_xlabel(r"Gas-phase Metallicity  $Z_{\rm gas}$", fontsize=12)
+    ax.set_ylabel(r"Dust-to-Metal Ratio  $D/Z$",           fontsize=12)
 
-    ok = (gas_Z > 0) & np.isfinite(DZ) & (DZ > 0) & (gas_mass > 0)
-    Z_p  = gas_Z[ok]
-    DZ_p = DZ[ok]
-    m_p  = gas_mass[ok]
-
-    print(f"\n  Plot sample: {ok.sum():,} gas particles with DZ > 0")
-    if ok.sum() > 0:
-        mw_DZ = np.average(DZ_p, weights=m_p)
-        mw_Z  = np.average(Z_p,  weights=m_p)
-        print(f"  Mass-weighted D/Z = {mw_DZ:.3f}")
-        print(f"  Mass-weighted Z   = {mw_Z:.4f}  ({mw_Z/Z_SOLAR:.2f} Z_sun)")
-
-    fig, ax = plt.subplots(figsize=(8.5, 6.5))
-    fig.patch.set_facecolor("white")
-    ax.set_facecolor("#f8f8f8")
-
-    # ----------------------------------------------------------
-    # 2D hex-density of simulation particles
-    # ----------------------------------------------------------
-    if ok.sum() > 1:
-        logZ  = np.log10(np.clip(Z_p,  1e-6, None))
-        logDZ = np.log10(np.clip(DZ_p, 1e-5, None))
-        # Mass-weighted: each bin shows total gas mass, not particle count
-        # This suppresses the many low-mass CGM particles at low Z
-        h2d, xe, ye = np.histogram2d(
-            logZ, logDZ, bins=70,
-            range=[[-4.0, np.log10(0.08)], [-4.5, 0.2]],
-            weights=m_p)
-        h2d[h2d == 0] = np.nan
-        pcm = ax.pcolormesh(10**xe, 10**ye, h2d.T,
-                            cmap="Blues",
-                            norm=mcolors.LogNorm(vmin=h2d[np.isfinite(h2d)].min()),
-                            zorder=1, rasterized=True)
-        cbar = fig.colorbar(pcm, ax=ax, pad=0.01, aspect=30)
-        cbar.set_label(r"Gas mass per bin  ($M_\odot$)", fontsize=9)
-
-    # ----------------------------------------------------------
-    # Binned median ± 1σ (16th–84th) of simulation
-    # ----------------------------------------------------------
-    if ok.sum() > 20:
-        edges   = np.logspace(-4.0, np.log10(0.08), 20)
-        idx     = np.digitize(Z_p, edges) - 1
-        mZ, mDZ, loDZ, hiDZ = [], [], [], []
-        for b in range(len(edges) - 1):
-            sel = (idx == b) & (DZ_p > 0)
-            if sel.sum() < 5:
-                continue
-            mZ.append(np.sqrt(edges[b] * edges[b+1]))
-            mDZ.append(np.median(DZ_p[sel]))
-            loDZ.append(np.percentile(DZ_p[sel], 16))
-            hiDZ.append(np.percentile(DZ_p[sel], 84))
-
-        if mZ:
-            mZ = np.array(mZ); mDZ = np.array(mDZ)
-            loDZ = np.array(loDZ); hiDZ = np.array(hiDZ)
-            ax.fill_between(mZ, loDZ, hiDZ,
-                            color="steelblue", alpha=0.35, zorder=3,
-                            label="_nolegend_")
-            ax.plot(mZ, mDZ, color="steelblue", lw=2.5, zorder=4,
-                    label="This work (median ± 1σ)")
-
-    # ----------------------------------------------------------
-    # Rémy-Ruyer+2014 BPL fit + scatter band
-    # ----------------------------------------------------------
-    Z_fit  = np.logspace(-4.0, np.log10(0.08), 300)
-    DZ_fit = rr14_dz(Z_fit)
-    ax.fill_between(Z_fit,
-                    DZ_fit * 10**(-RR14_SCATTER_DEX),
-                    DZ_fit * 10**( RR14_SCATTER_DEX),
-                    color="black", alpha=0.10, zorder=2, label="_nolegend_")
-    ax.plot(Z_fit, DZ_fit, color="black", lw=2.2, ls="--", zorder=6,
-            label="Rémy-Ruyer+2014 (BPL fit, ±0.45 dex)")
-
-    # ----------------------------------------------------------
-    # De Vis+2019 DustPedia data points
-    # ----------------------------------------------------------
-    ax.plot(DEVIS19_Z, DEVIS19_DZ, "o", color="black",
-            ms=5, mew=0, alpha=0.65, zorder=5,
-            label="De Vis+2019 (DustPedia obs.)")
-
-    # ----------------------------------------------------------
-    # Simulation model trends
-    # ----------------------------------------------------------
-    ax.plot(MK17_Z, MK17_DZ, color="firebrick", lw=1.8, ls="-.", zorder=5,
-            label="McKinnon+2017 (AREPO, subgrid ISM)")
-
-    ax.plot(AO18_Z, AO18_DZ, color="darkorange", lw=1.8, ls=":", zorder=5,
-            label="Aoyama+2018 (Gadget, two-size)")
-
-    ax.plot(DAVE19_Z, DAVE19_DZ, color="darkorchid", lw=1.8, ls=(0,(4,2,1,2)),
-            zorder=5, label="Davé+2019 / SIMBA")
-
-    # ----------------------------------------------------------
-    # Reference lines
-    # ----------------------------------------------------------
-    ax.axvline(Z_SOLAR, color="goldenrod", lw=0.9, ls=":", alpha=0.8, zorder=4)
-    ax.text(Z_SOLAR * 1.07, 0.55, r"$Z_\odot$",
-            color="goldenrod", fontsize=9, va="top", zorder=7)
-
-    ax.axhline(0.4, color="gray", lw=0.9, ls=":", alpha=0.7, zorder=3)
-    ax.text(1.1e-4, 0.42, "D/Z = 0.40 (MW canonical)",
-            color="gray", fontsize=8, va="bottom", zorder=7)
-
-    # ----------------------------------------------------------
-    # Axes
-    # ----------------------------------------------------------
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlim(8e-5, 0.06)
-    ax.set_ylim(3e-4, 1.5)
-
-    ax.set_xlabel(r"Gas Metallicity  $Z$  (metal mass fraction)", fontsize=13)
-    ax.set_ylabel(r"Dust-to-Metal Ratio  $D/Z$", fontsize=13)
+    weight_label = {"mass": r"mass-weighted $Z$",
+                    "sfr":  r"SFR-weighted $Z$",
+                    "both": r"mass- and SFR-weighted $Z$"}[z_weight]
+    nh_label = (f"    |    $n_{{\\rm H}} \\geq {nh_min}\\,{{\\rm cm}}^{{-3}}$"
+                if nh_min is not None else "")
     ax.set_title(
-        f"D/Z vs. Metallicity  —  $z = {z:.2f}$"
-        f"    |    $R < {r_max_kpc:.0f}$ kpc"
-        f"    |    {n_dust:,} dust particles",
-        fontsize=11)
+        f"{title_main}"
+        f"    |    $r < {aperture_pkpc:.0f}\\,{{\\rm pkpc}}${nh_label}"
+        f"    |    {weight_label}",
+        fontsize=9)
 
-    # Secondary top x-axis in Z/Z_sun
     ax2 = ax.twiny()
-    ax2.set_xscale("log")
+    ax2.grid(False); ax2.set_axisbelow(True); ax2.set_xscale("log")
     ax2.set_xlim(np.array(ax.get_xlim()) / Z_SOLAR)
-    ax2.set_xlabel(r"$Z / Z_\odot$", fontsize=11)
-    ax2.tick_params(labelsize=9)
+    ax2.set_xlabel(r"$Z_{\rm gas} / Z_\odot$", fontsize=10)
+    ax2.tick_params(labelsize=8)
 
-    ax.legend(fontsize=9, loc="upper left", framealpha=0.92,
-              ncol=1, handlelength=2.4, borderpad=0.7)
-    ax.grid(True, which="both", ls=":", alpha=0.25, color="gray")
+    handles, labels_leg = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels_leg, handles))
+    leg = ax.legend(by_label.values(), by_label.keys(),
+                    fontsize=11, loc="lower right",
+                    ncol=1, handlelength=2.2, borderpad=0.7)
+    leg.get_frame().set_facecolor("white")
+    leg.get_frame().set_alpha(0.5)
+    leg.get_frame().set_edgecolor("0.8")
+    leg.set_zorder(20); leg.get_frame().set_zorder(20)
+
+    ax.grid(True, which="both", ls=":", alpha=0.25, color="gray", zorder=0)
     ax.tick_params(which="both", direction="in", top=False)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plot — physics ladder (single resolution)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def make_plot_ladder(run_points, resolution, aperture_pkpc, nh_min,
+                     z_weight, output_path):
+    """run_points : list of (run, Z_mass, Z_sfr, DZ, sfr_fallback)"""
+    show_mass = z_weight in ("mass", "both")
+    show_sfr  = z_weight in ("sfr",  "both")
+    show_both = z_weight == "both"
+
+    fig, ax = plt.subplots(figsize=(8.5, 6.5))
+    fig.patch.set_facecolor("white"); ax.set_facecolor("white")
+    _draw_reference_data(ax)
+
+    if show_both:
+        ax.scatter([], [], color="none", edgecolors="steelblue",
+                   linewidths=1.2, s=55, marker="o",
+                   label=r"CosmicGrain — mass-weighted $Z$")
+        ax.scatter([], [], color="none", edgecolors="coral",
+                   linewidths=1.2, s=55, marker="s",
+                   label=r"CosmicGrain — SFR-weighted $Z$ (HII-analog)")
+
+    valid = [(r, Zm, Zs, DZ, fb)
+             for r, Zm, Zs, DZ, fb in run_points
+             if Zm is not None and DZ is not None and DZ > 0 and Zm > 0]
+
+    for run, Z_mass, Z_sfr, DZ, sfr_fallback in valid:
+        cfg    = RUN_CONFIGS.get(run, {})
+        color  = cfg.get("color",  "#2a9d8f")
+        marker = cfg.get("marker", "o")
+        ms     = cfg.get("ms",     80)
+        label  = cfg.get("label",  run)
+
+        point_label = label if not show_both else \
+                      (label if run in ("S0", "S10") else "_nolegend_")
+
+        if show_mass:
+            _scatter_point(ax, Z_mass, DZ, color, marker, ms,
+                           point_label if not show_sfr else "_nolegend_",
+                           show_both,
+                           edge_color="steelblue" if show_both else "white")
+        if show_sfr:
+            sfr_marker = "*" if marker == "*" else "s"
+            _scatter_point(ax, Z_sfr, DZ, color, sfr_marker, ms,
+                           point_label if not show_mass else "_nolegend_",
+                           show_both,
+                           edge_color="coral" if show_both else "white",
+                           alpha=0.45 if sfr_fallback else 1.0)
+        if not show_sfr and not show_both:
+            _scatter_point(ax, Z_mass, DZ, color, marker, ms, label)
+
+        if show_both and Z_mass != Z_sfr and not sfr_fallback:
+            ax.annotate("", xy=(Z_sfr, DZ), xytext=(Z_mass, DZ),
+                        arrowprops=dict(arrowstyle="-|>", color=color,
+                                        lw=0.8, mutation_scale=7), zorder=8)
+
+    title = f"D/Z  at $z = 0$    |    CosmicGrain ${resolution}^3$"
+    _finalize_axes(ax, aperture_pkpc, nh_min, z_weight, title)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
     print(f"\nSaved: {output_path}")
     plt.close(fig)
 
 
-# ============================================================
-# Main
-# ============================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Plot — convergence (multiple resolutions)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def make_plot_convergence(run_points, resolutions, aperture_pkpc, nh_min,
+                          z_weight, output_path):
+    """run_points : list of (run, resolution, Z_mass, Z_sfr, DZ, sfr_fallback)"""
+    show_mass = z_weight in ("mass", "both")
+    show_sfr  = z_weight in ("sfr",  "both")
+    show_both = z_weight == "both"
+
+    fig, ax = plt.subplots(figsize=(8.5, 6.5))
+    fig.patch.set_facecolor("white"); ax.set_facecolor("white")
+    _draw_reference_data(ax)
+
+    if show_both:
+        ax.scatter([], [], color="none", edgecolors="steelblue",
+                   linewidths=1.2, s=55, marker="o",
+                   label=r"CosmicGrain — mass-weighted $Z$")
+        ax.scatter([], [], color="none", edgecolors="coral",
+                   linewidths=1.2, s=55, marker="^",
+                   label=r"CosmicGrain — SFR-weighted $Z$ (HII-analog)")
+
+    valid = [(r, res, Zm, Zs, DZ, fb)
+             for r, res, Zm, Zs, DZ, fb in run_points
+             if Zm is not None and DZ is not None and DZ > 0 and Zm > 0]
+
+    unique_runs = list(dict.fromkeys(r for r, *_ in valid))
+
+    for run, resolution, Z_mass, Z_sfr, DZ, sfr_fallback in valid:
+        rcfg      = RES_CONFIGS.get(resolution, {})
+        color     = rcfg.get("color",  "#2a9d8f")
+        marker    = rcfg.get("marker", "o")
+        ms        = rcfg.get("ms",     100)
+        res_label = rcfg.get("label",  str(resolution))
+        label = (f"CosmicGrain {res_label}" if len(unique_runs) == 1
+                 else f"CosmicGrain {run} {res_label}")
+
+        if show_mass:
+            _scatter_point(ax, Z_mass, DZ, color, marker, ms,
+                           label if not show_sfr else "_nolegend_",
+                           show_both,
+                           edge_color="steelblue" if show_both else "white")
+        if show_sfr:
+            _scatter_point(ax, Z_sfr, DZ, color, "^", ms,
+                           label if not show_mass else "_nolegend_",
+                           show_both,
+                           edge_color="coral" if show_both else "white",
+                           alpha=0.45 if sfr_fallback else 1.0)
+        if not show_sfr and not show_both:
+            _scatter_point(ax, Z_mass, DZ, color, marker, ms, label)
+
+        if show_both and Z_mass != Z_sfr and not sfr_fallback:
+            ax.annotate("", xy=(Z_sfr, DZ), xytext=(Z_mass, DZ),
+                        arrowprops=dict(arrowstyle="-|>", color=color,
+                                        lw=0.8, mutation_scale=7), zorder=8)
+
+    runs_label = ", ".join(unique_runs)
+    title = f"D/Z  at $z = 0$    |    CosmicGrain {runs_label} — resolution convergence"
+    _finalize_axes(ax, aperture_pkpc, nh_min, z_weight, title)
+    fig.tight_layout()
+    fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
+    print(f"\nSaved: {output_path}")
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("snapshot",
-                        help="Snapshot base (e.g. ../snapdir_049/snapshot_049)")
-    parser.add_argument("catalog",
-                        help="Subfind catalog (e.g. ../groups_049/fof_subhalo_tab_049.0.hdf5)")
-    parser.add_argument("--r-max", type=float, default=200.0,
-                        help="Aperture radius in physical kpc (default: 200, "
-                             "0 = use 2 × halfmass_rad)")
-    parser.add_argument("--output", default="dz_vs_metallicity.png")
+    parser.add_argument("--runs", nargs="+", default=None,
+                        help="Ladder runs to include. Default: S0–S10 for "
+                             "single-res mode; S10 for convergence mode.")
+    parser.add_argument("--res", nargs="+", type=int, default=[512],
+                        help="Resolution(s). Single value → physics ladder. "
+                             "Multiple values → convergence plot. (default: 512)")
+    parser.add_argument("--aperture", type=float, default=20.0,
+                        help="Aperture radius in physical kpc (default: 20 pkpc)")
+    parser.add_argument("--nh-min", dest="nh_min", type=float, default=None,
+                        help="Minimum nH [cm^-3] to restrict to ISM gas "
+                             "(recommended: 0.1; default: None)")
+    parser.add_argument("--z-weight", dest="z_weight",
+                        choices=["mass", "sfr", "both"], default="mass",
+                        help="Metallicity weighting: 'mass' (default), "
+                             "'sfr', or 'both'")
+    parser.add_argument("--output", default=None,
+                        help="Output path (auto-named by default)")
     args = parser.parse_args()
 
-    units = get_units(args.snapshot)
-    a, h  = units["a"], units["hubble"]
-    print(f"  a = {a:.4f}  z = {1/a-1:.2f}")
+    resolutions      = args.res
+    convergence_mode = len(resolutions) > 1
 
-    kpc_per_code  = units["unit_len_cm"] / 3.085678e21 * a / h
-    msun_per_code = units["unit_mass_g"] / 1.989e33 / h
-
-    # --- Halo centre (code units from subfind) ---
-    print("\nLoading target halo...")
-    halo     = load_target_halo(args.catalog, args.snapshot, verbose=True)
-    halo_pos = halo["halo_info"]["position"]           # code units
-
-    r_max = (args.r_max if args.r_max > 0
-             else halo["halo_info"]["halfmass_rad"] * kpc_per_code * 2.0)
-    center_phys = np.array(halo_pos) * kpc_per_code
-    print(f"  Centre (phys kpc): {center_phys}")
-    print(f"  Aperture: {r_max:.1f} kpc")
-
-    # --- Gas ---
-    print("\nExtracting gas (PartType0)...")
-    gas_coords, gas_mass, gas_Z, gas_hsml = \
-        read_gas_spatially(args.snapshot, center_phys, r_max, units)
-
-    # --- Dust (PartType6 — not in Subfind, extract spatially) ---
-    print("\nExtracting dust (PartType6)...")
-    dust_raw = extract_dust_spatially(args.snapshot, halo_pos, radius_kpc=r_max)
-    if dust_raw is not None:
-        dust_coords = dust_raw["Coordinates"] * kpc_per_code
-        dust_mass   = dust_raw["Masses"]      * msun_per_code
-        print(f"  Dust particles: {len(dust_mass):,}")
+    if args.runs is None:
+        runs = ["S10"] if convergence_mode else \
+               ["S0","S1","S2","S3","S4","S5","S6","S7","S8","S9","S10"]
     else:
-        print("  WARNING: No PartType6 found — will produce empty plot")
-        dust_coords = np.zeros((0, 3))
-        dust_mass   = np.zeros(0)
+        runs = args.runs
 
-    # --- Per-gas-particle D/Z assignment ---
-    print("\nAssigning D/Z per gas particle via KD-tree...")
-    DZ = assign_dz_kdtree(gas_coords, gas_mass, gas_Z, gas_hsml,
-                           dust_coords, dust_mass)
+    if args.output:
+        out = Path(args.output)
+    elif convergence_mode:
+        runs_str = "_".join(runs)
+        res_str  = "_".join(str(r) for r in resolutions)
+        out = FIGDIR / f"dz_convergence_{runs_str}_{res_str}_{args.z_weight}.png"
+    else:
+        out = FIGDIR / f"dz_integrated_{resolutions[0]}_{args.z_weight}.png"
 
-    # --- Plot ---
-    make_plot(gas_Z, DZ, gas_mass,
-              scale_factor=a, r_max_kpc=r_max,
-              n_dust=len(dust_mass),
-              output_path=args.output)
+    nh_str = f"{args.nh_min} cm^-3" if args.nh_min is not None else "none"
+    print(f"\nMode:        {'convergence' if convergence_mode else 'physics ladder'}")
+    print(f"Runs:        {runs}")
+    print(f"Resolutions: {resolutions}")
+    print(f"Aperture:    {args.aperture:.0f} pkpc (physical)")
+    print(f"nH cut:      {nh_str}")
+    print(f"Z-weight:    {args.z_weight}")
+    print(f"Base dir:    {BASE_DIR}")
+    print(f"Output:      {out}\n")
+
+    if convergence_mode:
+        run_points = []
+        for resolution in resolutions:
+            for run in runs:
+                snaps = find_snapshots(run, resolution)
+                if not snaps:
+                    print(f"  [{run}/{resolution}] no snapshots — skipping")
+                    continue
+                snap_base, dz = find_snap_near_z(snaps, 0.0)
+                if dz > 0.2:
+                    print(f"  [{run}/{resolution}] no z~0 snapshot "
+                          f"(dz={dz:.2f}) — skipping")
+                    continue
+                Z_mass, Z_sfr, DZ, _, sfr_fallback = compute_integrated_dz(
+                    snap_base, run, resolution,
+                    aperture_pkpc=args.aperture, nh_min=args.nh_min)
+                run_points.append(
+                    (run, resolution, Z_mass, Z_sfr, DZ, sfr_fallback))
+
+        if not any(Zm is not None for _, _, Zm, _, _, _ in run_points):
+            print("No valid run points — check snapshot paths.")
+            return
+        make_plot_convergence(run_points, resolutions,
+                              args.aperture, args.nh_min,
+                              args.z_weight, out)
+
+    else:
+        resolution = resolutions[0]
+        run_points = []
+        for run in runs:
+            snaps = find_snapshots(run, resolution)
+            if not snaps:
+                print(f"  [{run}] no snapshots — skipping")
+                continue
+            snap_base, dz = find_snap_near_z(snaps, 0.0)
+            if dz > 0.2:
+                print(f"  [{run}] no z~0 snapshot (dz={dz:.2f}) — skipping")
+                continue
+            Z_mass, Z_sfr, DZ, _, sfr_fallback = compute_integrated_dz(
+                snap_base, run, resolution,
+                aperture_pkpc=args.aperture, nh_min=args.nh_min)
+            run_points.append((run, Z_mass, Z_sfr, DZ, sfr_fallback))
+
+        if not any(Zm is not None for _, Zm, _, _, _ in run_points):
+            print("No valid run points — check snapshot paths.")
+            return
+        make_plot_ladder(run_points, resolution,
+                         args.aperture, args.nh_min,
+                         args.z_weight, out)
+
+    print("Done.")
 
 
 if __name__ == "__main__":

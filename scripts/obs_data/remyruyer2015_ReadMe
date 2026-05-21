@@ -1,0 +1,373 @@
+J/A+A/582/A121      Dust properties in galaxies              (Remy-Ruyer+, 2015)
+================================================================================
+Linking dust emission to fundamental properties in galaxies:
+the low-metallicity picture.
+    Remy-Ruyer A., Madden S.C., Galliano F., Lebouteiller V., Baes M.,
+    Bendo G.J., Boselli A., Ciesla L., Cormier D., Cooray A., Cortese L.,
+    De Looze I., Doublier-Pritchard V., Galametz M., Jones A.P.,
+    Karczewski O.L., Lu N., Spinoglio L.
+   <Astron. Astrophys., 582, A121-121 (2015)>
+   =2015A&A...582A.121R    (SIMBAD/NED BibCode)
+================================================================================
+ADC_Keywords: Galaxies, IR ; Interstellar medium ; Photometry, infrared
+Keywords: dust, extinction - evolution - galaxies: dwarf - galaxies: evolution -
+          infrared: ISM - infrared: galaxies
+
+Abstract:
+    In this work, we aim to provide a consistent analysis of the dust
+    properties from metal-poor to metal-rich environments by linking them
+    to fundamental galactic parameters. We consider two samples of
+    galaxies: the Dwarf Galaxy Survey (DGS) and the Key Insights on Nearby
+    Galaxies: a Far-Infrared Survey with Herschel (KINGFISH), totalling
+    109 galaxies, spanning almost 2dex in metallicity. We collect infrared
+    (IR) to submillimetre (submm) data for both samples and present the
+    complete data set for the DGS sample. We model the observed spectral
+    energy distributions (SED) with a physically-motivated dust model to
+    access the dust properties: dust mass, total-IR luminosity, polycyclic
+    aromatic hydrocarbon (PAH) mass fraction, dust temperature
+    distribution, and dust-to-stellar mass ratio. Using a different SED
+    model (modified black body), different dust composition (amorphous
+    carbon in lieu of graphite), or a different wavelength coverage at
+    submm wavelengths results in differences in the dust mass estimate of
+    a factor two to three, showing that this parameter is subject to
+    non-negligible systematic modelling uncertainties. We find half as
+    much dust with the amorphous carbon dust composition. For eight
+    galaxies in our sample, we find a rather small excess at 500{mu}m
+    (<=1.5{sigma}). We find that the dust SED of low-metallicity galaxies
+    is broader and peaks at shorter wavelengths compared to more
+    metal-rich systems, a sign of a clumpier medium in dwarf galaxies. The
+    PAH mass fraction and dust temperature distribution are found to be
+    driven mostly by the specific star formation rate, sSFR, with
+    secondary effects from metallicity. The correlations between
+    metallicity and dust mass or total-IR luminosity are direct
+    consequences of the stellar mass-metallicity relation. The
+    dust-to-stellar mass ratios of metal-rich sources follow the
+    well-studied trend of decreasing ratio for decreasing sSFR. The
+    relation is more complex for low-metallicity galaxies with high sSFR,
+    and depends on the chemical evolutionary stage of the source (i.e.
+    gas-to-dust mass ratio). Dust growth processes in the ISM play a key
+    role in the dust mass build-up with respect to the stellar content at
+    high sSFR and low metallicity. We conclude that the evolution of the
+    dust properties from metal-poor to metal-rich galaxies derives from a
+    complex interplay between star formation activity, stellar mass, and
+    metallicity.
+
+Description:
+    For this study, we combine two samples of local galaxies observed with
+    Herschel: the Dwarf Galaxy Survey (DGS, Madden et al.,
+    2013PASP..125..600M) and the Key Insights on Nearby Galaxies: a
+    Far-Infrared Survey with Herschel (KINGFISH, Kennicutt et al.,
+    2011PASP..123.1347K).
+
+File Summary:
+--------------------------------------------------------------------------------
+ FileName      Lrecl  Records   Explanations
+--------------------------------------------------------------------------------
+ReadMe            80        .   This file
+table4.dat        71      109   DGS and KINGFISH stellar mass and
+                                 star-formation parameters
+table5.dat       113       48   Updated Herschel flux densities for the
+                                 DGS sample
+table6.dat        97       48   Spitzer IRAC flux densities for the DGS sample
+table7.dat       105       48   WISE flux densities for the DGS sample
+table8.dat       127       48   2MASS and IRAS flux densities from the
+                                 literature for the DGS sample
+table9.dat        97      109   DGS and KINGFISH dust parameters
+tableb1.dat       60       48   DGS Spitzer/IRAC and IRS observing Log
+--------------------------------------------------------------------------------
+
+Byte-by-byte Description of file: table4.dat
+--------------------------------------------------------------------------------
+   Bytes Format Units      Label    Explanations
+--------------------------------------------------------------------------------
+   1-  8  A8    ---        Sample   Sample
+  10- 20  A11   ---        Name     Source name
+  23- 24  A2    ---      l_logM*    [<>=] Limit flag on logM*
+  25- 29  F5.2  [Msun]     logM*    Stellar mass (1)
+  31- 34  F4.2  [Msun]   e_logM*    ? rms uncertainty on logM*
+  36- 40  F5.2 [Msun/yr]   logSFR   ?=- Star-formation rates from
+                                     H{alpha}+LTIR (2)
+  42- 45  F4.2 [Msun/yr] e_logSFR   ?=- rms uncertainty on logSFR
+  47- 48  A2    ---      l_logsSFR  [<>=] Limit flag on logsSFR
+  49- 54  F6.2  [yr-1]     logsSFR  ?=- Specific star-formation rates defined
+                                     by SFR/M*
+  56- 59  F4.2  [yr-1]   e_logsSFR  ? rms uncertainty on logsSFR
+  62- 66  F5.2  [10-7W]    logLHa   ?=- H{alpha} luminosity (3)
+      68  A1    ---      n_logLHa   [a] Note on ogLHa (4)
+  70- 71  I2    ---    r_n_logLHa   ? References for n_logLHa (5)
+--------------------------------------------------------------------------------
+Note (1): Log of stellar masses estimated with the formula from
+  Eskew et al. (2012AJ....143..139E).
+Note (2): Log of star-formation rates from H{alpha}+LTIR (see Sect. 2.6.1)
+Note (3): Log of H{alpha} luminosities corrected for underlying stellar
+  absorption, NII line contamination and foreground Galactic extinction
+Note (4): a for corresponding SFRs estimated from Lee et al.
+  (2009, Cat. J/ApJ/706/599; see Sect. 2.6.1).
+Note (5): References for H{alpha} luminosities as follows:
+    1 = Schmitt et al. (2006ApJS..164...52S)
+    2 = Kennicutt et al. (2009, Cat. J/ApJ/703/1672)
+    3 = Moustakas & Kennicutt (2006, Cat. J/ApJS/164/81)
+    4 = Kennicutt et al. (2008, Cat. J/ApJS/178/247)
+    5 = Gil de Paz et al. (2003, Cat. J/ApJS/147/29)
+    6 = Popescu & Hopp (2000A&AS..142..247P)
+    7 = Iglesias-Paramo & Vilchez (1997ApJ...479..190I)
+    8 = Pustilnik et al. (2004A&A...425...51P)
+    9 = Izotov et al. (1994ApJ...435..647I)
+   10 = Izotov & Thuan (1998ApJ...500..188I)
+   11 = Terlevich et al. (1991, Cat. J/A+AS/91/285)
+   12 = Moles et al. (1994ApJ...432..135M)
+   13 = Skibba et al. (2011ApJ...738...89S)
+   14 = Plana et al. (1998A&AS..128...75P)
+--------------------------------------------------------------------------------
+
+Byte-by-byte Description of file: table5.dat
+--------------------------------------------------------------------------------
+   Bytes Format Units   Label     Explanations
+--------------------------------------------------------------------------------
+   1- 11  A11   ---     Name      Source name
+  13- 14  A2    ---   l_F70       [<>=] Limit flag on F70
+  15- 21  F7.3  Jy      F70       PACS flux at 70um
+  23- 27  F5.3  Jy    e_F70       ? rms uncertainty on F70
+      28  A1    ---   n_F70       [b] Note on F70 (1)
+  30- 31  A2    ---   l_F100      [<>=] Limit flag on F1000
+  32- 38  F7.3  Jy      F100      ?=- PACS flux at 100um
+  40- 45  F6.3  Jy    e_F100      ? rms uncertainty on F100
+      46  A1    ---   n_F100      [b] Note on F100 (1)
+  48- 49  A2    ---   l_F160      [<>=] Limit flag on F160
+  50- 56  F7.3  Jy      F160      PACS flux at 160um
+  58- 63  F6.3  Jy    e_F160      ? rms uncertainty on F160
+      65  A1    ---     Met       [SP] Map method (2)
+      66  A1    ---   n_Met       [cd] Note on Map method (1)
+  68- 69  A2    ---   l_F250      [<>=] Limit flag on F250
+  70- 75  F6.3  Jy      F250      ?=- SPIRE flux at 250um
+  77- 82  F6.3  Jy    e_F250      ? rms uncertainty on F250
+  84- 85  A2    ---   l_F350      [<>=] Limit flag on F350
+  86- 91  F6.3  Jy      F350      ?=- SPIRE flux at 350um
+  93- 98  F6.3  Jy    e_F350      ?=- rms uncertainty on F350
+ 100-101  A2    ---   l_F500      [<>=] Limit flag on F500
+ 102-107  F6.3  Jy      F500      ?=- SPIRE flux on F500
+ 109-113  F5.3  Jy    e_F500      ?=- rms uncertainty on F500
+--------------------------------------------------------------------------------
+Note (1): Notes as follows:
+  b = These upper limits come from the SED modelling (see Appendix E)
+  c = For these galaxies, the PACS map-making method was changed from
+       PhotProject to Scanamorphos since Remy-Ruyer et al. (2013A&A...557A..95R)
+  d = For these galaxies, the PACS map-making method was changed from
+       Scanamorphos to PhotProject since Remy-Ruyer et al. (2013A&A...557A..95R)
+Note (2): Map method as follows:
+  P = PhotProject
+  S = Scanamorphos
+--------------------------------------------------------------------------------
+
+Byte-by-byte Description of file: table6.dat
+--------------------------------------------------------------------------------
+   Bytes Format Units   Label     Explanations
+--------------------------------------------------------------------------------
+   1- 11  A11   ---     Name      Source name
+      12  A1    ---   n_Name      [f] Note on IC 10 (1)
+  13- 14  A2    ---   l_F3.6      [<>=] Limit flag on F3.6
+  16- 23  F8.3  mJy     F3.6      ?=- IRAC flux at 3.6um
+  25- 31  F7.3  mJy   e_F3.6      ? rms uncertainty on F3.6
+  33- 34  A2    ---   l_F4.5      [<>=] Limit flag on F4.5
+  35- 42  F8.3  mJy     F4.5      ?=- IRAC flux at 4.5um
+  44- 50  F7.3  mJy   e_F4.5      ? rms uncertainty on F4.5
+  52- 53  A2    ---   l_F5.8      [<>=] Limit flag on F5.8
+  54- 59  F6.2  mJy     F5.8      ?=- IRAC flux at 5.8um
+  61- 66  F6.2  mJy   e_F5.8      ? rms uncertainty on F5.8
+  68- 69  A2    ---   l_F8.0      [<>=] Limit flag on F8.0
+  70- 76  F7.2  mJy     F8.0      ?=- IRAC flux at 8.0um
+  78- 83  F6.2  mJy   e_F8.0      ?=- rms uncertainty on F8.0
+  86- 88  I3    arcsec  ApRad     ?=- Aperture radius
+      89  A1    ---     ---       [x]
+  90- 92  I3    arcsec  ApRad2    ? Second aperture radius
+      93  A1    ---   n_ApRad     [abcde] Note on ApRad (2)
+  95- 97  A3    ---   f_ApRad     [yes ] Aperture radius corrected ?
+--------------------------------------------------------------------------------
+Note (1): f: the IRAC maps do not cover the full galaxy. Thus we do not report
+   flux densities for this source.
+Note (2): Notes as follows:
+   a = The aperture is the same as the one used for Herschel.
+   b = The Herschel aperture has been shorten to avoid a contaminating source.
+   c = The Herschel aperture has been adapted to match the peculiar morphology.
+        of the source in the NIR.
+   d = The Herschel aperture has been enlarged to encompass all of the
+        NIR emission.
+   e = The IRAC map is smaller than the Herschel aperture. The aperture thus
+        had to be shorten.
+--------------------------------------------------------------------------------
+
+Byte-by-byte Description of file: table7.dat
+--------------------------------------------------------------------------------
+   Bytes Format Units   Label     Explanations
+--------------------------------------------------------------------------------
+   1- 11  A11   ---     Name      Source name
+      12  A1    ---   n_Name      [d] Note on NGC 6822 (1)
+  14- 15  A2    ---   l_F3.4      [<>=] Limit flag on F3.4
+  16- 23  F8.3  mJy     F3.4      ? WISE flux at 3.4um
+  25- 31  F7.3  mJy   e_F3.4      ? rms uncertainty on F3.4
+      32  A1    ---   n_F3.4      [c] Note on F3.4 (2)
+  34- 35  A2    ---   l_F4.6      [<>=] Limit flag on F4.6
+  36- 42  F7.3  mJy     F4.6      ? WISE flux at 4.6um
+  44- 49  F6.3  mJy   e_F4.6      ? rms uncertainty on F4.6
+      50  A1    ---   n_F4.6      [c] Note on F4.6
+  52- 53  A2    ---   l_F12       [<>=] Limit flag on F12
+  54- 60  F7.2  mJy     F12       ? WISE flux at 12um
+  62- 67  F6.2  mJy   e_F12       ? rms uncertainty on F12
+      68  A1    ---   n_F12       [c] Note on F12
+  70- 71  A2    ---   l_F22       [<>=] Limit flag on F22
+  72- 80  F9.3  mJy     F22       ? WISE flux at 22um
+  82- 87  F6.2  mJy   e_F22       ? rms uncertainty on F22
+      88  A1    ---   n_F22       [c] Note on F22
+  92- 94  I3    arcsec  ApRad12   ?=- First aperture radius or semi-major
+                                    axis (3)
+      95  A1    ---     ---       [x]
+  96- 98  I3    arcsec  ApRad12b  ? First aperture semi-minor axis (3)
+      99  A1    ---   r_ApRad12   [ab] Note for ApRad12 (4)
+     100  A1    ---     ---       [,]
+ 102-104  I3    arcsec  ApRad34   ? Second aperture radius (3)
+     105  A1    ---   n_ApRad34   [ab] Note for ApRad34 (4)
+--------------------------------------------------------------------------------
+Note (1): The WISE map does not cover the full galaxy. Thus we do not report
+  flux densities for this source.
+Note (2): c: This galaxy is not resolved at these wavelengths and we thus use
+  the profile fit photometry provided by the WISE database.
+Note (3): A single value indicates that only one aperture has been used for the
+  four wavelengths. Two values separated by a comma indicate that a different
+  aperture has been used for WISE1 and WISE2 on one side (first value), and
+  WISE3 and WISE4 on the other side (second value, see text for details).
+  For several galaxies elliptical apertures were used to match the morphology of
+  the source and are indicated by semi-major axis x semi-minor axis.
+  A dash indicates that we take the profile fit photometry from the All WISE
+  database.
+Note (4): Notes as follows:
+  a = The aperture is the same as that used for IRAC or Herschel photometry
+  b = The aperture has been adapted to match the peculiar morphology of the
+       source in the NIR/MIR or to avoid a contaminating source
+--------------------------------------------------------------------------------
+
+Byte-by-byte Description of file: table8.dat
+--------------------------------------------------------------------------------
+   Bytes Format Units   Label     Explanations
+--------------------------------------------------------------------------------
+   1- 11  A11   ---     Name      Source name
+      12  A1    ---   n_Name      [a] Note on Name (1)
+  14- 21  F8.3  mJy     FJ        ? 2MASS flux in J-band
+  23- 28  F6.3  mJy   e_FJ        ? rms uncertainty on FJ
+  31- 37  F7.2  mJy     FH        ? 2MASS flux in JH-band
+  39- 44  F6.2  mJy   e_FH        ? rms uncertainty on FH
+  47- 48  A2    ---   l_FKs       [<>=] Limit flag on FKs
+  49- 55  F7.2  mJy     FKs       ? 2MASS flux in Ks-band
+  57- 62  F6.2  mJy   e_FKs       ? rms uncertainty on FKs
+      64  I1    ---   r_FJ        [1/5]? Reference for 2MASS fluxes (1)
+  66- 67  A2    ---   l_F12       [<>=] Limit flag on F12
+  68- 72  F5.3  Jy      F12       ? IRAS flux at 12um
+  74- 78  F5.3  Jy    e_F12       ? rms uncertainty on F12
+      79  A1    ---   n_F12       [b] Note on F12 (2)
+  81- 82  A2    ---   l_F25       [<>=] Limit flag on F25
+  83- 88  F6.3  Jy      F25       ? IRAS flux at 25um
+  90- 94  F5.3  Jy    e_F25       ? rms uncertainty on F15
+      95  A1    ---   n_F25       [b] Note on F25 (2)
+  97- 98  A2    ---   l_F60       [<>=] Limit flag on F60
+  99-103  F5.2  Jy      F60       ? IRAS flux at 60um
+ 105-108  F4.2  Jy    e_F60       ? rms uncertainty on F60
+     109  A1    ---   n_F60       [b] Note on F60 (2)
+ 111-112  A2    ---   l_F100      [<>=] Limit flag on F100
+ 113-117  F5.2  Jy      F100      ? IRAS flux at 100um
+ 119-123  F5.2  Jy    e_F100      ? rms uncertainty on F100
+     124  A1    ---   n_F100      [b] Note on F100 (2)
+ 126-127  I2    ---   r_F12       [6/12]? References for IRAS fluxes (1)
+--------------------------------------------------------------------------------
+Note (1): References as follows:
+   1 = NASA/IPAC ISA 2MASS Point Source Catalog (Cat. II/246)
+   2 = 2MASS Extended Objects Final Release (Cat. VII/233)
+   3 = 2MASS Large Galaxy Atlas (Jarrett et al., 2003AJ....125..525J)
+   4 = Engelbracht et al. (2008ApJ...678..804E)
+   5 = Dale et al. (2009, Cat. J/ApJ/703/517)
+   6 = NASA/IPAC ISA IRAS Faint Source (v2.0 1990) (Cat. II/156)
+   7 = IRAS Point Source (v2.1) Catalogs (Cat. II/125)
+   8 = Rice et al. (1988ApJS...68...91R, Cat. VII/109)
+   9 = Sanders et al. (2003, Cat. J/AJ/126/1607)
+  10 = Engelbracht et al. (2008ApJ...678..804E)
+Note (2): Notes as follows:
+ a = The aperture used does not cover the total emission from the galaxy and
+      the 2MASS magnitudes reported in the database are not consistent with the
+      rest of the IR photometry. Thus we do not consider them for the modelling
+ b = This IRAS flux density is not consistent with the rest of the IR.
+      photometry. Thus we do not consider it for the modelling.
+--------------------------------------------------------------------------------
+
+Byte-by-byte Description of file: table9.dat
+--------------------------------------------------------------------------------
+   Bytes Format Units   Label      Explanations
+--------------------------------------------------------------------------------
+   1-  8  A8    ---     Sample     Sample
+  10- 20  A11   ---     Name       Source name
+  23- 24  A2    ---   l_logMdustGr [<>=] Limit flag on logMdustGr
+  25- 28  F4.2  [Msun]  logMdustGr ? Dust mass derived using graphite for the
+                                      carbonaceous component
+      29  A1    ---   n_logMdustGr [a] Note on logMdustGr (4)
+  30- 33  F4.2  [Msun]  logMdustAc ? Dust mass derived using amorphous carbons
+                                      for the carbonaceous component
+  35- 39  F5.2  [Lsun]  logLTIR    ? Total infrared luminosity, from the
+                                      best-fit model and integrated between
+                                      1 and 1000um
+      40  A1    ---   n_logLTIR    [b] Note on logLTIR (4)
+  41- 42  A2    ---   l_fPAH       [<>=] Limit flag on fPAH
+  43- 46  F4.2  ---     fPAH       ? PAH mass fraction, normalised to the
+                                      Galactic value fPAH_{sun}_=4.57%
+      47  A1    ---   n_fPAH       [c] Note on fPAH (4)
+  48- 53  E6.2  ---     <U>        ? Mass-averaged starlight intensity (1)
+  55- 60  E6.2  ---     sigmaU     ? Standard deviation of the starlight
+                                      intensity distribution (2)
+  62- 65  F4.1  K       Tdust      ? Average dust temperature (3)
+      66  A1    ---   n_Tdust      [a] Note on Tdust (4)
+  68- 74  F7.2  Sun     Umin       ? Minimum value of the starlight intensity,
+                                      normalised to the Galactic value U_{sun}_
+  76- 82  E7.1  Sun     DU         ? Difference between the maximum and minimum
+                                      values of the starlight intensity
+                                      distribution, normalised to the Galactic
+                                      value U_{sun}_
+  84- 87  F4.2  ---     alpha      ? Index of the power law describing the
+                                      starlight intensity distribution
+  89- 92  F4.0  K       TMIRBB     ? Temperature of the additional MIR modBB
+      93  A1    ---     ---        [,]
+  95- 97  I3    K       TMIRBBb    ? Second value of temperature of the
+                                      additional MIR modBB
+--------------------------------------------------------------------------------
+Note (1): computed with Eq. (1), normalised to the Galactic value
+  U_{sun}_=2.2x10^-5^W/m^2^
+Note (2): computed with Eq.  (2), normalised to the Galactic value U_{sun}_
+Note (3): computed by integrating Eq. (1) over T=T_MW_xU^1/(4+{beta})^,
+  with {beta}= 2.0, and T_MW_=19.7K from Planck Collaboration XI (2014)
+Note (4): Notes as follows:
+  a = Dust mass and temperature obtained from a modBB fit (see Sect. 3.2.2).
+  b = LTIR obtained from Galametz et al. (2013MNRAS.431.1956G) calibrations as
+       no SED fit was possible for this galaxy.
+  c = In these galaxies the fit converges towards 0: no PAH are detected and
+       it is not possible to give an upper limit with the method described in
+       Sect. 4.3.
+--------------------------------------------------------------------------------
+
+Byte-by-byte Description of file: tableb1.dat
+--------------------------------------------------------------------------------
+   Bytes Format Units   Label     Explanations
+--------------------------------------------------------------------------------
+   1- 11  A11   ---     Name      Source name
+  12- 14  A3    ---   n_Name      [abc, ] Note on Name (1)
+  17- 24  I8    ---     IRAC      IRAC AOR key
+  26- 52  A27   ---     IRS       IRS AOR key
+  54- 60  A7    ---     Ext       IRS Extraction
+--------------------------------------------------------------------------------
+Note (1): Note s as follows:
+  a = For these galaxies, the IRS slits are not centred on the source position
+       and thus we do not present any IRS spectrum
+  b = For these galaxies, only local pointings were performed and we cannot
+       present an IRS spectrum for the total galaxy
+  c = Only high resolution IRS spectra (SH and/or LH) are available
+--------------------------------------------------------------------------------
+
+History:
+    From electronic version of the journal
+
+================================================================================
+(End)                                      Patricia Vannier [CDS]    22-Jan-2016

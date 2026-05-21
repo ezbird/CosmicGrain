@@ -73,6 +73,16 @@ typedef unsigned int MyIDType;
 typedef unsigned long long MyIDType;
 #endif
 
+// MPI datatype matching MyIDType — use this everywhere instead of hardcoding
+// MPI_UNSIGNED or MPI_UNSIGNED_LONG_LONG, so that MPI reductions on MyIDType
+// are correct regardless of whether IDS_32BIT is defined.
+// Used in: dust.cc (dust_global_synchronization), init.cc (dust ID repair block)
+#ifdef IDS_32BIT
+#define MPI_MYIDTYPE MPI_UNSIGNED
+#else
+#define MPI_MYIDTYPE MPI_UNSIGNED_LONG_LONG
+#endif
+
 #ifdef FOF_ALLOW_HUGE_GROUPLENGTH
 typedef long long MyLenType;
 #else

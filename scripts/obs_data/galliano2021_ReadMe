@@ -1,0 +1,108 @@
+J/A+A/649/A18     Nearby galaxy perspective on dust evolution  (Galliano+, 2021)
+================================================================================
+A nearby galaxy perspective on dust evolution.
+Scaling relations and constraints on the dust build-up in galaxies with the
+DustPedia and DGS samples.
+    Galliano F., Nersesian A., Bianchi S., De Looze I., Roychowdhury S.,
+    Baes M., Casasola V., Cassara L.P., Dobbels W., Fritz J., Galametz M.,
+    Jones A.P., Madden S.C., Mosenkov A., Xilouris E.M., Ysard N.
+    <Astron. Astrophys. 649, A18 (2021)>
+    =2021A&A...649A..18G        (SIMBAD/NED BibCode)
+================================================================================
+ADC_Keywords: Galaxies, nearby ; Abundances
+Keywords: ISM: abundances, dust, evolution - galaxies: evolution -
+          methods: statistical
+
+Abstract:
+    The efficiency of the different processes responsible for the
+    evolution of interstellar dust on the scale of a galaxy are, to date,
+    very uncertain, spanning several orders of magnitude in the
+    literature. Yet, precise knowledge of the grain properties is key to
+    addressing numerous open questions about the physics of the
+    interstellar medium and galaxy evolution.
+
+    This article presents an empirical statistical study, aimed at
+    quantifying the timescales of the main cosmic dust evolution processes
+    as a function of the global properties of a galaxy.
+
+    We have modelled a sample of ~800 nearby galaxies, spanning a wide
+    range of metallicity, gas fraction, specific star formation rate and
+    Hubble stage. We have derived the dust properties of each object from
+    its spectral energy distribution. Throughout this paper, we have
+    adopted a hierarchical Bayesian approach, resulting in a single large
+    probability distribution of all the parameters of all the galaxies, to
+    ensure the most rigorous interpretation of our data.
+
+    We confirm the drastic evolution with metallicity of the dust-to-metal
+    mass ratio (by two orders of magnitude), found by previous studies. We
+    confirm the well-known evolution of the aromatic-feature-emitting
+    grain mass fraction as a function of metallicity and interstellar
+    radiation field intensity. Our data indicate the relation with
+    metallicity is significantly stronger.
+
+    Our results provide valuable constraints for simulations of galaxies.
+    They imply that grain growth is the likely dust production mechanism
+    in dusty high-redshift objects. We also emphasize the determinant role
+    of local, low metallicity systems in order to address these questions.
+
+Description:
+    This table gives the hierarchical Bayesian SED fitting results for 798
+    galaxies. We quote the dust mass, mean starlight intensity, fraction
+    of small amorphous carbon grains, gas mass, fraction of molecular gas,
+    stellar mass, specific star formation rate, and metallicity. The
+    rigorous uncertainty of each of these parameters is also provided.
+
+File Summary:
+--------------------------------------------------------------------------------
+ FileName      Lrecl  Records   Explanations
+--------------------------------------------------------------------------------
+ReadMe            80        .   This file
+tableh1.dat      255      798   SED fitting results
+--------------------------------------------------------------------------------
+
+See also:
+ J/A+A/609/A37  : 875 nearby galaxies multiwavelength photometry (Clark+, 2018)
+ J/A+A/620/A112 : Template SED of DustPedia galaxies (Bianchi+, 2018)
+ J/A+A/622/A132 : Dust emission profiles of DustPedia galaxies (Mosenkov+, 2019)
+ J/A+A/623/A5   : DustPedia metallicities and HI masses (De Vis+, 2019)
+ J/A+A/699/A346 : Gas and dust in DustPedia galaxies (Salvestrini+, 2025)
+
+ http://dustpedia.astro.noa.gr : DustPedia catalog Home Page
+
+Byte-by-byte Description of file: tableh1.dat
+--------------------------------------------------------------------------------
+   Bytes Format Units          Label      Explanations
+--------------------------------------------------------------------------------
+   1- 15  A15   ---            Galaxy     Galaxy name according to the DustPedia
+                                           catalog (1)
+  16- 30  E15.5 [Msun]         logMdust   Decimal logarithm of the dust mass
+  31- 45  E15.5 [Msun]       e_logMdust   Uncertainty on logMdust
+  46- 60  E15.5 [2.2E-5W/m2]   logUav     Decimal logarithm of the average
+                                           starlight intensity, U, in 2.2E-5W/m2
+  61- 75  E15.5 [2.2E-5W/m2] e_logUav     Uncertainty on logUav
+  76- 90  E15.5 [-]            logqAF     Decimal logarithm of the mass fraction
+                                           of small a-C(:H) grains
+  91-105  E15.5 [-]          e_logqAF     Uncertainty on logqAF
+ 106-120  E15.5 [Msun]         logMgas    ?=- Decimal logarithm of the gas mass
+ 121-135  E15.5 [Msun]       e_logMgas    ?=- Uncertainty on logMgas
+ 136-150  E15.5 [-]            logfmol    ?=- Decimal logarithm of the mass
+                                           fraction of molecular gas
+ 151-165  E15.5 [-]          e_logfmol    ?=- Uncertainty on logfmol
+ 166-180  E15.5 [Msun]         logMstar   ?=- Decimal logarithm of the stellar
+                                           mass
+ 181-195  E15.5 [Msun]       e_logMstar   ?=- Uncertainty on logMstar
+ 196-210  E15.5 [yr-1]         logsSFR    ?=- Decimal logarithm of the specific
+                                           star formation rate
+ 211-225  E15.5 [yr-1]       e_logsSFR    ?=- Uncertainty on logsSFR
+ 226-240  E15.5 [-]            logOovHp12 ?=- Metallicity expressed as
+                                           12+log(O/H)
+ 241-255  E15.5 [-]          e_logOovHp12 ?=- Uncertainty on 12+log(O/H)
+--------------------------------------------------------------------------------
+Note (1): DustPedia catalog at http://dustpedia.astro.noa.gr/
+--------------------------------------------------------------------------------
+
+Acknowledgements:
+    Frederic Galliano, frederic.galliano(at)cea.fr
+
+================================================================================
+(End)   Frederic Galliano [AIM, France], Patricia Vannier [CDS]      07-Jan-2021

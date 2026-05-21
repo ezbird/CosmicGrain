@@ -144,7 +144,7 @@ def make_histogram(ax, data, xlabel, title, bins=50, log_x=False, log_y=False, c
     
     # Add statistics text
     stats_text = f'N = {len(data):,}\nMedian = {np.median(data):.2e}\nMean = {np.mean(data):.2e}'
-    ax.text(0.97, 0.97, stats_text, transform=ax.transAxes, 
+    ax.text(0.4, 0.97, stats_text, transform=ax.transAxes, 
             fontsize=8, verticalalignment='top', horizontalalignment='right',
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
@@ -328,13 +328,15 @@ def main():
     
     make_histogram(ax3, masses, 'Mass (M$_\\odot$)', 'Masses', 
                    bins=args.bins, log_x=True, log_y=False, color='coral')
-    
+    ax3.set_xlim(1e0, 1e5)
+
     make_histogram(ax4, vel_mag, 'Velocity (km/s)', 'Velocity Magnitude', 
                    bins=args.bins, log_x=False, log_y=False, color='purple')
     
     make_histogram(ax5, dust_temp, 'Temperature (K)', 'Temperature', 
                    bins=args.bins, log_x=False, log_y=False, color='crimson')
-    
+    ax5.set_xlim(16, 18)
+
     make_histogram(ax6, dust_age_gyr, age_label, age_title, 
                    bins=args.bins, log_x=False, log_y=False, color='darkorange')
     

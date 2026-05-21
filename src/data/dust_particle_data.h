@@ -18,10 +18,11 @@
  */
 struct dust_data
 {
-  float GrainRadius;        /*!< grain radius in cm (e.g., 1e-5 = 0.1 micron) */
+  float GrainRadius;        /*!< grain radius in nm (e.g., 100 = 0.1 micron) */
   float CarbonFraction;     /*!< fraction of mass in carbonaceous grains (0-1) */
   float DustTemperature;    /*!< dust temperature in K */
-  int GrainType;  /*!< grain composition: 0=silicate, 1=carbon, 2=mixed */
+  float BirthPos[3];        /*!< star birth position in comoving kpc/h */ 
+  int GrainType;            /*!< grain composition: 0=silicate, 1=carbon, 2=mixed */
   
   // Helper functions
   inline double get_grain_radius_microns(void) { return GrainRadius * 1e4; }  // Convert cm to microns

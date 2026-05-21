@@ -1973,6 +1973,17 @@ long long IO_Def::get_particles_in_block(int blocknr, long long *npart_file, int
         return npart;
         break;
 
+      case NON_DUST_TYPES:
+          for(int i = 0; i < NTYPES; i++)
+          {
+              typelist[i] = 0;
+              if(i != 6)   // everything except dust
+                  typelist[i] = (npart_file[i] > 0);
+              npart += npart_file[i] * typelist[i];
+          }
+          return npart;
+          break;
+
       case Z_BLOCK:
         for(int i = 0; i < NTYPES; i++)
           {

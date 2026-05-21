@@ -54,6 +54,10 @@
 #include "../cooling_sfr/feedback.h"
 #endif
 
+#ifdef DUST
+#include "../dust/dust.h"
+#endif
+
 /*!
  *  This file contains various functions to initialize a simulation run. In
  *  particular, the parameter file is read in and parsed and global variables
@@ -446,6 +450,11 @@ void sim::set_units(void)
  */
 void sim::endrun(void)
 {
+
+  #ifdef DUST
+    close_dust_particle_log();
+  #endif
+
   mpi_printf("endrun called, calling MPI_Finalize()\nbye!\n\n");
   fflush(stdout);
 

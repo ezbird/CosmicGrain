@@ -324,7 +324,7 @@ SUBDIRS += cooling_sfr
 endif
 
 ifeq (DUST,$(findstring DUST,$(CONFIGVARS)))
-OBJS    += dust/dust.o
+OBJS    += dust/dust.o dust/dust_particle_log.o
 INCL    += dust/dust.h 
 SUBDIRS += dust
 endif

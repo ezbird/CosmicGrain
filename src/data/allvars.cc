@@ -227,6 +227,7 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustYieldAGB", &DustYieldAGB, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustGrowthCalibration", &DustGrowthCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustAccommodationCoeff", &DustAccommodationCoeff, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustRadiationPressureEfficiency", &DustRadiationPressureEfficiency, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustShockAmbientDensity", &DustShockAmbientDensity, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMinSNII", &DustOffsetMinSNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMaxSNII", &DustOffsetMaxSNII, PARAM_DOUBLE, PARAM_FIXED);

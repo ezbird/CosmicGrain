@@ -29,7 +29,7 @@ Spatial scoping
 ALL snapshot-based measurements and the LaTeX table use EXACTLY R200 as the
 aperture radius, derived in this priority order:
   1. Group_R_Mean200 from the SubFind/FOF group catalog (most direct).
-  2. First-principles calculation from Group_M_Mean200 + cosmological header.
+  2. First-principles calculation from Group_M_Crit200 + cosmological header.
   3. Hard fallback: 300 comoving kpc/h (logged as a warning).
 
 Radii from the catalog are in comoving kpc/h (Gadget-4 code length units),
@@ -65,10 +65,14 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import matplotlib.colors as mcolors
 from collections import defaultdict
+from scipy.spatial import cKDTree
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
+
+R_ISM_PKPC = 20.0   # disk/CGM boundary from Halo 569 stellar surface density
+                     # break at z=0 (see stellar_mass_profile.py)
 
 UnitMass_in_g        = 1.989e43          # 1e10 M_sun in grams
 UnitLength_in_cm     = 3.085678e21       # 1 comoving kpc/h in cm
@@ -120,9 +124,8 @@ def find_catalog(run, snap_base):
 
 
 def _read_header(snap_base):
-    """Read cosmological/unit parameters from snapshot header."""
     import h5py
-    defaults = dict(h=0.7, Omega0=0.3, OmegaL=0.7, a=1.0,
+    defaults = dict(h=0.6774, Omega0=0.3, OmegaL=0.7, a=1.0,
                     um_cgs=1.989e43, ul_cm=3.085678e21)
     for suffix in ['.0.hdf5', '.hdf5']:
         f = snap_base + suffix
@@ -130,19 +133,48 @@ def _read_header(snap_base):
             continue
         try:
             with h5py.File(f, 'r') as hf:
-                attrs = hf['Header'].attrs
+                hdr_attrs    = hf['Header'].attrs
+                param_attrs  = hf['Parameters'].attrs   # HubbleParam lives here
                 return dict(
-                    h      = float(attrs.get('HubbleParam',    defaults['h'])),
-                    Omega0 = float(attrs.get('Omega0',         defaults['Omega0'])),
-                    OmegaL = float(attrs.get('OmegaLambda',    defaults['OmegaL'])),
-                    a      = float(attrs.get('Time',           defaults['a'])),
-                    um_cgs = float(attrs.get('UnitMass_in_g',     defaults['um_cgs'])),
-                    ul_cm  = float(attrs.get('UnitLength_in_cm',  defaults['ul_cm'])),
+                    h      = float(param_attrs.get('HubbleParam',   defaults['h'])),
+                    Omega0 = float(hdr_attrs.get('Omega0',          defaults['Omega0'])),
+                    OmegaL = float(hdr_attrs.get('OmegaLambda',     defaults['OmegaL'])),
+                    a      = float(hdr_attrs.get('Time',            defaults['a'])),
+                    um_cgs = float(param_attrs.get('UnitMass_in_g',    defaults['um_cgs'])),
+                    ul_cm  = float(param_attrs.get('UnitLength_in_cm', defaults['ul_cm'])),
                 )
         except Exception:
             pass
     return defaults
 
+
+def compute_local_dgr(gas, dust):
+    """
+    Assign dust to nearest gas particle and compute local DGR per gas particle
+    """
+
+    gas_pos  = gas['pos']
+    gas_mass = gas['mass']
+
+    dust_pos  = dust['pos']
+    dust_mass = dust['mass']
+
+    # Build KD-tree on gas
+    tree = cKDTree(gas_pos)
+
+    # Find nearest gas index for each dust particle
+    _, idx = tree.query(dust_pos, k=1)
+
+    # Accumulate dust mass onto gas particles
+    dust_on_gas = np.zeros(len(gas_mass))
+    np.add.at(dust_on_gas, idx, dust_mass)
+
+    # Local DGR
+    dgr_local = np.zeros_like(gas_mass)
+    mask = gas_mass > 0
+    dgr_local[mask] = dust_on_gas[mask] / gas_mass[mask]
+
+    return dgr_local
 
 def _compute_r200_from_m200(m200_code, snap_base):
     """
@@ -178,7 +210,7 @@ def get_r200_and_center(run, snap_base, verbose=True, catalog_only=False):
 
     Priority for R200:
       1. Group_R_Mean200 from SubFind catalog
-      2. Derived from Group_M_Mean200 via _compute_r200_from_m200
+      2. Derived from Group_M_Crit200 via _compute_r200_from_m200
       3. Hard fallback: 300 comoving kpc/h (warning printed)
          — suppressed when catalog_only=True (returns (None,None) instead)
 
@@ -213,8 +245,8 @@ def get_r200_and_center(run, snap_base, verbose=True, catalog_only=False):
                     n_grps = 0
                     if 'GroupPos' in grp:
                         n_grps = grp['GroupPos'].shape[0]
-                    elif 'Group_M_Mean200' in grp:
-                        n_grps = grp['Group_M_Mean200'].shape[0]
+                    elif 'Group_M_Crit200' in grp:
+                        n_grps = grp['Group_M_Crit200'].shape[0]
 
                     if n_grps == 0:
                         if verbose:
@@ -226,7 +258,9 @@ def get_r200_and_center(run, snap_base, verbose=True, catalog_only=False):
                         if verbose:
                             print(f'    [{run}] center from GroupPos: {ctr}')
 
-                    if 'Group_R_Mean200' in grp:
+                    if 'Group_R_Crit200' in grp:
+                        r200 = float(grp['Group_R_Crit200'][0])
+                    elif 'Group_R_Mean200' in grp:          # fallback if Crit200 absent
                         r200 = float(grp['Group_R_Mean200'][0])
                         if verbose:
                             hdr = _read_header(snap_base)
@@ -234,8 +268,8 @@ def get_r200_and_center(run, snap_base, verbose=True, catalog_only=False):
                             print(f'    [{run}] R200 from catalog: '
                                   f'{r200:.1f} ckpc/h ({r200_phys:.1f} pkpc)')
 
-                    if r200 is None and 'Group_M_Mean200' in grp:
-                        m200 = float(grp['Group_M_Mean200'][0])
+                    if r200 is None and 'Group_M_Crit200' in grp:
+                        m200 = float(grp['Group_M_Crit200'][0])
                         r200 = _compute_r200_from_m200(m200, snap_base)
 
                     if r200 is None:
@@ -734,6 +768,97 @@ def savefig(fig, name):
 # PART 1 plots — log-based
 # ─────────────────────────────────────────────────────────────────────────────
 
+def plot_dgr_vs_metallicity_local(runs, target_z=0.0):
+
+    Z_sun = 0.0134
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    for run in runs:
+
+        snaps = find_snapshots(run)
+        if not snaps:
+            continue
+
+        snap_base, dz = find_snap_near_z_with_catalog(run, snaps, target_z)
+        if dz > 0.2:
+            continue
+
+        ctr, r200 = get_r200_and_center(run, snap_base, verbose=False)
+        if ctr is None:
+            continue
+
+        gas  = load_gas_for_snap(snap_base, ctr, r200)
+        dust = load_dust_for_snap(snap_base, ctr, r200)
+
+        if gas is None or dust is None:
+            continue
+
+        if gas['metallicity'] is None:
+                    continue
+
+        Z_gas = gas['metallicity']
+        if Z_gas.ndim == 2:
+            Z_gas = Z_gas[:, 0]
+
+        # --- compute local DGR ---
+        # Z_gas is the gas-phase metallicity, depleted by grain growth.
+        # Observations trace TOTAL metallicity (gas + dust), so we add
+        # the local dust fraction back before plotting. Without this,
+        # grain-growth-active cells appear shifted left on the x-axis
+        # while having high D/Z, producing an artificially inverted slope.
+        dgr_local = compute_local_dgr(gas, dust)
+        Z = Z_gas + dgr_local   # total metallicity = gas-phase + dust
+
+        # --- compute nH ---
+        nH = gas['density'] * UnitDensity_in_cgs * HYDROGEN_MASSFRAC / PROTON_MASS_CGS
+
+        # --- STAR-FORMING CUT ---
+        sf_mask = nH > 1.0   # tweakable
+
+        # apply mask
+        Z_sf   = Z[sf_mask]
+        dgr_sf = dgr_local[sf_mask]
+
+        # remove zeros / bad values
+        good = (Z_sf > 0) & (dgr_sf > 0)
+
+        logZ   = np.log10(Z_sf[good] / Z_sun)
+        logDGR = np.log10(dgr_sf[good])
+
+        #ax.scatter(logZ, logDGR,                   s=2, alpha=0.3,                   color=RUN_CONFIGS.get(run, {}).get('color', 'black'),                   label=run)
+        #ax.plot(med_x, med_y, lw=2)
+
+        # optional: median trend
+        bins = np.linspace(-3, 0.5, 25)
+        digitized = np.digitize(logZ, bins)
+
+        med_x, med_y = [], []
+        for i in range(1, len(bins)):
+            m = digitized == i
+            if np.sum(m) < 20:
+                continue
+            med_x.append(np.median(logZ[m]))
+            med_y.append(np.median(logDGR[m]))
+
+        #ax.plot(med_x, med_y, lw=2, color=RUN_CONFIGS.get(run, {}).get('color', 'black'))
+
+        ax.plot(med_x, med_y, lw=2, label=run)
+
+    # --- SIMBA relation ---
+    x = np.linspace(-3, 0.5, 200)
+    y = 2.445 * x - 2.029
+    ax.plot(x, y, 'k--', lw=2, label='SIMBA (Li+2019)')
+
+    ax.set_xlabel(r'$\log_{10}(Z/Z_\odot)$')
+    ax.set_ylabel(r'$\log_{10}(\mathrm{DGR})$')
+    ax.set_title(f'Local DGR vs Metallicity (Star-forming gas, z~{target_z})')
+
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    savefig(fig, f'dgr_vs_metallicity_local_z{target_z:.1f}.png')
+
 def plot_dust_mass(log_data):
     fig, ax = plt.subplots(figsize=(8, 5))
     for run, d in log_data.items():
@@ -1070,6 +1195,75 @@ def plot_grain_size_distribution(runs, target_redshifts=None):
     savefig(fig, 'grain_size_dist_allz.png')
 
 
+def compute_ism_dust_mass(gas, dust, hdr, center_ckpc_h, n_thresh_cgs=0.1):
+    """
+    Compute ISM-restricted dust mass, gas mass, metal mass, and mass-weighted
+    mean grain radius.
+ 
+    ISM aperture: r < R_ISM_PKPC (20 pkpc) AND n_H > n_thresh_cgs (0.1 cm^-3).
+    Dust particles are assigned to the ISM via their nearest gas neighbour
+    (KDTree), with an additional direct radial cut on dust positions.
+ 
+    Returns
+    -------
+    M_dust_ISM   : float   [code units]
+    M_gas_ISM    : float   [code units]
+    M_metal_ISM  : float   [code units]  (gas-phase + dust)
+    mean_a_ism   : float or None  [nm]   mass-weighted mean grain radius in ISM
+    """
+    a, h    = hdr['a'], hdr['h']
+    to_pkpc = a / h
+ 
+    nH     = gas['density'] * UnitDensity_in_cgs * HYDROGEN_MASSFRAC / PROTON_MASS_CGS
+    r_pkpc = np.linalg.norm(gas['pos'] - center_ckpc_h, axis=1) * to_pkpc
+ 
+    ism_mask = (nH > n_thresh_cgs) & (r_pkpc < R_ISM_PKPC)
+
+    print(f"      DEBUG nH: min={nH.min():.3e}  max={nH.max():.3e}  "
+          f"n_pass_density={(nH > n_thresh_cgs).sum()}")
+    print(f"      DEBUG r_pkpc: min={r_pkpc.min():.2f}  max={r_pkpc.max():.2f}  "
+          f"n_pass_radius={(r_pkpc < R_ISM_PKPC).sum()}")
+    print(f"      DEBUG ism_mask total: {ism_mask.sum()} / {len(ism_mask)}")
+    print(f"      DEBUG to_pkpc={to_pkpc:.4f}  a={a}  h={h}")
+
+    dense_mask = nH > n_thresh_cgs
+    print(f"      Dense gas r_pkpc: {np.sort(r_pkpc[dense_mask])[:10]} ... max={r_pkpc[dense_mask].max():.1f}")
+
+    # After the ism_mask computation, add:
+    print(f"      Dense gas radii: {np.sort(r_pkpc[nH > 0.1])}")
+    print(f"      Main halo SFR proxy — gas within 20 pkpc: {(r_pkpc < 20).sum()} particles, "
+          f"max nH={nH[r_pkpc < 20].max():.3e} cm^-3")
+
+    if not np.any(ism_mask):
+        return 0.0, 0.0, 0.0, None
+ 
+    tree    = cKDTree(gas['pos'])
+    _, idx  = tree.query(dust['pos'], k=1)
+ 
+    dust_r_pkpc = np.linalg.norm(dust['pos'] - center_ckpc_h, axis=1) * to_pkpc
+    dust_ism    = ism_mask[idx] & (dust_r_pkpc < R_ISM_PKPC)
+ 
+    M_dust_ISM = float(dust['mass'][dust_ism].sum())
+    M_gas_ISM  = float(gas['mass'][ism_mask].sum())
+ 
+    if gas['metallicity'] is not None:
+        Z = gas['metallicity']
+        if Z.ndim == 2:
+            Z = Z[:, 0]
+        M_metal_ISM = float((gas['mass'][ism_mask] * Z[ism_mask]).sum()) + M_dust_ISM
+    else:
+        M_metal_ISM = 0.0
+ 
+    # ISM mass-weighted mean grain radius
+    ism_dust_mass = dust['mass'][dust_ism]
+    if ism_dust_mass.sum() > 0 and 'grain_radius' in dust:
+        mean_a_ism = float(np.average(dust['grain_radius'][dust_ism],
+                                      weights=ism_dust_mass))
+    else:
+        mean_a_ism = None
+ 
+    return M_dust_ISM, M_gas_ISM, M_metal_ISM, mean_a_ism
+
 def plot_carbon_fraction_pdf(runs, target_z=0.0):
     """Carbon fraction PDF at target_z; aperture = R200."""
     fig, ax = plt.subplots(figsize=(7, 5))
@@ -1309,85 +1503,106 @@ def plot_dust_map(runs, target_z=0.0, size_kpc=50.0, npix=256):
 def compute_table_stats(runs, log_data):
     """
     Compute per-run z~0 statistics for the LaTeX table.
-    Aperture = exactly R200 from SubFind (same as all snapshot plots).
-
-    Returns dict  run -> {Mstar_over_Mhalo, mean_a_nm, f_surv, DtoG, DtoZ,
-                           Mdust_over_Mstar, f_carb, z_snap}
+ 
+    Aperture for halo-wide quantities: R200 from SubFind.
+    Aperture for ISM quantities: r < 20 pkpc AND n_H > 0.1 cm^-3.
+ 
+    Returns dict  run -> {
+        Mstar_over_Mhalo,
+        Mdust_over_Mstar,
+        f_surv,
+        mean_a_ism,       # ISM mass-weighted mean grain radius (nm)
+        mean_a_nm,        # R200 mass-weighted mean grain radius (nm)
+        DtoG_ISM,
+        DtoG,
+        DtoZ_ISM,
+        DtoZ,
+        f_carb,           # halo mass-weighted mean carbon fraction
+        z_snap,
+    }
     """
     table = {}
-
+ 
     for run in runs:
         print(f'\n  [{run}] computing table stats...')
         ts = {}
-
+ 
         snaps = find_snapshots(run)
         if not snaps:
             print(f'    no snapshots found')
-            table[run] = ts; continue
-
+            table[run] = ts
+            continue
+ 
         snap_base, dz = find_snap_near_z_with_catalog(run, snaps, 0.0)
         if dz > 0.5:
             print(f'    WARNING: closest snapshot is dz={dz:.2f} from z=0')
-
+ 
         ts['z_snap'] = snap_redshift(snap_base) or 0.0
         hdr          = _read_header(snap_base)
         msun_per_code = hdr['um_cgs'] / 1.989e33
-
-        # Halo centre and R200
+ 
+        # Halo center and R200
         ctr, r200 = get_r200_and_center(run, snap_base, verbose=True)
         if ctr is None:
             print(f'    cannot determine halo center — skipping')
-            table[run] = ts; continue
-
+            table[run] = ts
+            continue
+ 
         print(f'    aperture = R200 = {r200:.1f} ckpc/h '
               f'({r200 * hdr["a"] / hdr["h"]:.1f} pkpc)')
-
-        # M200 from catalog (for M*/Mhalo)
-        catalog = find_catalog(run, snap_base)
+ 
+        # M200 from catalog
+        catalog   = find_catalog(run, snap_base)
         m200_code = None
         if catalog is not None:
             try:
                 import h5py
                 with h5py.File(catalog, 'r') as hf:
-                    if 'Group' in hf and 'Group_M_Mean200' in hf['Group']:
-                        m200_code = float(hf['Group']['Group_M_Mean200'][0])
+                    if 'Group' in hf and 'Group_M_Crit200' in hf['Group']:
+                        m200_code = float(hf['Group']['Group_M_Crit200'][0])
             except Exception:
                 pass
-
-        # Stellar mass
-        stars = load_stars_for_snap(snap_base, ctr, r200)
+ 
+        # ── Stellar mass ──────────────────────────────────────────────────────
+        stars       = load_stars_for_snap(snap_base, ctr, r200)
         M_star_code = float(stars['mass'].sum()) \
                       if (stars and len(stars['mass']) > 0) else 0.0
-        ts['M_star_msun']       = M_star_code * msun_per_code
-        ts['Mstar_over_Mhalo']  = (M_star_code / m200_code) \
-                                   if (m200_code and m200_code > 0) else None
-
-        # Dust
+        ts['M_star_msun']      = M_star_code * msun_per_code
+        ts['Mstar_over_Mhalo'] = (M_star_code / m200_code) \
+                                  if (m200_code and m200_code > 0) else None
+ 
+        # ── Dust (R200) ───────────────────────────────────────────────────────
         dust = load_dust_for_snap(snap_base, ctr, r200)
         if dust and len(dust.get('mass', [])) > 0:
             M_dust_code = float(dust['mass'].sum())
+ 
+            # R200 mass-weighted mean grain radius  (corrected from previous
+            # version which labelled this as ISM-restricted in the caption)
             ts['mean_a_nm'] = float(np.average(dust['grain_radius'],
                                                weights=dust['mass'])) \
                               if 'grain_radius' in dust else None
-            ts['f_carb']    = float(np.average(dust['carbon_frac'],
-                                               weights=dust['mass'])) \
-                              if 'carbon_frac' in dust else None
+ 
+            # R200 mass-weighted carbon fraction
+            ts['f_carb'] = float(np.average(dust['carbon_frac'],
+                                            weights=dust['mass'])) \
+                           if 'carbon_frac' in dust else None
         else:
             M_dust_code   = 0.0
             ts['mean_a_nm'] = None
             ts['f_carb']    = None
-
+ 
         ts['Mdust_over_Mstar'] = (M_dust_code / M_star_code) \
                                   if M_star_code > 0 else None
-
-        # Gas (all halo gas within R200)
+ 
+        # ── Gas — halo-wide (R200) ────────────────────────────────────────────
         gas = load_gas_for_snap(snap_base, ctr, r200)
         if gas and len(gas['mass']) > 0:
             M_gas_halo = float(gas['mass'].sum())
             if gas['metallicity'] is not None:
                 Z = gas['metallicity']
-                if Z.ndim == 2: Z = Z[:, 0]
-                M_metal_halo = float((gas['mass'] * Z).sum())
+                if Z.ndim == 2:
+                    Z = Z[:, 0]
+                M_metal_halo = float((gas['mass'] * Z).sum()) + M_dust_code
             else:
                 M_metal_halo = 0.0
             ts['DtoG'] = M_dust_code / M_gas_halo   if M_gas_halo   > 0 else 0.0
@@ -1395,31 +1610,50 @@ def compute_table_stats(runs, log_data):
         else:
             ts['DtoG'] = 0.0
             ts['DtoZ'] = 0.0
-
-        # f_surv from log
+ 
+        # ── ISM-restricted quantities ─────────────────────────────────────────
+        # (r < 20 pkpc, n_H > 0.1 cm^-3, dust assigned via nearest gas KDTree)
+        if dust and len(dust.get('mass', [])) > 0 and gas and len(gas['mass']) > 0:
+            hdr_local = _read_header(snap_base)
+            M_dust_ISM, M_gas_ISM, M_metal_ISM, mean_a_ism = compute_ism_dust_mass(
+                gas, dust, hdr_local, ctr)
+            ts['DtoG_ISM']   = M_dust_ISM / M_gas_ISM   if M_gas_ISM   > 0 else 0.0
+            ts['DtoZ_ISM']   = M_dust_ISM / M_metal_ISM if M_metal_ISM > 0 else 0.0
+            ts['mean_a_ism'] = mean_a_ism
+        else:
+            ts['DtoG_ISM']   = 0.0
+            ts['DtoZ_ISM']   = 0.0
+            ts['mean_a_ism'] = None
+ 
+        print(f'    <a>_ISM={ts.get("mean_a_ism")} nm  '
+              f'<a>_R200={ts.get("mean_a_nm")} nm')
+        print(f'    D/G_ISM={ts.get("DtoG_ISM"):.3e}  '
+              f'D/Z_ISM={ts.get("DtoZ_ISM"):.3f}  '
+              f'D/G={ts.get("DtoG"):.3e}  '
+              f'D/Z={ts.get("DtoZ"):.3f}')
+ 
+        # ── f_surv from log ───────────────────────────────────────────────────
         if run in log_data and len(log_data[run]['z']) > 0:
-            d = log_data[run]
+            d       = log_data[run]
             n_alive = d['n_part'][-1]
             n_dest  = d['n_thermal'][-1] + d['n_shock'][-1] + d['n_astrat'][-1]
             n_total = n_alive + n_dest
             ts['f_surv'] = float(n_alive / n_total) if n_total > 0 else np.nan
+            # log fallback for mean_a_nm only if snapshot gave nothing
             if ts['mean_a_nm'] is None and not np.isnan(d['avg_size'][-1]):
                 ts['mean_a_nm'] = float(d['avg_size'][-1])
         else:
             ts['f_surv'] = np.nan
-
+ 
         print(f'    z={ts["z_snap"]:.3f}  '
               f'M*/Mh={ts.get("Mstar_over_Mhalo")}  '
-              f'<a>={ts.get("mean_a_nm")} nm  '
-              f'D/G={ts.get("DtoG"):.3e}  '
-              f'D/Z={ts.get("DtoZ"):.3f}  '
               f'f_surv={ts.get("f_surv")}')
         table[run] = ts
-
+ 
     return table
 
 
-def _lx(v, sci_thresh=0.1):
+def _lx(v, sci_thresh=0.1, dec=2):
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return r'\ldots'
     if v == 0.0:
@@ -1427,7 +1661,7 @@ def _lx(v, sci_thresh=0.1):
     if abs(v) < sci_thresh:
         exp  = int(np.floor(np.log10(abs(v))))
         mant = v / 10 ** exp
-        return f'${mant:.2f}\\times10^{{{exp}}}$'
+        return f'${mant:.{dec}f}\\times10^{{{exp}}}$'
     return f'{v:.3f}'
 
 
@@ -1439,78 +1673,101 @@ def _lxf(v, fmt='.2f'):
 
 def write_latex_table(runs, table_stats, resolution, out_path):
     DESCRIPTIONS = {
-        'S0':  'Creation only (baseline)',
+        'S0':  'Creation only',
         'S1':  r'$+$ Dust cooling',
         'S2':  r'$+$ Gas--dust drag',
         'S3':  r'$+$ Astration',
         'S4':  r'$+$ Thermal sputtering',
         'S5':  r'$+$ ISM grain growth',
         'S6':  r'$+$ Subgrid clumping',
-        'S7':  r'$+$ SN shock destruction',
+        'S7':  r'$+$ SN shock destr.',
         'S8':  r'$+$ Coagulation',
         'S9':  r'$+$ Shattering',
-        'S10': r'$+$ Radiation pressure (full)',
+        'S10': r'$+$ Radiation pressure',
     }
-
+ 
     lines = []
     A = lines.append
-
+ 
     A(r'% Auto-generated by compare_grid_dust.py  (--latex-out)')
+    A(r'% Column order: Sim | Desc | M*/Mhalo | Mdust/M* | f_surv |')
+    A(r'%   <a>_ISM | <a>_R200 | D/G|ISM | D/G | D/Z|ISM | D/Z | f_C')
     A('')
-    A(r'\begin{deluxetable*}{llrrrrrrr}')
+    A(r'\begin{deluxetable*}{llrrrrrrrrrr}')
     A(r'\tablecaption{%')
     A(f'  CosmicGrain simulation ladder at ${resolution}^3$ resolution:')
     A(r'  $z=0$ dust observables for each physics rung.')
-    A(r'  All quantities measured within $R_{200}$ as determined from the')
-    A(r'  \textsc{SubFind} group catalog.')
     A(r'  \label{tab:dust_sim_ladder_' + str(resolution) + r'}}')
-    A(r'\setlength{\tabcolsep}{5pt}')
+    A(r'\setlength{\tabcolsep}{4pt}')
     A(r'\tablewidth{0pt}')
     A(r'\tablehead{')
     A(r'  \colhead{Sim} &')
     A(r'  \colhead{Description} &')
     A(r'  \colhead{$M_\star/M_{\rm halo}$} &')
-    A(r'  \colhead{$\langle a\rangle$\,(nm)} &')
-    A(r'  \colhead{$f_{\rm surv}$} &')
-    A(r'  \colhead{$D/G$} &')
-    A(r'  \colhead{$D/Z$} &')
     A(r'  \colhead{$M_{\rm dust}/M_\star$} &')
+    A(r'  \colhead{$f_{\rm surv}$} &')
+    A(r'  \colhead{$\langle a\rangle_{\rm ISM}$\,(nm)} &')
+    A(r'  \colhead{$\langle a\rangle_{200}$\,(nm)} &')
+    A(r'  \colhead{$D/G|_{\rm ISM}$} &')
+    A(r'  \colhead{$D/G$} &')
+    A(r'  \colhead{$D/Z|_{\rm ISM}$} &')
+    A(r'  \colhead{$D/Z$} &')
     A(r'  \colhead{$\bar{f}_{\rm C}$}')
     A(r'}')
     A(r'\startdata')
-
+ 
     for run in runs:
         ts   = table_stats.get(run, {})
         desc = DESCRIPTIONS.get(run, run)
-        row  = (f'  {run} & '
-                f'{desc} & '
-                f'{_lx( ts.get("Mstar_over_Mhalo"),  sci_thresh=0.001)} & '
-                f'{_lxf(ts.get("mean_a_nm"),          ".1f")} & '
-                f'{_lxf(ts.get("f_surv"),             ".2f")} & '
-                f'{_lx( ts.get("DtoG"))} & '
-                f'{_lxf(ts.get("DtoZ"),               ".2f")} & '
-                f'{_lx( ts.get("Mdust_over_Mstar"))} & '
-                f'{_lxf(ts.get("f_carb"),             ".2f")} \\\\')
+        row  = (
+            f'  {run} & '
+            f'{desc} & '
+            f'{_lx( ts.get("Mstar_over_Mhalo"),  sci_thresh=0.001)} & '
+            f'{_lx( ts.get("Mdust_over_Mstar"),   dec=1)} & '
+            f'{_lxf(ts.get("f_surv"),             ".2f")} & '
+            f'{_lxf(ts.get("mean_a_ism"),         ".1f")} & '
+            f'{_lxf(ts.get("mean_a_nm"),          ".1f")} & '
+            f'{_lx( ts.get("DtoG_ISM"),           dec=1)} & '
+            f'{_lx( ts.get("DtoG"),               dec=1)} & '
+            f'{_lxf(ts.get("DtoZ_ISM"),           ".2f")} & '
+            f'{_lxf(ts.get("DtoZ"),               ".2f")} & '
+            f'{_lxf(ts.get("f_carb"),             ".2f")} \\\\'
+        )
         A(row)
-
+ 
+    # MW reference row — D/G|ISM = D/G and D/Z|ISM = D/Z because Jenkins+2009
+    # measures ISM sightlines exclusively; <a> values not available.
+    A(r'  \hline')
+    A(r'  MW & Observed & $\sim0.04$ & $5\times10^{-4}$ & \nodata &'
+      r' \nodata & \nodata &'
+      r' $7\times10^{-3}$ & $7\times10^{-3}$ &'
+      r' $0.45$ & $0.45$ & \nodata \\')
     A(r'\enddata')
     A(r'\tablecomments{%')
-    A(f'  Each rung adds one dust-physics process to the previous configuration.')
-    A(f'  All runs use ${resolution}^3$ resolution and identical initial conditions')
-    A(r'  (50~Mpc comoving box, halo~569,')
-    A(r'  $M_{{200}}\approx2\times10^{{12}}\,h^{{-1}}\,M_\odot$).')
-    A(r'  Physics channel flags are listed in Table~\ref{tab:sim_grid}.')
-    A(r'  $M_\star/M_{{\rm halo}}$: stellar-to-halo mass ratio.')
-    A(r'  $\langle a\rangle$: ISM mass-weighted mean grain radius (nm).')
-    A(r'  $f_{{\rm surv}}$: surviving dust fraction,')
-    A(r'  $N_{{\rm alive}}/(N_{{\rm alive}}+N_{{\rm destroyed,cumul}})$.')
-    A(r'  $D/G$, $D/Z$: dust-to-gas and dust-to-metals mass ratios,')
-    A(r'  using total halo gas and metal mass within $R_{{200}}$ as denominators.')
-    A(r'  $M_{{\rm dust}}/M_\star$: dust-to-stellar mass ratio.')
-    A(r'  $\bar{{f}}_{{\rm C}}$: mass-weighted mean carbon fraction.}')
+    A(r'  Each rung adds one physics process to the previous configuration.')
+    A(f'  All runs use ${resolution}^3$ resolution and identical initial')
+    A(r'  conditions (50~Mpc comoving box, halo~569,')
+    A(r'  $M_{200}\approx2\times10^{12}\,h^{-1}\,M_\odot$).')
+    A(r'  Physics channel flags are in Table~\ref{tab:sim_grid}.')
+    A(r'  $M_\star/M_{\rm halo}$: stellar-to-halo mass ratio within $R_{200}$.')
+    A(r'  $M_{\rm dust}/M_\star$: dust-to-stellar mass ratio within $R_{200}$.')
+    A(r'  $f_{\rm surv}$: surviving dust fraction')
+    A(r'  $N_{\rm alive}/(N_{\rm alive}+N_{\rm destroyed,cumul})$.')
+    A(r'  $\langle a\rangle_{\rm ISM}$: mass-weighted mean grain radius')
+    A(r'  for dust in the ISM aperture ($r<20\,{\rm pkpc}$,')
+    A(r'  $n_H>0.1\,{\rm cm}^{-3}$).')
+    A(r'  $\langle a\rangle_{200}$: same, for all dust within $R_{200}$.')
+    A(r'  $D/G|_{\rm ISM}$, $D/Z|_{\rm ISM}$: dust-to-gas and dust-to-metals')
+    A(r'  ratios restricted to the ISM aperture above.')
+    A(r'  $D/G$, $D/Z$: same ratios using total gas and metals within $R_{200}$.')
+    A(r'  $\bar{f}_{\rm C}$: mass-weighted mean carbon fraction within $R_{200}$.')
+    A(r'  MW references: $M_\star/M_{\rm halo}$ from \citet{blandhawthorn16};')
+    A(r'  $D/G$ and $M_{\rm dust}/M_\star$ from \citet{draine07};')
+    A(r'  $D/Z$ from \citet{jenkins09} (ISM sightlines, so ISM = global).')
+    A(r'}')
     A(r'\end{deluxetable*}')
     A('')
-
+ 
     with open(out_path, 'w') as fh:
         fh.write('\n'.join(lines))
     print(f'\nLaTeX table written -> {out_path}')
@@ -1573,6 +1830,10 @@ def main():
             plot_destruction_channels(log_data)
             plot_process_rates(log_data)
             plot_summary_panel(log_data, gas_mass_curves)
+
+            plot_dgr_vs_metallicity_local(runs, target_z=0.0)
+            plot_dgr_vs_metallicity_local(runs, target_z=1.0)
+            plot_dgr_vs_metallicity_local(runs, target_z=2.0)
     else:
         log_data_global = {}
 

@@ -41,6 +41,10 @@
 #include "../src/pm/pm.h"
 #include "../system/system.h"
 
+#ifdef DUST
+#include "../dust/dust.h"
+#endif
+
 /*!
  * \brief Function for field registering.
  *
@@ -154,6 +158,11 @@ void snap_io::init_basic(simparticles *Sp_ptr)
   init_field("DTMP", "DustTemperature", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_DUST, &Sp->DustP[0].DustTemperature, NULL,
              DUST_ONLY, /* dust temperature in K */
              0, 0, 0, 0, 0, 0, 0);
+
+  init_field("BPOS", "BirthPos", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 3, A_DUST, 
+             &Sp->DustP[0].BirthPos[0], NULL,
+             DUST_ONLY,
+             0, 0, 0, 0, 0, 0, 0);
 #endif
 
 #if defined(PRESSURE_ENTROPY_SPH) && defined(OUTPUT_PRESSURE_SPH_DENSITY)
@@ -235,15 +244,15 @@ void snap_io::init_basic(simparticles *Sp_ptr)
 #if defined(SUBFIND) && defined(SUBFIND_STORE_LOCAL_DENSITY)
 
   init_field("SFDE", "SubfindDensity", MEM_MY_FLOAT, All.RestartFlag != RST_CREATEICS ? FILE_MY_IO_FLOAT : FILE_NONE, SKIP_ON_READ, 1,
-             A_PS, &Sp->PS[0].SubfindDensity, 0, ALL_TYPES, /* subfind density */
+             A_PS, &Sp->PS[0].SubfindDensity, 0, NON_DUST_TYPES, /* subfind density */
              1, -3., 2., -3., 1., 0., All.UnitDensity_in_cgs);
 
   init_field("SFHS", "SubfindHsml", MEM_MY_FLOAT, All.RestartFlag != RST_CREATEICS ? FILE_MY_IO_FLOAT : FILE_NONE, SKIP_ON_READ, 1,
-             A_PS, &Sp->PS[0].SubfindHsml, 0, ALL_TYPES, /* subfind hsml */
+             A_PS, &Sp->PS[0].SubfindHsml, 0, NON_DUST_TYPES, /* subfind hsml */
              1, 1., -1., 1., 0., 0., All.UnitLength_in_cm);
 
   init_field("SFVD", "SubfindVelDisp", MEM_MY_FLOAT, All.RestartFlag != RST_CREATEICS ? FILE_MY_IO_FLOAT : FILE_NONE, SKIP_ON_READ, 1,
-             A_PS, &Sp->PS[0].SubfindVelDisp, 0, ALL_TYPES, /* subfind velocity dispersion */
+             A_PS, &Sp->PS[0].SubfindVelDisp, 0, NON_DUST_TYPES, /* subfind velocity dispersion */
              1, 0., 0., 0., 0., 1., All.UnitVelocity_in_cm_per_s);
 #endif
 
@@ -616,6 +625,10 @@ void snap_io::write_snapshot(int num, mysnaptype loc_snap_type)
 
   snap_type = loc_snap_type;
 
+  #ifdef DUST
+    dust_integrity_check(Sp, "before snapshot write");
+  #endif
+
   TIMER_START(CPU_SNAPSHOT);
 
   mpi_printf("\nSNAPSHOT: writing snapshot file #%d @ time %g ... \n", num, All.Time);
@@ -903,20 +916,26 @@ void snap_io::read_file_header(const char *fname, int filenr, int readTask, int 
       nall += n_for_this_task;
     }
 
-#if defined(MERGERTREE) && !defined(GADGET2_HEADER)
-  if(snap_type == MOST_BOUND_PARTICLE_SNAPHOT_REORDERED)
-    ntot_type[NTYPES] = header.Ntrees;
-#endif
+  #if defined(MERGERTREE) && !defined(GADGET2_HEADER)
+    if(snap_type == MOST_BOUND_PARTICLE_SNAPHOT_REORDERED)
+      ntot_type[NTYPES] = header.Ntrees;
+  #endif
 
   if(nstart)
-    {
+  {
       memmove(static_cast<void *>(&Sp->P[Sp->NumGas + nall]), static_cast<void *>(&Sp->P[Sp->NumGas]),
               (Sp->NumPart - Sp->NumGas) * sizeof(particle_data));
-#ifndef OUTPUT_COORDINATES_AS_INTEGERS
+  #ifndef OUTPUT_COORDINATES_AS_INTEGERS
       memmove(&Ptmp[Sp->NumGas + nall], &Ptmp[Sp->NumGas], (Sp->NumPart - Sp->NumGas) * sizeof(ptmp_data));
-#endif
+  #endif
+  #ifdef DUST
+  // We need P[] and DustP[] to stay synchronized through the entire read process, 
+  // or else when restarting the simulation, many DustP entried will get bungled.
+      memmove(static_cast<void *>(&Sp->DustP[Sp->NumGas + nall]), static_cast<void *>(&Sp->DustP[Sp->NumGas]),
+              (Sp->NumPart - Sp->NumGas) * sizeof(dust_data));
+  #endif
       *nstart = Sp->NumGas;
-    }
+  }
 }
 
 /*! \brief Write the fields contained in the header group of the HDF5 snapshot file

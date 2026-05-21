@@ -15,6 +15,10 @@
 
 
 #ifdef DUST
+#define DUST_PARTICLE_TYPE       6
+#define DUST_MIN_TIMEBIN         15
+#define DUST_MAX_GRAV_BIN_OFFSET  2
+
 void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mass_formed, int star_idx, double hsml);
 void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt);
 
@@ -42,6 +46,21 @@ extern double TotalMassDestroyedByThermal; // full thermal destructions
 extern double TotalMassDestroyedByShock;   // full shock destructions
 extern double TotalMassErodedByThermal;    // partial sputtering events
 extern double TotalMassErodedByShock;      // partial shock erosion events
+
+// ========== DUST LOG (dust_particle_log.cc) ==========
+
+#define DUST_EVENT_THERMAL     0
+#define DUST_EVENT_SHOCK       1
+#define DUST_EVENT_ASTRATION   2
+#define DUST_EVENT_SUBLIMATION 3
+#define DUST_EVENT_CLEANUP     4
+#define DUST_EVENT_SHATTERING  5
+
+void open_dust_particle_log(MPI_Comm Communicator);
+void close_dust_particle_log(void);
+void log_dust_particle_event(simparticles *Sp, int dust_idx,
+                              int nearest_gas, int event_type);
+
 
 // ========== CORE DUST FUNCTIONS (dust.cc) ==========
 
@@ -104,6 +123,132 @@ void print_dust_statistics(simparticles *Sp, MPI_Comm Communicator);
 void analyze_dust_gas_coupling(simparticles *Sp);
 void analyze_dust_gas_coupling_local(simparticles *Sp);
 void analyze_grain_size_distribution(simparticles *Sp);
+
+/**
+ * Integrity check of all dust particles (PartType6). This became necessary 
+ * as restarting from snapshots and restart files both can encounter frequent
+ * problems regarding the new DustP structure, which is stored separately 
+ * from the base particle data in P[].
+ *
+ * It is for debugging corruption or loss of
+ * dust particle data during snapshot restart, domain decomposition,
+ * particle exchange, reordering, cleanup, or timestep evolution.
+ *
+ * The function scans all local particles and identifies those with
+ * particle type 6 (dust). For each dust particle, it validates both
+ * the base particle data stored in P[] and the corresponding auxiliary
+ * dust properties stored in DustP[].
+ *
+ * Specifically, the following conditions are checked:
+ *
+ *   - Dust grain radius must be finite and > 0
+ *   - Dust temperature must be finite and >= 0
+ *   - Carbon fraction must be finite and within [0,1]
+ *   - Particle mass must be finite and > 0
+ *
+ * Particles failing any of these checks are classified as "invalid".
+ *
+ * The routine prints:
+ *
+ *   - Global counts of total dust particles
+ *   - Number of valid dust particles
+ *   - Number of invalid dust particles
+ *
+ * Additionally, a small sample of invalid particles is printed with:
+ *
+ *   - Particle index
+ *   - Particle ID
+ *   - Mass
+ *   - Grain radius
+ *   - Dust temperature
+ *   - Carbon fraction
+ *   - Grain type
+ *
+ * The diagnostic output is especially useful for determining whether:
+ *
+ *   - DustP[] became desynchronized from P[]
+ *   - Snapshot restart failed to restore dust fields
+ *   - Domain exchange/reordering corrupted dust alignment
+ *   - Cleanup routines are removing particles unexpectedly
+ *   - Numerical evolution generated invalid dust states
+ *
+ * MPI_Allreduce() is used so the reported totals reflect the entire
+ * simulation across all MPI tasks.
+ * */
+inline void dust_integrity_check(simparticles *Sp, const char *label)
+{
+    long long ndust_local = 0;
+    long long valid_local = 0;
+    long long invalid_local = 0;
+
+    for(int i = 0; i < Sp->NumPart; i++)
+    {
+        if(Sp->P[i].getType() == 6)
+        {
+            ndust_local++;
+
+            bool ok = true;
+
+            if(!std::isfinite(Sp->DustP[i].GrainRadius) ||
+               Sp->DustP[i].GrainRadius <= 0)
+                ok = false;
+
+            if(!std::isfinite(Sp->DustP[i].DustTemperature) ||
+               Sp->DustP[i].DustTemperature < 0)
+                ok = false;
+
+            if(!std::isfinite(Sp->DustP[i].CarbonFraction) ||
+               Sp->DustP[i].CarbonFraction < 0 ||
+               Sp->DustP[i].CarbonFraction > 1)
+                ok = false;
+
+            if(Sp->P[i].getMass() <= 0 ||
+               !std::isfinite(Sp->P[i].getMass()))
+                ok = false;
+
+            if(ok)
+                valid_local++;
+            else
+            {
+                invalid_local++;
+
+                if(invalid_local < 10)
+                {
+                    printf("[BAD_DUST|Task=%d|%s] "
+                           "i=%d ID=%llu "
+                           "mass=%g radius=%g temp=%g cf=%g type=%d\n",
+                           All.ThisTask,
+                           label,
+                           i,
+                           (unsigned long long)Sp->P[i].ID.get(),
+                           Sp->P[i].getMass(),
+                           Sp->DustP[i].GrainRadius,
+                           Sp->DustP[i].DustTemperature,
+                           Sp->DustP[i].CarbonFraction,
+                           Sp->DustP[i].GrainType);
+                }
+            }
+        }
+    }
+
+    long long send[3] = {ndust_local, valid_local, invalid_local};
+    long long recv[3];
+
+    MPI_Allreduce(send, recv, 3, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+
+    if(All.ThisTask == 0)
+    {
+        printf("[DUST_CHECK|%s] "
+               "ndust=%lld valid=%lld invalid=%lld\n",
+               label,
+               recv[0],
+               recv[1],
+               recv[2]);
+    }
+}
+
+
+
 
 #endif /* DUST */
 

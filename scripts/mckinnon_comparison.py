@@ -11,13 +11,22 @@ Figure 17 — Dust surface density Σ_dust vs galactocentric radius (face-on
                • Scaled M31 (×2): proxy for a higher MW-like dust mass
                • Ménard+2010: Σ_dust ∝ r^{-0.8} (SDSS statistical detection)
 
-Figure 18 — Enclosed dust mass M(<r)/M(<25 kpc) vs r out to 25 kpc.
+Figure 18 — Enclosed dust mass M(<r)/M(<r_max) vs r.
+             Default r_max=25 kpc (paper-facing, matches McKinnon).
+             Use --r-max 500 for escape diagnostics (normalises to total).
              Compared with:
                • Draine+2014: M31 enclosed mass profile
+
+Figure 19 (diagnostic) — Cumulative dust particle count and mass fraction
+             vs radius out to R200. Use --escape-diagnostic to produce this.
+             Designed to diagnose whether slow-growth runs are losing grains
+             beyond the plot aperture rather than destroying them physically.
 
 Usage:
     python mckinnon_comparison.py --res 1024
     python mckinnon_comparison.py --res 1024 --runs S4 S8 S10
+    python mckinnon_comparison.py --res 512 --r-max 500   # escape diagnostic mode
+    python mckinnon_comparison.py --res 512 --escape-diagnostic
     python mckinnon_comparison.py --res 1024 --no-rotate  # skip disc alignment
 
 Assumptions:
@@ -198,7 +207,7 @@ def get_halo_center_r200(run, snap_base):
             if 'GroupPos' not in grp or grp['GroupPos'].shape[0] == 0:
                 return None, None
             ctr  = grp['GroupPos'][0].astype(float)
-            r200 = float(grp['Group_R_Mean200'][0]) if 'Group_R_Mean200' in grp else None
+            r200 = float(grp['Group_R_Crit200'][0]) if 'Group_R_Crit200' in grp else None
     except Exception as e:
         print(f'  [{run}] catalog error: {e}')
         return None, None
@@ -232,6 +241,7 @@ def compute_disc_rotation_matrix(snap_base, ctr, hdr, inner_r_kpc=20.0):
                 r    = np.linalg.norm(pos - ctr, axis=1)
                 mask = r < inner_r_kpc
                 if mask.sum() == 0: continue
+                print(f'  [disc orientation] found {mask.sum()} stars within {inner_r_kpc} ckpc/h')
                 pos_list.append(pos[mask])
                 vel_list.append(vel[mask])
                 mass_list.append(mass[mask])
@@ -245,6 +255,7 @@ def compute_disc_rotation_matrix(snap_base, ctr, hdr, inner_r_kpc=20.0):
     pos_all  = np.concatenate(pos_list)  - ctr
     vel_all  = np.concatenate(vel_list)
     mass_all = np.concatenate(mass_list)
+    print(f'  [disc orientation] total stars used: {len(mass_all)}')
 
     # Mass-weighted mean velocity (bulk motion of disc)
     v_bulk = np.average(vel_all, weights=mass_all, axis=0)
@@ -295,6 +306,32 @@ def load_dust(snap_base, ctr, rmax):
             print(f'  load_dust: {e}')
     if not pos_list: return None, None
     return np.concatenate(pos_list), np.concatenate(mass_list)
+
+
+def load_dust_all(snap_base, ctr):
+    """
+    Load ALL PartType6 in the snapshot regardless of radius.
+    Returns pos (comoving kpc/h), mass, and 3D radii from ctr.
+    Used for escape diagnostics where we need the full spatial distribution.
+    """
+    import h5py
+    pos_list, mass_list = [], []
+    for fname in subfiles(snap_base):
+        try:
+            with h5py.File(fname, 'r') as hf:
+                if 'PartType6' not in hf: continue
+                pt   = hf['PartType6']
+                pos  = pt['Coordinates'][:]
+                mass = pt['Masses'][:]
+                pos_list.append(pos)
+                mass_list.append(mass)
+        except Exception as e:
+            print(f'  load_dust_all: {e}')
+    if not pos_list: return None, None, None
+    pos_all  = np.concatenate(pos_list)
+    mass_all = np.concatenate(mass_list)
+    r_all    = np.linalg.norm(pos_all - ctr, axis=1)
+    return pos_all, mass_all, r_all
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -435,27 +472,57 @@ def plot_sigma_dust(runs, use_rotation=True):
 # Figure 18 — enclosed dust mass fraction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_enclosed_fraction(pos, mass, ctr, R_matrix, to_pkpc, r_max_kpc=25.0, nr=200):
+def compute_enclosed_fraction(pos, mass, ctr, R_matrix, to_pkpc,
+                              r_max_kpc=25.0, nr=200,
+                              norm_r_kpc=None):
     """
-    Compute M(<r)/M(<r_max_kpc) vs r in physical kpc.
+    Compute M(<r)/M(<norm_r_kpc) vs r in physical kpc.
 
-    Uses 3D radial distance (not projected), matching McKinnon who uses
-    spherical apertures for the enclosed mass plot.
+    Parameters
+    ----------
+    r_max_kpc   : outer edge of profile (physical kpc). Default 25 (paper).
+                  Use ~500 or R200*to_pkpc for escape diagnostics.
+    nr          : number of radial points.
+    norm_r_kpc  : radius at which to normalise. Defaults to r_max_kpc so that
+                  the curve always reaches 1 at the right edge.
+                  Pass 25.0 explicitly when r_max_kpc > 25 to keep the y-axis
+                  comparable to the McKinnon paper figure.
+
+    Returns
+    -------
+    r_arr  : physical kpc array (length nr)
+    M_enc  : cumulative mass fraction (normalised to norm_r_kpc)
+    M_total_msun : total dust mass within r_max_kpc in M_sun (for labelling)
     """
-    dp = (pos - ctr) * to_pkpc          # physical kpc
+    if norm_r_kpc is None:
+        norm_r_kpc = r_max_kpc
+
+    dp  = (pos - ctr) * to_pkpc          # physical kpc
     r3d = np.sqrt(np.sum(dp**2, axis=1))
 
     r_arr = np.linspace(0, r_max_kpc, nr)
     M_enc = np.array([mass[r3d < r].sum() for r in r_arr])
 
-    M_norm = M_enc[-1]
-    if M_norm <= 0:
-        return r_arr, np.zeros_like(r_arr)
-    return r_arr, M_enc / M_norm
+    # Normalisation mass — all particles within norm_r_kpc
+    M_norm_raw = mass[r3d < norm_r_kpc].sum()
+    M_total_msun = M_norm_raw * 1e10   # code units → M_sun
+
+    if M_norm_raw <= 0:
+        return r_arr, np.zeros_like(r_arr), 0.0
+
+    return r_arr, M_enc / M_norm_raw, M_total_msun
 
 
-def plot_enclosed_mass(runs, use_rotation=True):
-    """McKinnon+2016 Figure 18 analogue."""
+def plot_enclosed_mass(runs, use_rotation=True, r_max_kpc=25.0):
+    """
+    McKinnon+2016 Figure 18 analogue.
+
+    r_max_kpc=25  → paper-facing version, normalised to M(<25 kpc),
+                    Draine+2014 reference shown.
+    r_max_kpc>25  → extended diagnostic version, normalised to M(<r_max_kpc),
+                    Draine reference omitted (it only extends to 25 kpc).
+    """
+    paper_mode = (r_max_kpc <= 25.0)
     fig, ax = plt.subplots(figsize=(8, 6))
 
     for run in runs:
@@ -473,33 +540,170 @@ def plot_enclosed_mass(runs, use_rotation=True):
         ctr, r200 = get_halo_center_r200(run, snap_base)
         if ctr is None: continue
 
-        pos, mass = load_dust(snap_base, ctr, r200)
+        # For diagnostic mode load everything; for paper mode r200 is fine
+        if paper_mode:
+            pos, mass = load_dust(snap_base, ctr, r200)
+        else:
+            pos, mass, _ = load_dust_all(snap_base, ctr)
+
         if pos is None: continue
 
         R_mat = compute_disc_rotation_matrix(snap_base, ctr, hdr) \
                 if use_rotation else np.eye(3)
 
-        r_arr, frac = compute_enclosed_fraction(pos, mass, ctr, R_mat, to_pkpc)
-        ax.plot(r_arr, frac, color=color, lw=1.8, label=label, alpha=0.9)
+        r_arr, frac, M_tot = compute_enclosed_fraction(
+            pos, mass, ctr, R_mat, to_pkpc,
+            r_max_kpc=r_max_kpc,
+            norm_r_kpc=r_max_kpc,
+        )
+        run_label = f'{label}  ({M_tot:.2e} $M_\\odot$)' if not paper_mode else label
+        ax.plot(r_arr, frac, color=color, lw=1.8, label=run_label, alpha=0.9)
 
-    # ── Draine+2014 M31 reference ─────────────────────────────────────────────
-    r_d14, frac_d14 = draine2014_enclosed_fraction()
-    ax.plot(r_d14, frac_d14, color='gray', ls=':', lw=2.5, zorder=5,
-            label='M31 (Draine+2014)')
+    # ── Reference ─────────────────────────────────────────────────────────────
+    if paper_mode:
+        r_d14, frac_d14 = draine2014_enclosed_fraction()
+        ax.plot(r_d14, frac_d14, color='gray', ls=':', lw=2.5, zorder=5,
+                label='M31 (Draine+2014)')
+    else:
+        # Draw a vertical line at 200 kpc (typical plot aperture used in D/Z plot)
+        ax.axvline(200, color='gray', ls='--', lw=1.2, alpha=0.7,
+                   label='200 kpc aperture (D/Z plot)')
     # ─────────────────────────────────────────────────────────────────────────
 
     ax.set_xlabel('$r$ (physical kpc)', fontsize=12)
-    ax.set_ylabel(r"$M_{\rm dust}(r' < r)\,/\,M_{\rm dust}(r' < 25\,{\rm kpc})$",
-                  fontsize=12)
-    ax.set_title('Enclosed Dust Mass at $z=0$', fontsize=12)
-    ax.set_xlim(0, 25)
+    if paper_mode:
+        ylabel = r"$M_{\rm dust}(r' < r)\,/\,M_{\rm dust}(r' < 25\,{\rm kpc})$"
+    else:
+        ylabel = r"$M_{\rm dust}(r' < r)\,/\,M_{\rm dust}(<r_{\rm max})$"
+    ax.set_ylabel(ylabel, fontsize=12)
+
+    title = f'Enclosed Dust Mass at $z=0$'
+    if not paper_mode:
+        title += f' (out to {r_max_kpc:.0f} kpc)'
+    ax.set_title(title, fontsize=12)
+    ax.set_xlim(0, r_max_kpc)
     ax.set_yscale('log')
     ax.set_ylim(1e-2, 1.5)
     ax.yaxis.set_major_formatter(matplotlib.ticker.LogFormatter(labelOnlyBase=False))
     ax.grid(True, alpha=0.3, which='both')
-    ax.legend(fontsize=7, loc='lower right', ncol=2)
+    ax.legend(fontsize=7, loc='lower right', ncol=1)
     plt.tight_layout()
-    out = os.path.join(FIGDIR, 'mckinnon_fig18_enclosed_mass.png')
+
+    suffix = 'paper' if paper_mode else f'ext{r_max_kpc:.0f}kpc'
+    out = os.path.join(FIGDIR, f'mckinnon_fig18_enclosed_mass_{suffix}.png')
+    fig.savefig(out, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {out}')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Figure 19 (diagnostic) — escape fraction vs radius
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_escape_diagnostic(runs, use_rotation=False, r_max_pkpc=None):
+    """
+    Diagnostic figure: cumulative dust particle count and mass fraction
+    vs 3D radius from halo centre, out to R200.
+
+    Two panels:
+      Top    : cumulative mass fraction M(<r) / M_total
+      Bottom : cumulative particle count N(<r) / N_total
+
+    A vertical line marks 200 kpc (the aperture used in the D/Z plot).
+    The fraction of particles/mass OUTSIDE 200 kpc is printed in the legend,
+    making it immediately obvious whether the D/Z plot aperture is missing
+    a significant fraction of the dust population.
+
+    Use --escape-diagnostic to produce this figure.
+    No disc rotation is applied by default (we want the raw 3D distribution).
+    """
+    fig, (ax_mass, ax_cnt) = plt.subplots(2, 1, figsize=(8, 9), sharex=True)
+    fig.subplots_adjust(hspace=0.08)
+
+    aperture_kpc = 200.0   # the aperture used in compare_grid_dust D/Z plot
+
+    for run in runs:
+        cfg   = RUN_CONFIGS.get(run, {})
+        color = cfg.get('color', 'black')
+        label = cfg.get('label', run)
+
+        snaps = find_snapshots(run)
+        if not snaps: continue
+        snap_base, dz = find_snap_near_z(snaps, 0.0)
+        if dz > 0.2: continue
+
+        hdr       = read_header(snap_base)
+        to_pkpc   = hdr['a'] / hdr['h']
+        ctr, r200 = get_halo_center_r200(run, snap_base)
+        if ctr is None: continue
+
+        r200_pkpc = r200 * to_pkpc
+        print(f'  [{run}] R200 = {r200_pkpc:.1f} pkpc, loading all dust...')
+
+        # In plot_escape_diagnostic, replace load_dust_all with:
+        pos, mass, r_com = load_dust_all(snap_base, ctr)
+        # Then filter to within 5×R200 before computing cumulative profiles
+        r_pkpc = r_com * to_pkpc
+        halo_mask = r_pkpc < 5.0 * r200_pkpc
+        pos = pos[halo_mask]
+        mass = mass[halo_mask]
+        r_pkpc = r_pkpc[halo_mask]
+
+        N_total = len(r_pkpc)
+        M_total = mass.sum()
+
+        # Sort once for cumulative sums
+        idx     = np.argsort(r_pkpc)
+        r_sort  = r_pkpc[idx]
+        m_sort  = mass[idx]
+
+        M_cum = np.cumsum(m_sort) / M_total
+        N_cum = np.arange(1, N_total + 1) / N_total
+
+        # Fraction inside aperture
+        inside_mask   = r_pkpc < aperture_kpc
+        f_mass_inside = mass[inside_mask].sum() / M_total
+        f_cnt_inside  = inside_mask.sum() / N_total
+
+        legend_str = (f'{label}\n'
+                      f'  N={N_total:,}  '
+                      f'f(<200kpc): mass={f_mass_inside:.2f} N={f_cnt_inside:.2f}')
+
+        # Downsample for plotting if very large
+        if N_total > 50000:
+            step = N_total // 50000 + 1
+            r_plot = r_sort[::step]
+            M_plot = M_cum[::step]
+            N_plot = N_cum[::step]
+        else:
+            r_plot, M_plot, N_plot = r_sort, M_cum, N_cum
+
+        ax_mass.plot(r_plot, M_plot, color=color, lw=1.6, alpha=0.85,
+                     label=legend_str)
+        ax_cnt.plot(r_plot, N_plot, color=color, lw=1.6, alpha=0.85,
+                    label=legend_str)
+
+    for ax in (ax_mass, ax_cnt):
+        ax.axvline(aperture_kpc, color='k', ls='--', lw=1.2, alpha=0.6,
+                   label='200 kpc (D/Z aperture)' if ax is ax_mass else '')
+        ax.grid(True, alpha=0.3)
+        if r_max_pkpc is not None:
+            ax.set_xlim(0, r_max_pkpc)
+        else:
+            ax.set_xlim(0, None)
+
+    ax_mass.set_ylabel(r'$M_{\rm dust}(<r)\,/\,M_{\rm dust,total}$', fontsize=12)
+    ax_cnt.set_ylabel(r'$N_{\rm dust}(<r)\,/\,N_{\rm dust,total}$', fontsize=12)
+    ax_cnt.set_xlabel('$r$ (physical kpc)', fontsize=12)
+    ax_mass.set_title('Dust Escape Diagnostic — cumulative profile at $z=0$', fontsize=12)
+
+    ax_mass.legend(fontsize=6.5, loc='upper left', ncol=1,
+                   handlelength=1.5, framealpha=0.85)
+    ax_cnt.legend(fontsize=6.5, loc='upper left', ncol=1,
+                  handlelength=1.5, framealpha=0.85)
+
+    plt.tight_layout()
+    out = os.path.join(FIGDIR, 'mckinnon_fig19_escape_diagnostic.png')
     fig.savefig(out, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'  Saved: {out}')
@@ -509,8 +713,9 @@ def plot_enclosed_mass(runs, use_rotation=True):
 # Bonus: both figures side by side on one canvas (for a paper figure)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def plot_combined(runs, use_rotation=True):
+def plot_combined(runs, use_rotation=True, r_max_kpc=25.0):
     """Single figure with both panels, formatted for a paper."""
+    paper_mode = (r_max_kpc <= 25.0)
     fig, (ax17, ax18) = plt.subplots(1, 2, figsize=(14, 6))
     r_bins = np.concatenate([
         np.arange(0, 10,  0.5),
@@ -531,7 +736,12 @@ def plot_combined(runs, use_rotation=True):
         ctr, r200 = get_halo_center_r200(run, snap_base)
         if ctr is None: continue
         print(f'  [{run}] loading...')
-        pos, mass = load_dust(snap_base, ctr, r200)
+
+        if paper_mode:
+            pos, mass = load_dust(snap_base, ctr, r200)
+        else:
+            pos, mass, _ = load_dust_all(snap_base, ctr)
+
         if pos is None: continue
         R_mat = compute_disc_rotation_matrix(snap_base, ctr, hdr) \
                 if use_rotation else np.eye(3)
@@ -540,7 +750,11 @@ def plot_combined(runs, use_rotation=True):
         good = sigma > 0
         ax17.plot(r_cen[good], sigma[good], color=color, lw=1.8, label=label, alpha=0.9)
 
-        r_arr, frac = compute_enclosed_fraction(pos, mass, ctr, R_mat, to_pkpc)
+        r_arr, frac, _ = compute_enclosed_fraction(
+            pos, mass, ctr, R_mat, to_pkpc,
+            r_max_kpc=r_max_kpc,
+            norm_r_kpc=r_max_kpc,
+        )
         ax18.plot(r_arr, frac, color=color, lw=1.8, label=label, alpha=0.9)
 
     # Fig 17 references
@@ -550,7 +764,6 @@ def plot_combined(runs, use_rotation=True):
     ax17.scatter(r_m31, sig_m31*2, color='gray', marker='^', s=30, zorder=5,
                  label='M31 ×2', edgecolors='none', alpha=0.6)
     r_men = np.logspace(np.log10(20), np.log10(300), 200)
-    # Ménard: black dashed in left panel only — no equivalent in right panel
     ax17.plot(r_men, menard2010_power_law(r_men, 50.0, 5e-4),
               color='black', ls='--', lw=1.5,
               label=r'$\Sigma\propto r^{-0.8}$ (Ménard+2010)')
@@ -562,29 +775,37 @@ def plot_combined(runs, use_rotation=True):
     ax17.set_title(title17, fontsize=11)
     ax17.set_xlim(0.5, 300); ax17.set_ylim(1e-6, 1.0)
     ax17.grid(True, alpha=0.3, which='both')
-    # Full legend lives only in the left panel
     ax17.legend(fontsize=7, loc='upper right', ncol=1)
 
     # Fig 18 references
-    # Use gray dotted so it is visually distinct from the black dashed Ménard line
-    # in the left panel — readers flipping between panels won't confuse them.
-    r_d14, frac_d14 = draine2014_enclosed_fraction()
-    ax18.plot(r_d14, frac_d14, color='gray', ls=':', lw=2.5, zorder=5,
-              label='M31 (Draine+2014)')
+    if paper_mode:
+        r_d14, frac_d14 = draine2014_enclosed_fraction()
+        ax18.plot(r_d14, frac_d14, color='gray', ls=':', lw=2.5, zorder=5,
+                  label='M31 (Draine+2014)')
+    else:
+        ax18.axvline(200, color='gray', ls='--', lw=1.2, alpha=0.7,
+                     label='200 kpc aperture')
+
+    if paper_mode:
+        ylabel18 = r"$M_{\rm dust}(r' < r)\,/\,M_{\rm dust}(r' < 25\,{\rm kpc})$"
+    else:
+        ylabel18 = r"$M_{\rm dust}(r' < r)\,/\,M_{\rm dust}(<r_{\rm max})$"
+    ax18.set_ylabel(ylabel18, fontsize=12)
     ax18.set_xlabel('$r$ (physical kpc)', fontsize=12)
-    ax18.set_ylabel(r"$M_{\rm dust}(r' < r)\,/\,M_{\rm dust}(r' < 25\,{\rm kpc})$",
-                    fontsize=12)
-    ax18.set_title('Enclosed Dust Mass at $z=0$', fontsize=11)
-    ax18.set_xlim(0, 25)
+    title18 = 'Enclosed Dust Mass at $z=0$'
+    if not paper_mode:
+        title18 += f' (out to {r_max_kpc:.0f} kpc)'
+    ax18.set_title(title18, fontsize=11)
+    ax18.set_xlim(0, r_max_kpc)
     ax18.set_yscale('log')
     ax18.set_ylim(1e-2, 1.5)
     ax18.yaxis.set_major_formatter(matplotlib.ticker.LogFormatter(labelOnlyBase=False))
     ax18.grid(True, alpha=0.3, which='both')
-    # Right panel: only the Draine reference label, no run legend
     ax18.legend(fontsize=8, loc='lower right')
 
     plt.tight_layout()
-    out = os.path.join(FIGDIR, 'mckinnon_combined.png')
+    suffix = 'paper' if paper_mode else f'ext{r_max_kpc:.0f}kpc'
+    out = os.path.join(FIGDIR, f'mckinnon_combined_{suffix}.png')
     fig.savefig(out, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'  Saved: {out}')
@@ -604,6 +825,19 @@ def main():
                         help='Skip disc alignment (use raw simulation frame)')
     parser.add_argument('--combined-only', action='store_true',
                         help='Only produce the combined 2-panel figure')
+    parser.add_argument('--r-max', type=float, default=25.0,
+                        help=('Outer radius for Fig 18 enclosed mass profile '
+                              '(physical kpc). Default 25 = paper-facing McKinnon '
+                              'version. Use e.g. 500 to diagnose particle escape '
+                              'beyond the D/Z plot aperture.'))
+    parser.add_argument('--escape-diagnostic', action='store_true',
+                        help=('Produce the escape diagnostic figure (Fig 19): '
+                              'cumulative mass and particle count vs radius out '
+                              'to R200, with fraction inside 200 kpc labelled. '
+                              'Use this when the D/Z plot shows anomalously few '
+                              'particles after slowing DustGrowthCalibration.'))
+    parser.add_argument('--escape-r-max', type=float, default=None,
+                    help='Max radius for escape diagnostic x-axis (physical kpc)')
     args = parser.parse_args()
 
     global RESOLUTION
@@ -613,17 +847,24 @@ def main():
     print(f'\nRuns: {args.runs}')
     print(f'Resolution: {RESOLUTION}^3')
     print(f'Disc rotation: {"yes" if use_rotation else "no"}')
+    print(f'Fig 18 r_max: {args.r_max} kpc '
+          f'({"paper mode" if args.r_max <= 25 else "diagnostic mode"})')
     print(f'Output: {FIGDIR}/\n')
 
+    if args.escape_diagnostic:
+        print('=== Figure 19: escape diagnostic ===')
+        plot_escape_diagnostic(args.runs, use_rotation=False, 
+                           r_max_pkpc=args.escape_r_max)
+
     if args.combined_only:
-        plot_combined(args.runs, use_rotation)
+        plot_combined(args.runs, use_rotation, r_max_kpc=args.r_max)
     else:
         print('=== Figure 17: dust surface density ===')
         plot_sigma_dust(args.runs, use_rotation)
         print('\n=== Figure 18: enclosed mass fraction ===')
-        plot_enclosed_mass(args.runs, use_rotation)
+        plot_enclosed_mass(args.runs, use_rotation, r_max_kpc=args.r_max)
         print('\n=== Combined figure ===')
-        plot_combined(args.runs, use_rotation)
+        plot_combined(args.runs, use_rotation, r_max_kpc=args.r_max)
 
     print('\nDone.')
 

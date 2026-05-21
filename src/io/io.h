@@ -105,6 +105,7 @@ enum e_typelist
   STARS_ONLY    = 16,
   GAS_AND_STARS = 17,
   DUST_ONLY     = 20,
+  NON_DUST_TYPES = 21,
   ALL_TYPES     = ((1 << NTYPES) - 1),
   MASS_BLOCK    = -1,
   AGE_BLOCK     = -2,

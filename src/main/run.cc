@@ -176,9 +176,9 @@ void sim::run(void)
       do_gravity_step_second_half();
 
       /* do any extra physics, in a Strang-split way, for the timesteps that are finished */
-      //MPI_Barrier(Communicator);
+      MPI_Barrier(Communicator);
       calculate_non_standard_physics_end_of_step();
-      //MPI_Barrier(Communicator);
+      MPI_Barrier(Communicator);
 
 #ifdef DEBUG_MD5
       Logs.log_debug_md5("A");
@@ -294,16 +294,21 @@ void sim::set_non_standard_physics_for_current_time(void)
  */
 void sim::calculate_non_standard_physics_end_of_step(void)
 {
+  MPI_CHECKPOINT("before cooling_and_starformation");
   #ifdef COOLING
   #ifdef STARFORMATION
     CoolSfr.cooling_and_starformation(&Sp);
+    MPI_CHECKPOINT("before sfr_create_star_particles");
     CoolSfr.sfr_create_star_particles(&Sp);
   #endif
   #endif
 
+  MPI_CHECKPOINT("before apply_stellar_feedback");
   #ifdef FEEDBACK
     apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain, Communicator);
+    MPI_CHECKPOINT("before feedback_diag_try_flush");
     feedback_diag_try_flush(Communicator, /*cadence=*/50);
+    MPI_CHECKPOINT("after feedback_diag_try_flush");
   #endif
 
   #ifdef MEASURE_TOTAL_MOMENTUM
@@ -617,8 +622,10 @@ void sim::create_snapshot_if_desired(void)
          * communicators without carrying DustP, corrupting grain data.
          * After the return exchange P[i] is back in its original slot;
          * we restore DustP[i] using this map. */
+        MPI_CHECKPOINT("before dust_backup build");
         std::unordered_map<MyIDType, dust_data> dust_backup;
         {
+          
           int ndust = 0;
           for(int i = 0; i < Sp.NumPart; i++)
             if(Sp.P[i].getType() == 6) ndust++;
@@ -627,9 +634,11 @@ void sim::create_snapshot_if_desired(void)
             if(Sp.P[i].getType() == 6)
               dust_backup[Sp.P[i].ID.get()] = Sp.DustP[i];
         }
+        MPI_CHECKPOINT("after dust_backup build");
         #endif
 
         FoF.fof_fof(All.SnapshotFileCount, "fof", "groups", 0);
+        MPI_CHECKPOINT("after fof_fof");
 
 #if defined(MERGERTREE) && defined(SUBFIND)
         MergerTree.CurrTotNsubhalos = FoF.TotNsubhalos;
@@ -674,7 +683,9 @@ void sim::create_snapshot_if_desired(void)
         if(All.DumpFlag_nextoutput)
           {
             snap_io Snap(&Sp, Communicator, All.SnapFormat);             /* get an I/O object */
+            MPI_CHECKPOINT("after pre-snapshot restore");
             Snap.write_snapshot(All.SnapshotFileCount, NORMAL_SNAPSHOT); /* write snapshot file */
+            MPI_CHECKPOINT("after write_snapshot");
           }
 
 #ifdef SUBFIND_ORPHAN_TREATMENT
@@ -698,6 +709,7 @@ void sim::create_snapshot_if_desired(void)
         TIMER_START(CPU_FOF);
 
         Domain.particle_exchange_based_on_PS(Communicator);
+        MPI_CHECKPOINT("after particle_exchange_based_on_PS");
 
         TIMER_STOP(CPU_FOF);
 
@@ -718,6 +730,8 @@ void sim::create_snapshot_if_desired(void)
           cleanup_invalid_dust_particles(&Sp);
           gas_hash.is_built = false;
           star_hash.is_built = false;
+
+          MPI_CHECKPOINT("after post-exchange restore");
         #endif
 
         Mem.myfree(Sp.PS);
@@ -918,4 +932,59 @@ void sim::print_timestep_distribution(void)
     }
   }
   mpi_printf("\n");
+
+/* ---- TIMEBIN_VELMAG: mean |v| per occupied timebin (gas hydro, dust grav) ----
+   * Fires every 100 sync-points (cadence matches outer guard × 10).
+   * Uses mpi_printf so output lands in the same log file as TIMEBIN_HYDRO.
+   * Task-0-only guard is already enforced by the early return above. */
+  if(sync_count % 100 == 0)
+  {
+    mpi_printf("TIMEBIN_VELMAG_GAS  [z=%.2f]:", 1.0/All.Time - 1.0);
+    for(int bin = 0; bin < TIMEBINS; bin++)
+      {
+        double vsum  = 0.0;
+        int    count = 0;
+        for(int i = Sp.TimeBinsHydro.FirstInTimeBin[bin]; i >= 0;
+                i = Sp.TimeBinsHydro.NextInTimeBin[i])
+          {
+            if(Sp.P[i].getType() != 0) continue;
+            double v2 = Sp.P[i].Vel[0]*Sp.P[i].Vel[0]
+                      + Sp.P[i].Vel[1]*Sp.P[i].Vel[1]
+                      + Sp.P[i].Vel[2]*Sp.P[i].Vel[2];
+            vsum += sqrt(v2);
+            count++;
+          }
+        if(count > 0)
+          mpi_printf(" [%d:%.2e km/s n=%d]", bin,
+                     vsum / count * All.UnitVelocity_in_cm_per_s / 1e5,
+                     count);
+      }
+    mpi_printf("\n");
+
+  #ifdef DUST
+    mpi_printf("TIMEBIN_VELMAG_DUST [z=%.2f]:", 1.0/All.Time - 1.0);
+    for(int bin = 0; bin < TIMEBINS; bin++)
+      {
+        double vsum  = 0.0;
+        int    count = 0;
+        for(int i = Sp.TimeBinsGravity.FirstInTimeBin[bin]; i >= 0;
+                i = Sp.TimeBinsGravity.NextInTimeBin[i])
+          {
+            if(Sp.P[i].getType() != DUST_PARTICLE_TYPE) continue;
+            double v2 = Sp.P[i].Vel[0]*Sp.P[i].Vel[0]
+                      + Sp.P[i].Vel[1]*Sp.P[i].Vel[1]
+                      + Sp.P[i].Vel[2]*Sp.P[i].Vel[2];
+            vsum += sqrt(v2);
+            count++;
+          }
+        if(count > 0)
+          mpi_printf(" [%d:%.2e km/s n=%d]", bin,
+                     vsum / count * All.UnitVelocity_in_cm_per_s / 1e5,
+                     count);
+      }
+    mpi_printf("\n");
+  #endif
+  }
+
+
 }

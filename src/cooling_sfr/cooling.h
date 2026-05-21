@@ -124,8 +124,8 @@ class coolsfr : public setcomm
   photo_table *PhotoTUVB; /**< photo-ionization/heating rate table for UV background*/
   photo_current pc;       /**< current interpolated photo rates */
 
-  double Tmin = 1.0; /**< min temperature in log10 */
-  double Tmax = 9.0; /**< max temperature in log10 */
+  double Tmin = 1.0; /**< min temperature in log10 (10K)*/
+  double Tmax = 9.0; /**< max temperature in log10 (1e9K)*/
   double deltaT;     /**< log10 of temperature spacing in the interpolation tables */
   int NheattabUVB;   /**< length of UVB photo table */
 

@@ -7,7 +7,7 @@
  *   - Energy reservoir system with intelligent release threshold
  *   - SPH kernel support with 2h neighbor search via spatial binning
  *   - Metal enrichment from Type II SNe (3-40 Myr)
- *   - Metal enrichment from AGB stars using MESA yield tables from Huscher et al 2025 (>100 Myr)
+ *   - Metal enrichment from AGB stars (>100 Myr)
  *   - Stochastic kernel-weighted energy/metal deposition
  *
  * Build-time toggles (set in Config.sh):
@@ -49,11 +49,11 @@ constexpr int spatial_hash_config::TARGET_PARTICLES_PER_CELL;
 constexpr double spatial_hash_config::CELL_SIZE_SAFETY_FACTOR;
 
 // ------------------------------- Constants ----------------------------------
-static const double ESN_ERG                  = 1.0e51;   // SN energy in erg
-static const double NSNE_PER_MSUN_VAL        = 0.011;   // SNe per solar mass; Kroupa IMF, 8-100 Msun
-static const double METAL_YIELD_PER_SN_MSUN  = 2.0;      // Metal yield per Type II SN in Msun
-static const double AGB_METAL_YIELD_PER_MSUN = 9.956112e-03;  // Integrated over IMF
-static const double AGB_E_ERG                = 1.0e47;   // Energy per Msun of metals ejected (20 km/s winds)
+static const double ESN_ERG                  = 1.0e51;       // SN energy in erg
+static const double NSNE_PER_MSUN_VAL        = 0.011;        // SNe per solar mass; Kroupa IMF, 8-100 Msun
+static const double METAL_YIELD_PER_SN_MSUN  = 2.0;          // Metal yield per Type II SN in Msun
+static const double AGB_METAL_YIELD_PER_MSUN = 5.495072e-03; // Integrated over Kroupa IMF using MESA AGB yields from Huscher et al 2025, 1-8 Msun, Z=0.0001-0.03
+static const double AGB_E_ERG                = 1.0e47;       // Energy per Msun of metals ejected (20 km/s winds)
 
 // ΔT-target heating parameters
 static const double DELTA_T_TARGET        = 1e7;   // Target heating temperature (K)
@@ -114,36 +114,126 @@ static inline void diag_add_EfromRes(double v)  { FbDiag.E_from_reservoir_erg +=
 static inline void diag_track_dulog(double a)   { if(a > FbDiag.max_abs_dulog) FbDiag.max_abs_dulog = a; }
 
 
-// -------------------- Feedback Spatial Hash Rebuild -------------------------
-// BUILDS THREE SPATIAL HASHES: gas, star, and dust. Each hash is built only over the zoom region.
-// Shared between feedback and dust modules to avoid redundant neighbor searches.
-void rebuild_feedback_spatial_hash(simparticles *Sp, double max_search_radius, 
-                                    double dust_search_radius, MPI_Comm comm)
+// ============================================================================
+// rebuild_feedback_spatial_hash()
+//
+// Builds three spatial hashes — gas, star, and dust — used by both the
+// stellar feedback and dust physics modules for neighbour finding.
+//
+// ── REBUILD CADENCE ──────────────────────────────────────────────────────────
+//
+// All tasks must agree whether to rebuild (task 0 decides, then broadcasts)
+// to prevent MPI hangs from tasks diverging. Rebuilds whenever:
+//   - The hash has never been built (first call)
+//   - More than REBUILD_EVERY_DLOGA log-scale factor has elapsed since last rebuild
+//
+// REBUILD_EVERY_DLOGA = 0.002 corresponds roughly to ~100 Myr at z~2,
+// balancing hash staleness against the cost of three full rebuilds per call.
+//
+// ── HASH ORDER ───────────────────────────────────────────────────────────────
+//
+// Gas hash is always built first. Its bbox (the zoom-region extent derived
+// from gas positions) is then copied to the dust hash before the dust hash
+// is built. This is essential — see dust bbox note below.
+//
+// ── DUST BBOX ────────────────────────────────────────────────────────────────
+//
+// Dust superparticles are ejected by radiation pressure and SN kicks and can
+// travel far beyond the zoom region over time. If the dust bbox is computed
+// from dust positions (detect_extent_collective on type 6), escaped grains
+// inflate the bbox to > 100% of the box volume, producing cell sizes of
+// ~100 kpc and physically meaningless nearest-gas searches.
+//
+// Solution: force the dust hash to use the gas hash bbox. Gas traces the
+// actual zoom region extent; dust that has escaped the gas distribution is
+// physically decoupled and would fail to find a gas neighbor anyway (the
+// gas hash search for that grain will return -1, which is the correct result).
+//
+// To achieve this without a second MPI bbox reduction, build() is called
+// with preset_bbox=true after copying gas_hash.bbox_* into dust_hash.
+// The dust hash then only populates cells — it does not recompute the bbox.
+// zoom_mass_threshold is set to 1e30 (no mass filter) since all dust
+// particles are in the zoom region by construction.
+//
+// ── CELL SIZE OVERRIDES ───────────────────────────────────────────────────────
+//
+// Per-call overrides (max_cells_override) cap grid resolution independently
+// of the global MAX_CELLS_PER_DIM backstop. Recommended values at 2048³:
+//   gas hash:  768  → cell_size ~ 13 kpc, appropriate for feedback radii
+//   star hash: 768  → same reasoning as gas
+//   dust hash: 512  → dust search radii are shorter; fewer cells needed
+//
+// ── TIMING ───────────────────────────────────────────────────────────────────
+//
+// [HASH_TIMING] is printed after each rebuild with the per-rebuild wall time
+// and running average. gas_hash.print_stats() follows, showing the grid
+// dimensions, allocated cell count, and max/avg occupancy.
+// ============================================================================
+
+void rebuild_feedback_spatial_hash(simparticles *Sp, double dust_search_radius, MPI_Comm comm)
 {
-  static double    total_rebuild_time  = 0.0;
-  static int       rebuild_count       = 0;
-  const double REBUILD_EVERY_DLOGA = 0.002;  // roughly hash every ~100 Myr at z~2 etc (we want to rebuild often enough to keep the hash efficient, 
-                                             // but not so often that we waste time rebuilding when the particles haven't moved much)
+  static double total_rebuild_time = 0.0;
+  static int    rebuild_count      = 0;
+
+  // Rebuild when scale factor has advanced by more than this since last build.
+  // ~0.002 in log-a corresponds to ~100 Myr at z~2, ~50 Myr at z~5.
+  static constexpr double REBUILD_EVERY_DLOGA = 0.002;
   static double last_rebuild_a = -1.0;
 
-  // All tasks must agree whether to rebuild — only task 0 decides, then broadcast.
+  // ── Collective rebuild decision ───────────────────────────────────────────
+  // Task 0 decides; all others follow. Prevents MPI hangs from divergence.
   int need_rebuild = 0;
   if(All.ThisTask == 0) {
-    if(!gas_hash.is_built || last_rebuild_a < 0 ||
-      (All.Time - last_rebuild_a) >= REBUILD_EVERY_DLOGA)
+    if(!gas_hash.is_built || last_rebuild_a < 0.0 ||
+       (All.Time - last_rebuild_a) >= REBUILD_EVERY_DLOGA)
       need_rebuild = 1;
   }
   MPI_Bcast(&need_rebuild, 1, MPI_INT, 0, comm);
 
-  if(!need_rebuild)
-    return;
+  if(!need_rebuild) return;
 
   double t_start = MPI_Wtime();
-  gas_hash.build(Sp, max_search_radius, All.SofteningTable[0], comm, 0);
-  star_hash.build(Sp, std::min(max_search_radius, 10.0), All.SofteningTable[4], comm, 4);  // type 4 = stars, capping to 10 kpc to avoid huge search radii at low z
-  dust_hash.build(Sp, dust_search_radius, All.SofteningTable[6], comm, 6);
-  double t_end = MPI_Wtime();
 
+  // ── Step 1: Gas hash ──────────────────────────────────────────────────────
+  // Use the dust search radius as the cell sizing target — it's the smallest
+  // search radius used by any module, so it's the binding constraint.
+  // This is resolution-independent: at coarser resolution dust_search_radius
+  // will be larger, naturally producing fewer cells; at finer resolution it
+  // will be smaller, naturally requesting more cells (capped by the override).
+  gas_hash.build(Sp, dust_search_radius, All.SofteningTable[0], comm, 0, 768);
+
+  // ── Step 2: Star hash ─────────────────────────────────────────────────────
+  star_hash.build(Sp, dust_search_radius, All.SofteningTable[4], comm, 4, 768);
+
+  // ── Step 3: Dust hash — inherits bbox from gas hash ───────────────────────
+  //
+  // CRITICAL: Do NOT compute dust bbox from dust positions. Radiation-pressure
+  // and SN-kicked grains scatter across the full box, inflating the bbox to
+  // >> 100% of box volume and producing cell sizes of ~100 kpc. At that
+  // resolution, dust-gas coupling, sputtering, and growth are all physically
+  // meaningless (grains couple to gas particles 50+ kpc away).
+  //
+  // Instead: copy the gas hash bbox (which correctly traces the zoom region)
+  // into dust_hash, then build cells only — skip detect_extent_collective.
+  // Dust that has escaped the gas distribution will not find a gas neighbor
+  // via the hash (correct physics: decoupled grains should return -1).
+  //
+  // zoom_mass_threshold = 1e30: all dust is in the zoom region by construction
+  // (spawned from stars inside the zoom volume), so no mass filter is needed.
+
+  for(int d = 0; d < 3; d++) {
+    dust_hash.bbox_min[d]  = gas_hash.bbox_min[d];
+    dust_hash.bbox_max[d]  = gas_hash.bbox_max[d];
+    dust_hash.bbox_size[d] = gas_hash.bbox_size[d];
+  }
+  dust_hash.zoom_mass_threshold = 1e30;
+
+  // Build with preset_bbox=true: skips detect_extent_collective and uses the
+  // gas bbox already copied above. Only populates cells. See spatial_hash_zoom.h.
+  dust_hash.build(Sp, dust_search_radius, All.SofteningTable[6],
+                  comm, 6, 512, /*preset_bbox=*/true);
+
+  double t_end = MPI_Wtime();
   total_rebuild_time += (t_end - t_start);
   rebuild_count++;
   last_rebuild_a = All.Time;
@@ -857,12 +947,10 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
     if(h_count > 0) max_radius = 2.5 * h_sum / h_count;
   }
 
-  // Star hash only needs to cover local stellar interactions (radiation
-  // pressure, astration) — cap at 10 kpc so cell size stays ~few kpc
-  // rather than inheriting the full feedback search radius.
-  double star_hash_radius = std::min(max_radius, 10.0);
-
-  rebuild_feedback_spatial_hash(Sp, max_radius, 0.1, comm);
+  // max_radius is used for actual neighbor searches below, not for hash sizing.
+  // Hash cell sizing uses dust_search_radius (0.1 kpc) — the finest search
+  // any module performs — ensuring cells are small enough for all use cases.
+  rebuild_feedback_spatial_hash(Sp, 0.1, comm);
 
   // Reset per-call reservoir diagnostics
   reservoir_release_attempts  = 0;

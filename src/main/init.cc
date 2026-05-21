@@ -42,6 +42,10 @@
 #include "../system/system.h"
 #include "../time_integration/timestep.h"
 
+#ifdef DUST
+extern double get_random_number(void);
+#endif
+
 using namespace std;
 
 /*! \brief Prepares the loaded initial conditions for the run
@@ -405,9 +409,101 @@ void sim::init(int RestartSnapNum)
   }
 #endif
 
+#ifdef DUST
+  if(All.RestartFlag == RST_STARTFROMSNAP)
+    {
+      // Had to engage here... restarting from snapshots leads to ID uniqueness errors
+      // and it crashes immediately.
+      // Dust IDs may collide with gas/star IDs if All.MaxID was not properly
+      // maintained during the run (e.g. after a power failure or mid-run restart).
+      // Since dust IDs carry no physical meaning (no merger trees, no tracking),
+      // we reassign all PartType6 IDs to a clean range above the global non-dust max.
+
+      // Step 1: find max ID among non-dust particles only
+      MyIDType local_nondust_max = 0;
+      for(int i = 0; i < Sp.NumPart; i++)
+        if(Sp.P[i].getType() != 6)
+          if(Sp.P[i].ID.get() > local_nondust_max)
+            local_nondust_max = Sp.P[i].ID.get();
+
+      MyIDType global_nondust_max = 0;
+      MPI_Allreduce(&local_nondust_max, &global_nondust_max, 1, MPI_MYIDTYPE, MPI_MAX, Communicator);
+
+      // Step 2: count dust particles per task to assign non-overlapping ID ranges
+      int local_dust_count = 0;
+      for(int i = 0; i < Sp.NumPart; i++)
+        if(Sp.P[i].getType() == 6)
+          local_dust_count++;
+
+      int *dust_count_list = (int *)Mem.mymalloc("dust_count_list", NTask * sizeof(int));
+      MPI_Allgather(&local_dust_count, 1, MPI_INT, dust_count_list, 1, MPI_INT, Communicator);
+
+      // Step 3: compute this task's starting ID offset
+      MyIDType dust_id_start = global_nondust_max + 1;
+      for(int i = 0; i < ThisTask; i++)
+        dust_id_start += dust_count_list[i];
+
+      Mem.myfree(dust_count_list);
+
+      // Step 4: reassign dust IDs sequentially
+      MyIDType next_id = dust_id_start;
+      for(int i = 0; i < Sp.NumPart; i++)
+        if(Sp.P[i].getType() == 6)
+          Sp.P[i].ID.set(next_id++);
+
+      // Step 5: update All.MaxID to reflect new global maximum
+      MyIDType local_max = next_id - 1;
+      MyIDType global_max = 0;
+      MPI_Allreduce(&local_max, &global_max, 1, MPI_MYIDTYPE, MPI_MAX, Communicator);
+      All.MaxID = global_max;
+
+      // Step 6: Restart fix!
+      // Jitter IntPos of all dust particles to prevent tree crashes
+      // from particles at identical positions (e.g. multiple grains spawned
+      // from the same star with sub-integer offsets).
+      for(int i = 0; i < Sp.NumPart; i++) {
+        if(Sp.P[i].getType() != 6) continue;
+        Sp.P[i].IntPos[0] += (MySignedIntPosType)((int)(get_random_number() * 16) - 8);
+        Sp.P[i].IntPos[1] += (MySignedIntPosType)((int)(get_random_number() * 16) - 8);
+        Sp.P[i].IntPos[2] += (MySignedIntPosType)((int)(get_random_number() * 16) - 8);
+      }
+      mpi_printf("INIT: Applied IntPos jitter to dust particles for snapshot restart.\n");
+
+      mpi_printf("INIT: Reassigned dust particle IDs to range [%lld, %lld] above non-dust max %lld\n",
+                 (long long)(global_nondust_max + 1), (long long)global_max, (long long)global_nondust_max);
+    }
+#endif
+
   test_id_uniqueness();
 
-  Domain.domain_decomposition(STANDARD); /* do initial domain decomposition (gives equal numbers of particles) */
+
+#ifdef DUST
+// Check DustP integrity BEFORE domain decomp
+{
+  int valid = 0, invalid = 0;
+  for(int i = 0; i < Sp.NumPart; i++)
+    if(Sp.P[i].getType() == 6)
+      if(Sp.DustP[i].GrainRadius > 0) valid++;
+      else invalid++;
+  mpi_printf("DUST_CHECK [pre-domain-decomp] T=%d: valid=%d invalid=%d\n",
+             ThisTask, valid, invalid);
+}
+#endif
+
+Domain.domain_decomposition(STANDARD);  /* do initial domain decomposition (gives equal numbers of particles) */
+
+#ifdef DUST
+// Check DustP integrity AFTER domain decomp
+{
+  int valid = 0, invalid = 0;
+  for(int i = 0; i < Sp.NumPart; i++)
+    if(Sp.P[i].getType() == 6)
+      if(Sp.DustP[i].GrainRadius > 0) valid++;
+      else invalid++;
+  mpi_printf("DUST_CHECK [post-domain-decomp] T=%d: valid=%d invalid=%d\n",
+             ThisTask, valid, invalid);
+}
+#endif
 
   GravTree.set_softenings();
 
@@ -500,7 +596,8 @@ void sim::init(int RestartSnapNum)
 
   All.Ti_Current = 0;
 
-  setup_smoothinglengths();
+  if(All.RestartFlag != RST_STARTFROMSNAP)
+    setup_smoothinglengths();
 
   /* at this point, the entropy variable actually contains the
    * internal energy, read in from the initial conditions file.

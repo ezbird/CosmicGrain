@@ -73,6 +73,7 @@ int SpatialHashDebugLevel;               // 0=off, 1=detailed output
   double DustOffsetMinAGB;          // Minimum of sphere around AGB to spawn dust particles [kpc]
   double DustOffsetMaxAGB;          // Maximum of sphere around AGB to spawn dust particles [kpc]
   double DustAccommodationCoeff;    // Thermal accommodation coefficient for gas-grain collisions (alpha in Hollenbach & McKee 1979, ApJS 41 555)
+  double DustRadiationPressureEfficiency; // Efficiency of radiation pressure on dust grains
   double DustShockAmbientDensity;   // Ambient density for shock destruction calculations (g/cm^3)
   double DustCollisionDensityThresh;
   double DustCoagulationCalibration;
@@ -385,6 +386,7 @@ int SpatialHashDebugLevel;               // 0=off, 1=detailed output
   double MaxSfrTimescale;
   double FactorSN;
   MyIDType MaxID;
+  MyIDType MaxIDBlockEnd;   // upper bound of this task's reserved ID block
   int StarformationDebugLevel;  // 0=off, 1=detailed output
 #endif
 

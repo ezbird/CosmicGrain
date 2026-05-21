@@ -18,7 +18,7 @@
 #include <mpi.h>
 
 // Feedback constants
-#define MIN_TYPEII_TIME 3.0           // Minimum Type II SN age (Myr)
+#define MIN_TYPEII_TIME 9.0           // Minimum Type II SN age (Myr); peak around 9 Myr for a Kroupa IMF
 #define MAX_TYPEII_TIME 40.0          // Maximum Type II SN age (Myr)
 #define MIN_AGB_TIME 100.0            // Minimum AGB phase age (Myr); high mass AGBs do kick on by 50 Myr, but there are so few...
 #define MAX_AGB_TIME 1000.0           // Maximum AGB phase age (Myr)
