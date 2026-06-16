@@ -15,7 +15,7 @@ CosmicGrain models the full lifecycle of interstellar dust grains alongside gas 
 - **Radiation pressure**: grain-mass-weighted force coupling
 - **Astration**: dust consumption during star formation
 
-  For more information, please refer to CosmicGrain's [website]([https://cosmicgrain.space]).
+  For more information, please refer to CosmicGrain's [website](https://cosmicgrain.space).
 
 ## Simulation
 
