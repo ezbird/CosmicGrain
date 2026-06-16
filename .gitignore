@@ -1,122 +1,41 @@
-# Simulation output folders (your naming)
-[0-9]_output_*/
-[0-9][0-9]_output_*/
-output_*/
+# Simulation output directories
+S[0-9]_output_*/
+S[0-9][0-9]_output_*/
+full_*_backup_*/
 snapdir_*/
 ICs/
-examples/
-documentation/
 
-# Python venvs
+# Python
+*.pyc
 .venv/
 venv/
-**/.venv/
-*.pyc
 
-# Big outputs / generated artifacts
+# Old/scratch scripts
+*_old.py
+*_old2.py
+scripts/test*.py
+scripts/datetime
+scripts/figs/
+scripts/frames*/
+scripts/dust_figures/
+scripts/halo569_centers_*.json
+testnow
+check_halo.py
+compare_grid_dust_old*.py
+
+# Large data files
 *.hdf5
+*.h5
 *.npz
 *.npy
-*.log
+*.bin
+*.dat
 *.zip
 *.tar
 *.tar.gz
-
-# Big plots / html reports (optional)
-*.html
-*.png
-
-# Gadget run directories (adjust to your naming)
-*_output_*/
-snapdir_*/
-
-# Your specific runs (belt + suspenders)
-1_output_*/
-2_output_*/
-3_output_*/
-4_output_*/
-5_output_*/
-6_output_*/
-7_output_*/
-
-# Large artifacts
-*.hdf5
-*.zip
 *.tgz
-*.log
-slurm-*.out
-core.*
 
-.vscode/
-
-#eclipse stuff
-.cproject
-.dep/
-.project
-.settings/
-.pydevproject
-
-#OS
-.gdb_history
-.DS_Store
-
-#binaries
-build
-Arepo
-Arepo.dSYM
-Tenet
-Tenet.dSYM
-Gadget4
-Gadget4.dSYM
-.build*/
-*.o
-*.check
-/extlibs
-
-doxygen
-WARNINGS
-processes_*.txt
-
-*~
-*.o*
-*.e*
-*\#
-*.sh
-
-#potentially large files
-*.h5
-*.hdf5
-*.dat
-*.bin
-
-#media files
-*.mp4
-*.png
-*.eps
-*.jpg
-*.jpeg
-*.pdf
-*.out
-
-*.aux
-*.toc
-*.log
-
-#Config files
-/Config.sh
-/Makefile.systype
-/param.txt
-/parameter.txt
-/Run1.tex
-/param.tex
-/param.param
-/*.param
-*.txt
-
-#Output folders
-/tests
-/out
-/**/output*/
+# Gadget runtime output files
 balance.txt
 cpu.txt
 info.txt
@@ -127,15 +46,29 @@ timings.txt
 energy.txt
 cpu.csv
 *-usedvalues
-**/restartfiles/
+slurm-*.out
+core.*
+restartfiles/
 
+# Build artifacts
+*.o
+Gadget4
+Gadget4.dSYM
+.build*/
+build/
+WARNINGS
 
-# special files in test directory
-tests/Aquarius/Aq-A-2-cont/Tree-PM-O3/*.txt
-tests/ICs
+# IDE / OS
+.vscode/
+.DS_Store
+.gdb_history
+*~
+*\#
 
-# symbolic links in repository
-tests/MilliMillHyper/output
-tests/MilliMillHyper/output_tree
-tests/EuclidTest/G4_TreePM/output
-site/
+# LaTeX artifacts
+*.aux
+*.toc
+
+# Config files that vary per machine
+/Config.sh
+/Makefile.systype
