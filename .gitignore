@@ -72,3 +72,4 @@ WARNINGS
 # Config files that vary per machine
 /Config.sh
 /Makefile.systype
+*-usedvalues
