@@ -134,8 +134,7 @@ void snap_io::init_basic(simparticles *Sp_ptr)
 
 #ifdef FEEDBACK
   init_field("FBFG", "FeedbackFlag", MEM_INT, FILE_INT, READ_IF_PRESENT, 1, A_P, &Sp->P[0].FeedbackFlag, NULL,
-             STARS_ONLY, /* tracks which feedback events have fired */
-             0, 0, 0, 0, 0, 0, 0);
+             STARS_ONLY, 0, 0, 0, 0, 0, 0, 0);
 #endif
 
 #ifdef DUST
@@ -624,10 +623,6 @@ void snap_io::write_snapshot(int num, mysnaptype loc_snap_type)
 #endif
 
   snap_type = loc_snap_type;
-
-  #ifdef DUST
-    dust_integrity_check(Sp, "before snapshot write");
-  #endif
 
   TIMER_START(CPU_SNAPSHOT);
 

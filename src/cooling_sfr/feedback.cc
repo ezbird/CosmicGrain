@@ -8,7 +8,7 @@
  *   - SPH kernel support with 2h neighbor search via spatial binning
  *   - Metal enrichment from Type II SNe (3-40 Myr)
  *   - Metal enrichment from AGB stars (>100 Myr)
- *   - Stochastic kernel-weighted energy/metal deposition
+ *   - Single-event SNII firing at window entry (3-40 Myr)
  *
  * Build-time toggles (set in Config.sh):
  *   FEEDBACK_LIMIT_DULOG   - Clamp |Δlog10 u| per heating event
@@ -202,36 +202,64 @@ void rebuild_feedback_spatial_hash(simparticles *Sp, double dust_search_radius, 
   // will be smaller, naturally requesting more cells (capped by the override).
   gas_hash.build(Sp, dust_search_radius, All.SofteningTable[0], comm, 0, 768);
 
-  // ── Step 2: Star hash ─────────────────────────────────────────────────────
-  star_hash.build(Sp, dust_search_radius, All.SofteningTable[4], comm, 4, 768);
+  // ── Step 2: Star hash ─────────────────────────────────────────────────
+  // Guard: skip if no stars exist yet (e.g. z > 15). Building with zero
+  // particles produces a degenerate 8^3 grid with cell_size=0 which causes
+  // MPI_ERR_TRUNCATE in subsequent collectives on split communicators.
+  int n_stars_local = 0;
+  for(int i = 0; i < Sp->NumPart; i++)
+      if(Sp->P[i].getType() == 4) n_stars_local++;
+  int n_stars_global = 0;
+  MPI_Allreduce(&n_stars_local, &n_stars_global, 1, MPI_INT, MPI_SUM, comm);
+
+  if(n_stars_global > 0)
+      star_hash.build(Sp, dust_search_radius, All.SofteningTable[4], comm, 4, 768);
+  else
+      star_hash.is_built = false;  // explicitly mark as not built
 
   // ── Step 3: Dust hash — inherits bbox from gas hash ───────────────────────
   //
-  // CRITICAL: Do NOT compute dust bbox from dust positions. Radiation-pressure
-  // and SN-kicked grains scatter across the full box, inflating the bbox to
+  // This can be a key place that causes hangs and crashes if not handled carefully, 
+  // note the MPI_Allreduce in here.
+  //
+  // Guard: skip if no dust exists yet. Building with zero particles produces
+  // a degenerate grid (same problem as the star hash guard above) which causes
+  // MPI_ERR_TRUNCATE on split communicators.
+  //
+  // When dust does exist, we force the dust hash to use the gas hash bbox
+  // rather than computing it from dust positions. Radiation-pressure and
+  // SN-kicked grains can scatter across the full box, inflating the bbox to
   // >> 100% of box volume and producing cell sizes of ~100 kpc. At that
-  // resolution, dust-gas coupling, sputtering, and growth are all physically
+  // resolution, dust-gas coupling, sputtering, and growth are physically
   // meaningless (grains couple to gas particles 50+ kpc away).
   //
-  // Instead: copy the gas hash bbox (which correctly traces the zoom region)
+  // Solution: copy the gas hash bbox (which correctly traces the zoom region)
   // into dust_hash, then build cells only — skip detect_extent_collective.
   // Dust that has escaped the gas distribution will not find a gas neighbor
-  // via the hash (correct physics: decoupled grains should return -1).
+  // via the hash (correct: decoupled grains should return -1).
   //
   // zoom_mass_threshold = 1e30: all dust is in the zoom region by construction
   // (spawned from stars inside the zoom volume), so no mass filter is needed.
+  // build() is called with preset_bbox=true to skip detect_extent_collective.
 
-  for(int d = 0; d < 3; d++) {
-    dust_hash.bbox_min[d]  = gas_hash.bbox_min[d];
-    dust_hash.bbox_max[d]  = gas_hash.bbox_max[d];
-    dust_hash.bbox_size[d] = gas_hash.bbox_size[d];
+  int n_dust_local = 0;
+  for(int i = 0; i < Sp->NumPart; i++)
+      if(Sp->P[i].getType() == 6) n_dust_local++;
+  int n_dust_global = 0;
+  MPI_Allreduce(&n_dust_local, &n_dust_global, 1, MPI_INT, MPI_SUM, comm);
+
+  if(n_dust_global > 0) {
+      for(int d = 0; d < 3; d++) {
+          dust_hash.bbox_min[d]  = gas_hash.bbox_min[d];
+          dust_hash.bbox_max[d]  = gas_hash.bbox_max[d];
+          dust_hash.bbox_size[d] = gas_hash.bbox_size[d];
+      }
+      dust_hash.zoom_mass_threshold = 1e30;
+      dust_hash.build(Sp, dust_search_radius, All.SofteningTable[6],
+                      comm, 6, 512, /*preset_bbox=*/true);
+  } else {
+      dust_hash.is_built = false;
   }
-  dust_hash.zoom_mass_threshold = 1e30;
-
-  // Build with preset_bbox=true: skips detect_extent_collective and uses the
-  // gas bbox already copied above. Only populates cells. See spatial_hash_zoom.h.
-  dust_hash.build(Sp, dust_search_radius, All.SofteningTable[6],
-                  comm, 6, 512, /*preset_bbox=*/true);
 
   double t_end = MPI_Wtime();
   total_rebuild_time += (t_end - t_start);
@@ -245,6 +273,40 @@ void rebuild_feedback_spatial_hash(simparticles *Sp, double dust_search_radius, 
   }
 }
 
+// ----------------------- Poisson Sampler ------------------------------------
+// NOT CURRENTLY USING THIS, BUT WAS EXPERIMENTING WITH POISSON FIRING FOR SNII INSTEAD OF DETERMINISTIC AVERAGE RATES. 
+// STILL KEEPING THIS FUNCTION IN CASE WE WANT TO REVISIT POISSON FIRING IN THE FUTURE.
+//
+// Draw a random integer from a Poisson distribution with mean lambda.
+// Uses Knuth's algorithm for lambda < 30 (exact), and a normal approximation
+// with continuity correction for lambda >= 30 (fast, accurate to <1%).
+// This is used for stochastic SNII firing — see apply_stellar_feedback().
+//
+static int poisson_draw(double lambda, unsigned long long seed)
+{
+  if(lambda <= 0.0) return 0;
+
+  if(lambda < 30.0) {
+    // Knuth's algorithm: exact Poisson sampling
+    double L = exp(-lambda);
+    double p = 1.0;
+    int k = 0;
+    do {
+      k++;
+      p *= get_random_number(seed + k);
+    } while(p > L);
+    return k - 1;
+  } else {
+    // Normal approximation: N(lambda, sqrt(lambda))
+    // Box-Muller transform for Gaussian deviate
+    double u1 = get_random_number(seed);
+    double u2 = get_random_number(seed + 1);
+    if(u1 < 1e-300) u1 = 1e-300;
+    double z = sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
+    int result = (int)floor(lambda + sqrt(lambda) * z + 0.5);
+    return (result < 0) ? 0 : result;
+  }
+}
 
 void feedback_diag_try_flush(MPI_Comm comm, int cadence)
 {
@@ -570,6 +632,19 @@ static double deposit_energy_stochastic(simparticles *Sp,
     double w        = cubic_spline_kernel(distances[idx], hsml);
     double fraction = (m_g * w) / total_kernel_weighted_mass;
 
+    // Deposit metals unconditionally — before any skip checks
+    // Add ejected metal mass to the gas particle — this increases both the
+    // total gas mass and the metal mass!
+    #ifdef METALS
+    if(MZ_code > 0) {
+      double metal_mass_code = MZ_code * fraction;
+      double new_gas_mass = Sp->P[j].getMass() + metal_mass_code;
+      Sp->P[j].setMass(new_gas_mass);
+      Sp->SphP[j].MassMetallicity += metal_mass_code;
+      Sp->SphP[j].Metallicity = Sp->SphP[j].MassMetallicity / new_gas_mass;
+    }
+    #endif
+
     double dE_code  = E_avail_code * fraction;
     double du_cgs   = (dE_code * All.UnitEnergy_in_cgs) / (m_g * All.UnitMass_in_g);
     double du_code  = du_cgs / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
@@ -582,9 +657,7 @@ static double deposit_energy_stochastic(simparticles *Sp,
 
     double u_new = u_old + du_code;
 
-    
 
-    
 
     #ifdef FEEDBACK_LIMIT_DULOG
         double du_log10 = log10(u_new) - log10(u_old);
@@ -608,23 +681,6 @@ static double deposit_energy_stochastic(simparticles *Sp,
     const double u_max_particle = TK_to_ucode(1.0e8);
     if(u_new > u_max_particle) u_new = u_max_particle;
 
-      double h_j      = Sp->SphP[j].Hsml;
-      double T_new_K  = ucode_to_TK(u_new);
-      double cs_after = sqrt((5.0/3.0) * BOLTZMANN * T_new_K / (0.62 * PROTONMASS));
-      double h_j_cgs  = h_j * All.UnitLength_in_cm;
-      double dt_after = All.CourantFac * h_j_cgs / cs_after / All.UnitTime_in_s;
-
-      // Don't heat if it would push this particle below bin 14
-      const double DT_HYDRO_FLOOR = 1.41e-04;  // bin 14 dt in code units
-      if(dt_after < DT_HYDRO_FLOOR) {
-        //Sp->P[star_idx].EnergyReservoir += dE_code;  // bank it for later; (no, I think this is happening in apply feedback too)
-        static long long skips = 0;
-        if(++skips % 1000 == 0 && All.ThisTask == 0)
-          printf("[FB_COURANT_SKIP] %lld events banked: h=%.3f kpc T=%.2e K dt=%.2e\n",
-                skips, h_j, T_new_K, dt_after);
-        continue;
-      }
-
     Sp->set_entropy_from_utherm(u_new, j);
     set_thermodynamic_variables_safe(Sp, j);
 
@@ -645,14 +701,6 @@ static double deposit_energy_stochastic(simparticles *Sp,
         cap_failures++;
       }
     }
-
-#ifdef METALS
-    if(MZ_code > 0) {
-      double metal_mass_code = MZ_code * fraction;
-      Sp->SphP[j].MassMetallicity += metal_mass_code;
-      Sp->SphP[j].Metallicity = Sp->SphP[j].MassMetallicity / Sp->P[j].getMass();
-    }
-#endif
 
     heated_this_step.insert(j);
     particles_heated_global++;
@@ -785,12 +833,8 @@ static void try_release_reservoir(simparticles *Sp, ngbtree *Tree,
   // Step 3: Overflow vent — prevent indefinite reservoir accumulation in
   // dense star-forming regions.
   //
-  // The Courant-skip logic in deposit_energy_stochastic (which protects the
-  // timebin hierarchy by refusing to heat small-h particles) can cause
-  // reservoirs to grow without bound if ALL nearby gas cells are dense and
-  // small-h. Without this safety valve, a star embedded in a dense clump
-  // could accumulate unbounded energy and then dump it all at once when the
-  // clump disperses, causing a numerically violent heating event.
+  // Overflow vent — prevent indefinite reservoir accumulation for isolated
+  // stars embedded in dense clumps where all neighbors hit MAX_PARTICLES_HEATED_PER_STEP.
   //
   // If the reservoir exceeds MAX_RESERVOIR_FACTOR × E_need, we vent 5% per
   // call directly to the largest-h (most diffuse) neighbor, bypassing the
@@ -890,7 +934,7 @@ void init_stellar_feedback(void)
   // Print banner on task 0
   if(All.ThisTask == 0)
     FB_PRINT("FEEDBACK enabled; ΔT_target=%.2e K, Nheat=[%d,%d]\n",
-             DELTA_T_TARGET, HEAT_N_MIN, HEAT_N_MAX);
+         DELTA_T_TARGET, HEAT_N_MIN, HEAT_N_MAX);
 
   // All tasks load AGB yields (not just task 0)
   if(!AGB_Yields.load_from_file(All.AGByieldFile)) {
@@ -975,40 +1019,68 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
   // ====================================================================
   // 2) Trigger new feedback events (SNII and AGB)
   // ====================================================================
-  static int snii_event_count = 0;
 
   for(int p : star_indices) {
     double age_Myr = get_stellar_age_Myr(Sp->P[p].StellarAge, 0.0);
 
-    // --- 2a) Type II SNe (3-40 Myr window, one-time per star) ---
-    if(age_Myr >= MIN_TYPEII_TIME && age_Myr < MAX_TYPEII_TIME &&
-       !(Sp->P[p].FeedbackFlag & 1))
+// --- 2a) Type II SNe — single-event firing at window entry ---
+    //
+    // Physical motivation: a stellar particle of mass M_star represents a
+    // population of stars. The 0.011 × M_star / M_sun SNe fire over the
+    // 3-40 Myr window set by the stellar IMF and mass-lifetime relation.
+    //
+    // Numerical implementation: all SNe from this stellar particle are fired
+    // in a single event when the star first enters the 3-40 Myr window.
+    // This is a deliberate simplification — physically, SNe fire continuously
+    // over the window, but single-event firing was found to produce a stable
+    // ISM at the resolution of these runs (512³-2048³) whereas distributed
+    // stochastic firing increased the number of neighbor searches by ~2600×
+    // per star, making the simulation prohibitively slow and producing
+    // similar or worse ISM evacuation due to interactions with the
+    // heated_this_step deduplication and MAX_PARTICLES_HEATED_PER_STEP
+    // rate limiting. Stochastic firing is documented in the git history
+    // and deferred to future work with explicit wind feedback.
+    //
+    // Algorithm:
+    //   1. Star enters window (age >= MIN_TYPEII_TIME)
+    //   2. Fire all N_SN = NSNE_PER_MSUN × M_star SNe at once
+    //   3. Deposit total energy E = N_SN × ESN_ERG to neighbors
+    //   4. Deposit total metals MZ = N_SN × METAL_YIELD_PER_SN to neighbors
+    //   5. Set FeedbackFlag bit 0 — never fires again
+
+   if(age_Myr >= MIN_TYPEII_TIME && age_Myr < MAX_TYPEII_TIME &&
+   !(Sp->P[p].FeedbackFlag & 1))
+{
+    double m_star_g   = Sp->P[p].getMass() * All.UnitMass_in_g;
+    double n_SN_total = NSNE_PER_MSUN_VAL * (m_star_g / SOLAR_MASS);
+    double E_erg      = n_SN_total * ESN_ERG;
+    double MZ_g       = n_SN_total * METAL_YIELD_PER_SN_MSUN * SOLAR_MASS;
+    double MZ_code    = MZ_g / All.UnitMass_in_g;
+    double E_code     = E_erg / All.UnitEnergy_in_cgs;
+
+    apply_feedback_event(Sp, Tree, D, p, true, E_code, MZ_code,
+                        particles_heated_this_step,
+                        MAX_PARTICLES_HEATED_PER_STEP);
+
+    // Debit ejected metal mass from star particle — mass conservation.
+    // The metals are now in the gas phase; the star loses this mass.
     {
-      double m_star_g = Sp->P[p].getMass() * All.UnitMass_in_g;
-      double n_SN     = NSNE_PER_MSUN_VAL * (m_star_g / SOLAR_MASS);
-      double E_erg    = n_SN * ESN_ERG;
-      double MZ_g     = n_SN * METAL_YIELD_PER_SN_MSUN * SOLAR_MASS;
-      double MZ_code  = MZ_g / All.UnitMass_in_g;
-      double E_code   = E_erg / All.UnitEnergy_in_cgs;
-
-      snii_event_count++;
-      if(snii_event_count % 10 == 0 && All.ThisTask == 0) {
-        FB_PRINT("[SNII_EVENT] #%d: Star %d, age=%.1f Myr, M=%.3f Msun, "
-                 "n_SN=%.3f, MZ=%.3e Msun\n",
-                 snii_event_count, p, age_Myr, m_star_g / SOLAR_MASS,
-                 n_SN, MZ_g / SOLAR_MASS);
-      }
-
-      apply_feedback_event(Sp, Tree, D, p, /*is_SNII=*/true, E_code, MZ_code,
-                           particles_heated_this_step, MAX_PARTICLES_HEATED_PER_STEP);
-
-#ifdef DUST
-      create_dust_particles_from_feedback(Sp, p, MZ_code, 1);
-      destroy_dust_from_sn_shocks(Sp, p, E_code, MZ_code, comm);
-#endif
-
-      Sp->P[p].FeedbackFlag |= 1;
+      double new_star_mass = Sp->P[p].getMass() - MZ_code;
+      if(new_star_mass > 0.0) Sp->P[p].setMass(new_star_mass);
     }
+
+    #ifdef DUST
+    create_dust_particles_from_feedback(Sp, p, MZ_code, 1);
+    destroy_dust_from_sn_shocks(Sp, p, E_code, MZ_code, comm);
+    #endif
+
+    Sp->P[p].FeedbackFlag |= 1;
+}
+
+  if(age_Myr >= MAX_TYPEII_TIME && !(Sp->P[p].FeedbackFlag & 1))
+  {
+      Sp->P[p].FeedbackFlag |= 1;
+  }
 
     // --- 2b) AGB enrichment (>100 Myr, one-time per star) ---
     if(AGB_Yields.is_table_loaded() && age_Myr >= MIN_AGB_TIME &&
@@ -1028,9 +1100,15 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
         apply_feedback_event(Sp, Tree, D, p, /*is_SNII=*/false, E_code, MZ_code,
                              particles_heated_this_step, MAX_PARTICLES_HEATED_PER_STEP);
 
-#ifdef DUST
-        create_dust_particles_from_feedback(Sp, p, MZ_code, 2);
-#endif
+        // Debit ejected metal mass from star particle — mass conservation.
+        {
+          double new_star_mass = Sp->P[p].getMass() - MZ_code;
+          if(new_star_mass > 0.0) Sp->P[p].setMass(new_star_mass);
+        }
+
+        #ifdef DUST
+            create_dust_particles_from_feedback(Sp, p, MZ_code, 2);
+        #endif
 
         Sp->P[p].FeedbackFlag |= 2;
 

@@ -47,8 +47,8 @@ struct particle_data
 #endif
 
 #if defined(FEEDBACK)
-  int FeedbackFlag;  // Bit 0: Type II done, Bit 1: AGB done
-  double EnergyReservoir;      // Stored feedback energy (code units)
+  int FeedbackFlag;             // Bit 0: Type II done, Bit 1: AGB done
+  double EnergyReservoir;       // Stored feedback energy (code units)
 #endif
 
   copyable_atomic<integertime> Ti_Current; /**< current time on integer timeline */

@@ -123,7 +123,8 @@ void global_data_all_processes::register_parameters(void)
   add_param("MinGasHsml", &MinGasHsml, PARAM_DOUBLE, PARAM_FIXED);
 
   add_param("SpatialHashDebugLevel", &SpatialHashDebugLevel, PARAM_INT, PARAM_FIXED);
-
+  add_param("CheckpointDebugLevel", &CheckpointDebugLevel, PARAM_INT, PARAM_FIXED);
+  
   for(int i = 0; i < NSOFTCLASSES; i++)
     {
       char buf_l[MAXLEN_PARAM_TAG];
@@ -233,10 +234,6 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustOffsetMaxSNII", &DustOffsetMaxSNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMinAGB", &DustOffsetMinAGB, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMaxAGB", &DustOffsetMaxAGB, PARAM_DOUBLE, PARAM_FIXED);
-  //add_param("DustOrphanCleanupCenterX", &DustOrphanCleanupCenterX, PARAM_DOUBLE, PARAM_FIXED);
-  //add_param("DustOrphanCleanupCenterY", &DustOrphanCleanupCenterY, PARAM_DOUBLE, PARAM_FIXED);
-  //add_param("DustOrphanCleanupCenterZ", &DustOrphanCleanupCenterZ, PARAM_DOUBLE, PARAM_FIXED);
-  //add_param("DustClumpingFactor", &DustClumpingFactor, PARAM_DOUBLE, PARAM_FIXED);
 #endif
 
 #ifdef NGENIC

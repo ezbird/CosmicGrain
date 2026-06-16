@@ -966,6 +966,50 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
   }
   #endif
 
+      /* ── Jeans pressure floor ──────────────────────────────────────────────
+      * Prevent artificial fragmentation below the resolution limit.
+      * Require λ_J ≥ h:  u_floor = G ρ h² / (π γ (γ-1))
+      * No free parameter — scales automatically with resolution.
+      *
+      * Guard: nH > CritPhysDensity — only applies to gas dense enough to
+      * form stars. This naturally excludes background particles, diffuse IGM,
+      * and all gas at high redshift before structure formation, preventing
+      * pressure discontinuities that corrupt DtEntropy in the SPH hydro
+      * update. Handles all resolutions from 512³ to 4096³ without adjustment.
+      *
+      * Bate & Burkert (1997); Schaye & Dalla Vecchia (2008). */
+      double nH_cgs = rho_phys * HYDROGEN_MASSFRAC / PROTONMASS;
+      if(Sp->SphP[i].Hsml < 20.0 && nH_cgs > All.CritPhysDensity)
+      {
+          double rho_code = dens * All.cf_a3inv;
+          double h_code   = Sp->SphP[i].Hsml * All.cf_atime;
+          double u_jeans  = All.G * rho_code * h_code * h_code
+                            / (M_PI * GAMMA * GAMMA_MINUS1);
+          if(unew < u_jeans)
+              unew = u_jeans;
+      }
+
+      /* ── CMB temperature floor ──────────────────────────────────────────────
+      * Gas cannot cool below the CMB temperature T_CMB = 2.73 * (1+z).
+      * Without this, diffuse IGM particles cool to unphysical sub-CMB
+      * temperatures at high resolution (2048³ and above).
+      *
+      * Guard: same nH > CritPhysDensity condition as the Jeans floor.
+      * Applying the CMB floor to diffuse gas at high redshift creates pressure
+      * discontinuities that corrupt DtEntropy in the SPH hydro update — the
+      * same failure mode as the Jeans floor on low-density particles. The CMB
+      * floor is only physically meaningful in dense gas that can actually cool
+      * to sub-CMB temperatures; diffuse IGM is kept above T_CMB naturally by
+      * photoionization heating from the UV background. 
+      if(nH_cgs > All.CritPhysDensity)
+      {
+          double T_cmb = 2.73 / All.Time;
+          double u_cmb = T_cmb * (1. + GasState.yhelium) /
+                        ((1. + 4.*GasState.yhelium) * GasState.mhboltz * GAMMA_MINUS1);
+          if(unew < u_cmb)
+              unew = u_cmb;
+      }
+      */
   if(unew < 0)
     Terminate("invalid temperature: i=%d unew=%g\n", i, unew);
 
@@ -976,28 +1020,12 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
 
   utherm += du;
 
-#ifdef OUTPUT_COOLHEAT
-  if(dtime > 0)
-    Sp->SphP[i].CoolHeat = du * Sp->P[i].getMass() / dtime;
-#endif
+  #ifdef OUTPUT_COOLHEAT
+    if(dtime > 0)
+      Sp->SphP[i].CoolHeat = du * Sp->P[i].getMass() / dtime;
+  #endif
 
-
-    // Cap maximum entropy to prevent extreme low-density states
-    // Switch to internal energy from entropy so its clearer
-    const double MAX_TEMP = 1.0e7;    // 10 million K
-    const double u_max = MAX_TEMP / 50.0;  // Correct for fully ionized gas (μ=0.6)
-
-    if(utherm > u_max) {
-        static int cap_count = 0;
-        if(cap_count < 10 && ThisTask == 0) {
-            double T_current = utherm * 50.0;  // Correct conversion
-            printf("[COOLING_MAX_CAP] Particle %d too hot (T=%.2e K), capping to %.2e K\n", 
-                  i, T_current, MAX_TEMP);
-            cap_count++;
-        }
-        utherm = u_max;
-    }
-
+  
   Sp->set_entropy_from_utherm(utherm, i);
   Sp->SphP[i].set_thermodynamic_variables();
 

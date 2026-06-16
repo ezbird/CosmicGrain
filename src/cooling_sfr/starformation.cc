@@ -1,8 +1,32 @@
-/*******************************************************************************
+/* 
+******************************************************************************
  * \copyright   This file is part of the GADGET4 N-body/SPH code developed
  * \copyright   by Volker Springel. Copyright (C) 2014-2020 by Volker Springel
  * \copyright   (vspringel@mpa-garching.mpg.de) and all contributing authors.
- *******************************************************************************/
+ * 
+ * This file is only lightly modified for CosmicGrain, in the following ways:
+ * 
+ *  * 1. DUST ASTRATION (make_star)
+ *    When a gas particle forms a star — either by conversion or spawning —
+ *    consume_dust_by_astration() is called to remove dust mass proportional
+ *    to the local D/G ratio and transfer it to the new star particle.
+ *    Requires #ifdef DUST guard.
+ *
+ * 2. FEEDBACK FLAG INITIALIZATION (convert_sph_particle_into_star,
+ *    spawn_star_from_sph_particle)
+ *    P[i].FeedbackFlag = 0 set on star creation so feedback.cc correctly
+ *    identifies which SNII/AGB events have not yet fired for this star.
+ *
+ * 3. DUSTP INITIALIZATION (make_star, sfr_create_star_particles)
+ *    memset(&DustP[j], 0) applied to newly spawned star slots to prevent
+ *    stale/uninitialized DustP data causing domain exchange corruption.
+ *
+ * 4. STELLAR EVOLUTION DIAGNOSTICS (sfr_create_star_particles)
+ *    Optional debug output: M*, M_halo, M*-to-M_halo logged when
+ *    StarformationDebugLevel != 0.
+ * 
+ ****************************************************************************** 
+ */
 
 /*! \file starformation.cc
  *

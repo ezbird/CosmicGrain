@@ -13,11 +13,9 @@
 #include "../data/simparticles.h"
 
 
-
 #ifdef DUST
 #define DUST_PARTICLE_TYPE       6
 #define DUST_MIN_TIMEBIN         15
-#define DUST_MAX_GRAV_BIN_OFFSET  2
 
 void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mass_formed, int star_idx, double hsml);
 void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt);
@@ -60,7 +58,8 @@ void open_dust_particle_log(MPI_Comm Communicator);
 void close_dust_particle_log(void);
 void log_dust_particle_event(simparticles *Sp, int dust_idx,
                               int nearest_gas, int event_type);
-
+void record_coagulation_event(double n_H_cgs, double n_eff_cgs);
+void print_coag_histogram(MPI_Comm Communicator);
 
 // ========== CORE DUST FUNCTIONS (dust.cc) ==========
 
@@ -175,8 +174,13 @@ void analyze_grain_size_distribution(simparticles *Sp);
  * MPI_Allreduce() is used so the reported totals reflect the entire
  * simulation across all MPI tasks.
  * */
-inline void dust_integrity_check(simparticles *Sp, const char *label)
+inline void dust_integrity_check(simparticles *Sp, const char *label, 
+                                  MPI_Comm Communicator)
 {
+
+    if(All.DustDebugLevel <= 0)
+        return;
+
     long long ndust_local = 0;
     long long valid_local = 0;
     long long invalid_local = 0;
@@ -234,9 +238,11 @@ inline void dust_integrity_check(simparticles *Sp, const char *label)
     long long send[3] = {ndust_local, valid_local, invalid_local};
     long long recv[3];
 
-    MPI_Allreduce(send, recv, 3, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(send, recv, 3, MPI_LONG_LONG, MPI_SUM, Communicator);
 
-    if(All.ThisTask == 0)
+    int ThisTask;
+    MPI_Comm_rank(Communicator, &ThisTask);
+    if(ThisTask == 0)
     {
         printf("[DUST_CHECK|%s] "
                "ndust=%lld valid=%lld invalid=%lld\n",

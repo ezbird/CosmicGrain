@@ -32,7 +32,8 @@
 struct global_data_all_processes : public parameters
 {
 
-int SpatialHashDebugLevel;               // 0=off, 1=detailed output
+int SpatialHashDebugLevel;  // 0=off, 1=detailed output
+int CheckpointDebugLevel;   // 0=off, 1=detailed output
 
 #if defined(COOLING)
   char TreecoolFile[255];

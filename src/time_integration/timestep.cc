@@ -242,11 +242,14 @@ integertime simparticles::get_timestep_grav(int p /*!< particle index */)
         while(ti_max > ti_to_output)
           ti_max >>= 1;
       }
-      // Never go below DUST_MIN_TIMEBIN — prevents "timestep too small" crash
-      // when Ti_nextoutput is imminent and ti_to_output << 2^DUST_MIN_TIMEBIN.
-      integertime ti_floor = ((integertime)1) << DUST_MIN_TIMEBIN;
+      // Floor: never go below max(DUST_MIN_TIMEBIN, HighestActiveTimeBin).
+      // At early times (z>10) HighestActiveTimeBin can be 21+; without this
+      // clamp dust migrates back to bin 15 after first gravity evaluation,
+      // landing on an unsynchronized bin and causing a multi-node gravity hang.
+      integertime ti_floor = ((integertime)1) << std::max(DUST_MIN_TIMEBIN,
+                                                          (int)All.HighestActiveTimeBin);
       if(ti_max < ti_floor)
-        ti_max = ti_floor;
+          ti_max = ti_floor;
       return ti_max;
     }
   #endif
@@ -459,6 +462,15 @@ integertime simparticles::get_timestep_hydro(int p /*!< particle index */)
     }
 
   integertime ti_step = (integertime)(dt / All.Timebase_interval);
+
+if(ti_step <= 2 && All.NumCurrentTiStep < 50)
+    printf("[TINY_DT|task=%d|step=%d] p=%d ti_step=%lld dt=%.3e "
+           "dt_kin=%.3e dt_courant=%.3e dt_hsml=%.3e dt_tree=%.3e "
+           "Hsml=%.3e DtHsml=%.3e MaxSignalVel=%.3e\n",
+           ThisTask, All.NumCurrentTiStep, p, (long long)ti_step, dt,
+           dt_kin*All.cf_hubble_a, dt_courant*All.cf_hubble_a,
+           dt_hsml*All.cf_hubble_a, dt_treebased*All.cf_hubble_a,
+           SphP[p].Hsml, SphP[p].DtHsml, SphP[p].MaxSignalVel);
 
   if(!(ti_step > 0 && ti_step < TIMEBASE))
     {

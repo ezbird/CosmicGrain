@@ -48,13 +48,14 @@
 extern spatial_hash_zoom gas_hash, star_hash, dust_hash;
 #endif
 
-      // FOR DEBUGGING WHY multiple nodes on supercomputers is not working
-      #ifdef DUST
-      #define MPI_CHECKPOINT(tag) do { \
-        mpi_printf("CHECKPOINT: %s\n", tag); \
-        MPI_Barrier(Communicator); \
-      } while(0)
-      #endif
+#ifdef DUST
+#define MPI_CHECKPOINT(tag) do { \
+  if(All.CheckpointDebugLevel == 1) { \
+    mpi_printf("CHECKPOINT: %s\n", tag); \
+    MPI_Barrier(Communicator); \
+  } \
+} while(0)
+#endif
 
 /*!
  * Main driver routine for advancing the simulation forward in time.
@@ -211,6 +212,24 @@ void sim::run(void)
           break;
         }
 
+        // Newly spawned dust particles were inserted into timebins locally by
+        // spawn_dust_particle(). Before the collective treewalk, we must ensure
+        // all tasks have consistent timebin structures. Reconstruct timebins
+        // globally to incorporate any new particles spawned this step.
+        #ifdef DUST
+        {
+          int need_sync_local  = DustNeedsSynchronization;
+          int need_sync_global = 0;
+          MPI_Allreduce(&need_sync_local, &need_sync_global, 1, MPI_INT, MPI_MAX, Communicator);
+          if(need_sync_global)
+            {
+              destroy_dust_particles(&Sp);
+              Sp.reconstruct_timebins();
+            }
+          DustNeedsSynchronization = 0;
+        }
+        #endif
+        
       /* kicks particles by half a gravity step */
       find_timesteps_and_do_gravity_step_first_half();
 

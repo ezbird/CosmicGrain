@@ -51,10 +51,13 @@
  *  ── PERFORMANCE NOTES ───────────────────────────────────────────────────────
  *
  *  At 2048³, the dust population grows to ~15M superparticles by z~3. To
- *  avoid these dominating the gravity tree, newly spawned dust is assigned a
- *  gravity timebin capped at DUST_MAX_GRAV_BIN_OFFSET below the shortest
- *  active bin. The DUST_MIN_TIMEBIN constant provides an absolute floor so
- *  dust never drops below timebin 15 regardless of the global hierarchy.
+ *  avoid these dominating the gravity tree, newly spawned dust is assigned a gravity timebin of
+    max(DUST_MIN_TIMEBIN, HighestActiveTimeBin), ensuring it lands
+    on a bin that is synchronized with the current hierarchy.
+    At late times HighestActiveTimeBin ≤ 15 so DUST_MIN_TIMEBIN
+    dominates; at early times (z > 10) HighestActiveTimeBin can be
+    21+, and without the clamp dust would spawn on an unsynchronized
+    bin causing a collective gravity hang on multi-node runs.
  *
  *  IMPORTANT: spawn_dust_particle caps the timebin at birth, but Gadget's
  *  ongoing timestep criterion (timestep.cc: get_timestep_grav) can migrate
@@ -114,10 +117,6 @@
 // ── Miscellaneous physics constants ──────────────────────────────────────────
 // Minimum SFR to consider a gas cell actively star-forming for clumping / f_mol.
 #define DUST_SFR_EPS            1e-14
-
-// Temperature at which dust sublimates (K); composition-dependent correction
-// applied in erode_dust_grain_thermal().
-#define DUST_SUBLIMATION_TEMP   2000.0
 
 // Informational: single-grain mass for a silicate grain at DUST_MIN_GRAIN_SIZE.
 // m = (4/3)π(0.5e-7 cm)³ × 2.4 g/cm³ / 1.989e33 g/M☉
@@ -213,8 +212,6 @@ long long NCoagulationEvents         = 0;
 void cleanup_invalid_dust_particles(simparticles *Sp)
 {
 
-  dust_integrity_check(Sp, "enter cleanup_invalid_dust_particles");
-
   int n_bad_radius   = 0;
   int n_bad_mass     = 0;
   int n_bad_pos      = 0;
@@ -297,9 +294,6 @@ void cleanup_invalid_dust_particles(simparticles *Sp)
            NDustDestroyedByCleanup);
   }
 
-
-
-  dust_integrity_check(Sp, "after cleanup_invalid_dust_particles");
 }
 
 
@@ -572,15 +566,17 @@ int erode_dust_grain_thermal(simparticles *Sp, int dust_idx, int nearest_gas_inp
 
   Sp->P[dust_idx].setMass(new_mass);
 
-  // Return sputtered mass to nearest gas as metals
+  // Return sputtered mass to nearest gas as metals and update gas metallicity
   if(nearest_gas_input >= 0) {
-    double gas_mass = Sp->P[nearest_gas_input].getMass();
-    double new_Z    = Sp->SphP[nearest_gas_input].Metallicity + (mass_lost / gas_mass);
-    if(new_Z > 1.0) new_Z = 1.0;
-    Sp->SphP[nearest_gas_input].Metallicity = new_Z;
-    #ifdef STARFORMATION
-    Sp->SphP[nearest_gas_input].MassMetallicity = gas_mass * new_Z;
-    #endif
+      double gas_mass     = Sp->P[nearest_gas_input].getMass();
+      double old_Z        = Sp->SphP[nearest_gas_input].Metallicity;
+      double new_gas_mass = gas_mass + mass_lost;
+      Sp->P[nearest_gas_input].setMass(new_gas_mass);
+      double new_Z = std::min(1.0, (gas_mass * old_Z + mass_lost) / new_gas_mass);
+      Sp->SphP[nearest_gas_input].Metallicity = new_Z;
+      #ifdef STARFORMATION
+      Sp->SphP[nearest_gas_input].MassMetallicity = new_gas_mass * new_Z;
+      #endif
   }
 
   LocalDustMassChange -= mass_lost;
@@ -598,11 +594,10 @@ int erode_dust_grain_thermal(simparticles *Sp, int dust_idx, int nearest_gas_inp
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// destroy_dust_particle_to_gas  (internal helper)
+// destroy_dust_particle_to_gas
 // ═══════════════════════════════════════════════════════════════════════════════
 /**
- * Destroy a dust particle and return its mass to the nearest gas cell as metals,
- * conserving total metal mass.
+ * Destroy a dust particle and return its mass to the nearest gas cell.
  *
  * This is the single destruction path for all physics-driven dust removal
  * (thermal sputtering, shock destruction). Astration uses a separate path
@@ -621,11 +616,14 @@ static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
 
   if(nearest_gas >= 0) {
     double gas_mass = Sp->P[nearest_gas].getMass();
-    double new_Z    = Sp->SphP[nearest_gas].Metallicity + (dust_mass / gas_mass);
+    double old_Z = Sp->SphP[nearest_gas].Metallicity;
+    double new_gas_mass = gas_mass + dust_mass;
+    Sp->P[nearest_gas].setMass(new_gas_mass);  // Return dust mass to the gas particle
+    double new_Z = std::min(1.0, (gas_mass * old_Z + dust_mass) / new_gas_mass);
     if(new_Z > 1.0) new_Z = 1.0;
     Sp->SphP[nearest_gas].Metallicity = new_Z;
     #ifdef STARFORMATION
-    Sp->SphP[nearest_gas].MassMetallicity = gas_mass * new_Z;
+    Sp->SphP[nearest_gas].MassMetallicity = new_gas_mass * new_Z;
     #endif
   }
 
@@ -637,7 +635,6 @@ static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
 
   LocalDustMassChange -= dust_mass;
   LocalDustDestroyedThisStep++;
-  DustNeedsSynchronization = 1;
   if(counter)      (*counter)++;
   if(mass_counter) (*mass_counter) += dust_mass;
 
@@ -772,13 +769,15 @@ int erode_dust_grain_shock(simparticles *Sp, int dust_idx, double shock_velocity
   Sp->P[dust_idx].setMass(old_mass - mass_lost);
 
   if(nearest_gas >= 0) {
-    double gas_mass = Sp->P[nearest_gas].getMass();
-    double new_Z    = Sp->SphP[nearest_gas].Metallicity + (mass_lost / gas_mass);
-    if(new_Z > 1.0) new_Z = 1.0;
-    Sp->SphP[nearest_gas].Metallicity = new_Z;
-    #ifdef STARFORMATION
-    Sp->SphP[nearest_gas].MassMetallicity = gas_mass * new_Z;
-    #endif
+      double gas_mass     = Sp->P[nearest_gas].getMass();
+      double old_Z        = Sp->SphP[nearest_gas].Metallicity;
+      double new_gas_mass = gas_mass + mass_lost;
+      Sp->P[nearest_gas].setMass(new_gas_mass);
+      double new_Z = std::min(1.0, (gas_mass * old_Z + mass_lost) / new_gas_mass);
+      Sp->SphP[nearest_gas].Metallicity = new_Z;
+      #ifdef STARFORMATION
+      Sp->SphP[nearest_gas].MassMetallicity = new_gas_mass * new_Z;
+      #endif
   }
 
   LocalDustMassChange    -= mass_lost;
@@ -984,17 +983,22 @@ void create_dust_particles_from_feedback(simparticles *Sp, int star_idx,
     return;
   }
 
-  // ── Reduce parent gas metallicity: metals are now locked in grains ────────
+  // ── Reduce parent gas mass and metallicity: metals are now locked in grains ─
   int nearest_gas = find_nearest_gas_particle(Sp, star_idx, 2.0, NULL);
   if(nearest_gas >= 0) {
-    double gas_mass = Sp->P[nearest_gas].getMass();
-    double dZ       = total_dust_mass / gas_mass;
-    Sp->SphP[nearest_gas].Metallicity -= dZ;
-    if(Sp->SphP[nearest_gas].Metallicity < 0)
-      Sp->SphP[nearest_gas].Metallicity = 0;
-    #ifdef STARFORMATION
-    Sp->SphP[nearest_gas].MassMetallicity = gas_mass * Sp->SphP[nearest_gas].Metallicity;
-    #endif
+      double gas_mass     = Sp->P[nearest_gas].getMass();
+      double old_Z        = Sp->SphP[nearest_gas].Metallicity;
+      double new_gas_mass = gas_mass - total_dust_mass;
+      if(new_gas_mass <= 0.0) new_gas_mass = gas_mass * 0.01;  // safety floor
+      Sp->P[nearest_gas].setMass(new_gas_mass);
+      // Metal mass locked in dust is removed from gas; remaining metals stay
+      double metal_mass_remaining = gas_mass * old_Z - total_dust_mass;
+      double new_Z = std::max(0.0, metal_mass_remaining / new_gas_mass);
+      if(new_Z > 1.0) new_Z = 1.0;
+      Sp->SphP[nearest_gas].Metallicity = new_Z;
+      #ifdef STARFORMATION
+      Sp->SphP[nearest_gas].MassMetallicity = new_gas_mass * new_Z;
+      #endif
   }
 
   if(feedback_type == 1) NDustCreatedBySNII += n_dust_particles;
@@ -1007,7 +1011,6 @@ void create_dust_particles_from_feedback(simparticles *Sp, int star_idx,
       break;
     }
 
-    // Random isotropic ejection direction
     double theta = acos(2.0 * get_random_number() - 1.0);
     double phi   = 2.0 * M_PI * get_random_number();
 
@@ -1019,7 +1022,6 @@ void create_dust_particles_from_feedback(simparticles *Sp, int star_idx,
                               r * sin(theta) * sin(phi),
                               r * cos(theta) };
 
-    // Initial velocity = stellar bulk motion + isotropic outward kick
     double initial_velocity[3];
     initial_velocity[0] = Sp->P[star_idx].Vel[0]
                           + velocity_scale * sin(theta)*cos(phi)
@@ -1036,12 +1038,12 @@ void create_dust_particles_from_feedback(simparticles *Sp, int star_idx,
 
     int new_idx = Sp->NumPart - 1;
     if(feedback_type == 1) {
-      Sp->DustP[new_idx].GrainRadius     = 10.0;   // nm — SNII grains start small
-      Sp->DustP[new_idx].CarbonFraction  = 0.1;    // predominantly silicate
+      Sp->DustP[new_idx].GrainRadius     = 10.0;
+      Sp->DustP[new_idx].CarbonFraction  = 0.1;
       Sp->DustP[new_idx].GrainType       = 0;
     } else {
-      Sp->DustP[new_idx].GrainRadius     = 100.0;  // nm — AGB grains are larger
-      Sp->DustP[new_idx].CarbonFraction  = 0.6;    // AGB winds are carbon-rich
+      Sp->DustP[new_idx].GrainRadius     = 100.0;
+      Sp->DustP[new_idx].CarbonFraction  = 0.6;
       Sp->DustP[new_idx].GrainType       = 1;
     }
   }
@@ -1050,9 +1052,6 @@ void create_dust_particles_from_feedback(simparticles *Sp, int star_idx,
   LocalDustMassChange      += total_dust_mass;
   DustNeedsSynchronization  = 1;
 
-  // ── Diagnostic: log velocity of first 50 creation events (task 0 only) ────
-  // Note: nearest_gas was looked up once above and is reused here.
-  // No second hash search needed.
   if(All.ThisTask == 0) {
     static int velocity_samples = 0;
     if(velocity_samples < 50) {
@@ -1067,8 +1066,8 @@ void create_dust_particles_from_feedback(simparticles *Sp, int star_idx,
                                    Sp->P[star_idx].Vel[2]*Sp->P[star_idx].Vel[2])
                               * All.UnitVelocity_in_cm_per_s / 1e5;
 
-        double rho            = 1.0;
-        double gas_vel_mag    = 0.0;
+        double rho         = 1.0;
+        double gas_vel_mag = 0.0;
         if(nearest_gas >= 0) {
           rho = Sp->SphP[nearest_gas].Density * All.cf_a3inv
                 * All.UnitDensity_in_cgs / PROTONMASS;
@@ -1129,28 +1128,12 @@ void dust_global_synchronization(simparticles *Sp, MPI_Comm Communicator,
 // ═══════════════════════════════════════════════════════════════════════════════
 // spawn_dust_particle
 // ═══════════════════════════════════════════════════════════════════════════════
-/**
- * Allocate and initialise a single dust superparticle at the end of the
- * particle array (Sp->P[NumPart]).
- *
- * GRAVITY TIMEBIN CAP:
- *   Newly spawned dust inherits the parent's spatial context but must NOT
- *   inherit the parent's short gravity timebin. With 15M+ dust particles
- *   at z~3, placing all of them on tb18/tb19 roughly doubles the tree cost.
- *
- *   The cap is:
- *     new_grav_bin = max(DUST_MIN_TIMEBIN,
- *                        HighestActiveTimeBin − DUST_MAX_GRAV_BIN_OFFSET)
- *
- *   This places dust on a bin 2 levels above the global minimum, giving
- *   gravity updates ~4× per gas dynamical time — adequate since Epstein
- *   drag handles sub-step momentum exchange.
- *
- *   IMPORTANT: this cap only applies at spawn time. The ongoing timestep
- *   criterion in timestep.cc can migrate dust back to short bins after the
- *   first gravity force evaluation. A matching cap MUST be applied in
- *   timestep.cc near the DUST_PARTICLE_TYPE branch — see comments there.
- */
+// Spawn bin: max(DUST_MIN_TIMEBIN, HighestActiveTimeBin).
+// At late times (z<5), HighestActiveTimeBin is typically ≤15 so
+// DUST_MIN_TIMEBIN dominates — same behavior as before.
+// At early times (z>10), HighestActiveTimeBin can be 21+, so without
+// this clamp dust spawns on bin 15 which is unsynchronized in the
+// current hierarchy, causing a collective gravity hang on multi-node runs.
 void spawn_dust_particle(simparticles *Sp, double offset_kpc[3], double dust_mass,
                           double initial_velocity[3], int star_idx, int feedback_type)
 {
@@ -1232,7 +1215,7 @@ void spawn_dust_particle(simparticles *Sp, double offset_kpc[3], double dust_mas
   // via get_timestep_grav returning TIMEBASE-1 (capped by Ti_nextoutput).
   // Spawning on the highest synchronized bin caused newly created dust to jump
   // over snapshot output times before get_timestep_grav could apply the cap.
-  int dust_spawn_bin = DUST_MIN_TIMEBIN;
+  int dust_spawn_bin = std::max(DUST_MIN_TIMEBIN, (int)All.HighestActiveTimeBin);
   Sp->P[new_idx].TimeBinGrav = dust_spawn_bin;
   Sp->TimeBinsGravity.timebin_add_particle(new_idx, star_idx, dust_spawn_bin,
                                             Sp->TimeBinSynchronized[dust_spawn_bin]);
@@ -1384,11 +1367,14 @@ void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mas
   NDustDestroyedByAstration += dust_consumed_count;
   TotalDustMassAstrated     += dust_consumed_mass;
 
-  // Transfer consumed dust mass to the new star as metallicity
+  // Transfer consumed dust mass to the new star, update mass and metallicity
   if(star_idx >= 0 && dust_consumed_mass > 0) {
     double star_mass = Sp->P[star_idx].getMass();
-    if(star_mass > 0)
-      Sp->P[star_idx].Metallicity += dust_consumed_mass / star_mass;
+    if(star_mass > 0) {
+      double new_star_mass = star_mass + dust_consumed_mass;
+      Sp->P[star_idx].setMass(new_star_mass);
+      Sp->P[star_idx].Metallicity = (star_mass * Sp->P[star_idx].Metallicity + dust_consumed_mass) / new_star_mass;
+    }
   }
 
   // ── Diagnostics ──────────────────────────────────────────────────────────
@@ -1520,6 +1506,7 @@ double stellar_luminosity(simparticles *Sp, int star_idx)
 void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, double dt)
 {
   if(!All.DustEnableRadiationPressure) return;
+  if(!star_hash.is_built) return;
 
   // Diagnostic counters
   static long long radp_calls       = 0;
@@ -1579,7 +1566,10 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
     double r_cgs  = r_code * (All.Time / All.HubbleParam) * 3.086e21;
     if(r_cgs <= 0.0) continue;
 
-    // Unit vector pointing from star toward grain (radiation pushes outward)
+    // Vector from star to grain: nearest_image_intpos_to_pos(a, b) computes a - b,
+    // so this is dust_pos - star_pos, pointing radially outward from the star.
+    // Dividing by r_code (the code-unit separation) normalises to a unit vector.
+    // Radiation pressure acts along this direction (photons push dust away from source)
     double dxyz[3];
     Sp->nearest_image_intpos_to_pos(Sp->P[dust_idx].IntPos, Sp->P[si].IntPos, dxyz);
 
@@ -1756,14 +1746,13 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
                          / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
     if(u_new < u_CMB_floor) u_new = u_CMB_floor;
 
-    if(u_new > 0.0 && isfinite(u_new) && u_new != u_old) {
-      Sp->set_entropy_from_utherm(u_new, gas_idx);
-      // If u changed by > 30%, stored ne is stale — reset so cooling.cc re-solves
-      if(std::abs(u_new - u_old) > 0.30 * u_old)
-    Sp->SphP[gas_idx].Ne = 0.0;
-      set_thermodynamic_variables_safe(Sp, gas_idx);
+  if(u_new > 0.0 && isfinite(u_new) && u_new != u_old) {
+        Sp->set_entropy_from_utherm(u_new, gas_idx);
+        if(std::abs(u_new - u_old) > 0.30 * u_old)
+          Sp->SphP[gas_idx].Ne = 0.0;
+        set_thermodynamic_variables_safe(Sp, gas_idx);
+      }
     }
-  }
 
   // ── Solve for equilibrium temperature ────────────────────────────────────
   // C_emit × T_eq^(4+β) = P_CMB + P_ISRF + P_gas
@@ -1783,7 +1772,8 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
 
   // ── Safety bounds ─────────────────────────────────────────────────────────
   if(T_new < T_CMB)                T_new = T_CMB;
-  if(T_new > DUST_SUBLIMATION_TEMP) T_new = DUST_SUBLIMATION_TEMP;
+  double T_sublimate_local = 1500.0 + 500.0 * CF;
+  if(T_new > T_sublimate_local) T_new = T_sublimate_local;
   if(!isfinite(T_new))             T_new = T_CMB;
 
   Sp->DustP[dust_idx].DustTemperature = T_new;
@@ -1811,7 +1801,6 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
  */
 void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
 {
-  dust_integrity_check(Sp, "before update_dust_dynamics");
 
   // ── One-time flag verification (confirms parameter file was read) ─────────
   static bool flags_printed = false;
@@ -1946,8 +1935,6 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   if(dust_call_count % 100 == 0 && All.ThisTask == 0)
     printf("[DUST_TIMING] Called %d times, avg %.3f sec/call, total %.1f sec\n",
            dust_call_count, total_time_in_dust / dust_call_count, total_time_in_dust);
-
-  dust_integrity_check(Sp, "after update_dust_dynamics");
 }
 
 
@@ -2173,6 +2160,8 @@ void print_dust_statistics(simparticles *Sp, MPI_Comm Communicator)
   MPI_Reduce(&TotalDustMassAstrated,     &g_MassAstrated,              1, MPI_DOUBLE,    MPI_SUM, 0, Communicator);
   MPI_Reduce(&TotalSizeReductionShattering,&g_SizeReductionShattering, 1, MPI_DOUBLE,    MPI_SUM, 0, Communicator);
 
+  // Print coagulation histogram (every 500 steps, all tasks)
+  print_coag_histogram(Communicator);
   if(All.ThisTask != 0) return;
 
   if(global_dust_count > 0) {
@@ -2496,8 +2485,6 @@ void destroy_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx,
   int    dust_destroyed   = 0, dust_eroded = 0;
   double M_actually_lost  = 0.0;
 
-  double Z_sn_gas = (sn_nearest_gas >= 0) ? Sp->SphP[sn_nearest_gas].Metallicity : 0.0;
-
   if(M_to_destroy > 0.0) {
     for(int k = 0; k < n_found; k++) {
       int i = neighbors[k];
@@ -2515,24 +2502,23 @@ void destroy_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx,
         M_actually_lost += m;
         destroy_dust_particle_to_gas(Sp, i, sn_nearest_gas,
                                      &NDustDestroyedByShock, &TotalMassDestroyedByShock);
-        if(sn_nearest_gas >= 0) Z_sn_gas = Sp->SphP[sn_nearest_gas].Metallicity;
         dust_destroyed++;
       } else {
         Sp->P[i].setMass(new_mass);
         Sp->DustP[i].GrainRadius = a_new;
 
         if(sn_nearest_gas >= 0) {
-          double gas_mass = Sp->P[sn_nearest_gas].getMass();
-          if(gas_mass > 0.0) {
-            Z_sn_gas += mass_loss / gas_mass;
-            if(Z_sn_gas > 1.0) Z_sn_gas = 1.0;
-            Sp->SphP[sn_nearest_gas].Metallicity = Z_sn_gas;
+            double cur_gas_mass = Sp->P[sn_nearest_gas].getMass();
+            double cur_Z        = Sp->SphP[sn_nearest_gas].Metallicity;
+            double new_gas_mass = cur_gas_mass + mass_loss;
+            Sp->P[sn_nearest_gas].setMass(new_gas_mass);
+            double new_Z = std::min(1.0, (cur_gas_mass * cur_Z + mass_loss) / new_gas_mass);
+            Sp->SphP[sn_nearest_gas].Metallicity = new_Z;
             #ifdef STARFORMATION
-            Sp->SphP[sn_nearest_gas].MassMetallicity =
-                Sp->P[sn_nearest_gas].getMass() * Z_sn_gas;
+            Sp->SphP[sn_nearest_gas].MassMetallicity = new_gas_mass * new_Z;
             #endif
-          }
         }
+
         LocalDustMassChange    -= mass_loss;
         M_actually_lost        += mass_loss;
         TotalMassErodedByShock += mass_loss;
@@ -2672,9 +2658,11 @@ void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double 
 
   if(n_eff < All.DustCollisionDensityThresh) { coag_failed_dens++; return; }
 
+  // ── Gate 2: temperature ───────────────────────────────────
   double T_gas = get_temperature_from_entropy(Sp, gas_idx);
+  if(T_gas > 3000.0) { coag_failed_temp++; return; } // in reality, 3000K is way too high for coagulation, but we allow it to account for SPH kernel averaging at finite resolution
 
-  // ── Gate 2: grain validity and size cap ───────────────────────────────────
+  // ── Gate 3: grain validity and size cap ───────────────────────────────────
   double a      = Sp->DustP[dust_idx].GrainRadius;
   double M_dust = Sp->P[dust_idx].getMass();
 
@@ -2705,6 +2693,8 @@ void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double 
   Sp->DustP[dust_idx].GrainRadius = a_new;  // mass conserved; only radius changes
 
   NCoagulationEvents++;
+  record_coagulation_event(n_H, n_eff);
+
   if(All.ThisTask == 0 && (NCoagulationEvents <= 100 || NCoagulationEvents % 10000 == 0))
     DUST_PRINT("[COAGULATION] Event #%lld: a=%.1f→%.1f nm  M=%.3e Msun (conserved)  "
                "n_H=%.2f n_eff=%.2f (C=%.0f) cm^-3  T=%.0f K  "
@@ -2884,8 +2874,12 @@ void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, doub
   if(a_new > DUST_MAX_GRAIN_SIZE) { a_new = DUST_MAX_GRAIN_SIZE; da = a_new - a; }
   if(da <= 0.0 || a_new < DUST_MIN_GRAIN_SIZE || a_new > DUST_MAX_GRAIN_SIZE) return;
 
-  // Mass change: dm = M_dust × 3 × (da/a)  [from m ∝ a³, linear approx for small da]
-  double dm = M_dust * (3.0 * da / a);
+  // Mass change: exact form from m ∝ a³
+  // dm = M_dust × ((a_new/a)³ − 1)
+  // Previously used the linear approximation 3×(da/a), which overestimates
+  // dm when da/a is not negligible, causing a mysterious mass leak at peak SF!
+  double dm = M_dust * (pow(a_new/a, 3.0) - 1.0);
+  
   if(!isfinite(dm) || dm <= 0.0) return;
 
   const double M_gas    = Sp->P[gas_idx].getMass();
@@ -2921,13 +2915,20 @@ void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, doub
   }
 
   // ── Apply changes ─────────────────────────────────────────────────────────
+  // Remove mass from gas particle
+  double M_gas_new = M_gas - dm;
+  if(M_gas_new <= 0.0) return;  // should be unreachable given upstream caps
+  Sp->P[gas_idx].setMass(M_gas_new);
+
+  // Update dust particle mass and grain radius
   Sp->P[nearest_dust].setMass(M_dust + dm);
   Sp->DustP[nearest_dust].GrainRadius = a_new;
 
-  double Z_new = std::max(1e-5, Z_gas - dm / M_gas);
+  // Update metallicities: remove accreted metals from gas particle
+  double Z_new = std::max(1e-5, (M_gas * Z_gas - dm) / M_gas_new);
   Sp->SphP[gas_idx].Metallicity = Z_new;
   #ifdef STARFORMATION
-  Sp->SphP[gas_idx].MassMetallicity = M_gas * Z_new;
+  Sp->SphP[gas_idx].MassMetallicity = M_gas_new * Z_new;
   #endif
 
   NGrainGrowthEvents++;
