@@ -149,6 +149,7 @@ RES_OVERRIDES = {
         "SofteningComovingClass6":    "6.0",    # Dust (match stars)
         "SofteningMaxPhysClass6":     "3.0",
         "MinimumComovingHydroSoftening": "4.0",
+        "MaxSizeTimestep":            "0.025",
     },
 
     # ── 1024³ ─────────────────────────────────────────────────────────────────
@@ -157,14 +158,14 @@ RES_OVERRIDES = {
         "InitCondFile":               "ICs/IC_zoom_1024_halo569_50Mpc_music_ellipsoid_with_dust",
 
         # Star formation
-        "CritPhysDensity":            "0.7",    # cm^-3
+        "CritPhysDensity": "0.7",
 
         # Dust collision / shock thresholds
         # n_amb raised to ~4× the 512³ value: 1024³ resolves moderately dense
         # ISM clumps; typical SN environment is no longer purely diffuse.
         # Verified: gives ~300k–600k shock events/window at z~4–6 (physical).
         "DustCollisionDensityThresh": "100.0",
-        "DustShockAmbientDensity":    "0.4",    # cm^-3; R_ST ~ 60 pc
+        "DustShockAmbientDensity":    "0.5",    # cm^-3; R_ST ~ 60 pc
 
         # Calibration
         "DustGrowthCalibration":      "0.4",
@@ -191,6 +192,7 @@ RES_OVERRIDES = {
         "SofteningComovingClass6":    "3.0",
         "SofteningMaxPhysClass6":     "1.5",
         "MinimumComovingHydroSoftening": "2.0",
+        "MaxSizeTimestep":            "0.0085",
     },
 
     # ── 2048³ ─────────────────────────────────────────────────────────────────
@@ -224,7 +226,7 @@ RES_OVERRIDES = {
 
         # Dust collision / shock thresholds
         "DustCollisionDensityThresh": "150.0",
-        "DustShockAmbientDensity":    "20",     # cm^-3; R_ST ~47 pc
+        "DustShockAmbientDensity":    "2",     # cm^-3; R_ST ~47 pc
 
         # Calibration
         "DustGrowthCalibration":      "0.5",
@@ -251,6 +253,7 @@ RES_OVERRIDES = {
         "SofteningComovingClass6":    "1.5",
         "SofteningMaxPhysClass6":     "0.75",
         "MinimumComovingHydroSoftening": "1.0",
+        "MaxSizeTimestep":            "0.025",
     },
 
     # ── 4096³ ─────────────────────────────────────────────────────────────────
@@ -305,11 +308,11 @@ RES_OVERRIDES = {
         "InitCondFile":               "ICs/IC_zoom_4096_halo569_50Mpc_music_ellipsoid_with_dust",
 
         # Star formation
-        "CritPhysDensity":            "5.0",    # cm^-3; NEEDS CALIBRATION — see note above
+        "CritPhysDensity":            "4.0",    # cm^-3; NEEDS CALIBRATION — see note above
 
         # Dust collision / shock thresholds
-        "DustCollisionDensityThresh": "500.0",  # cm^-3; ~100× CritPhysDensity (conservative)
-        "DustShockAmbientDensity":    "60.0",   # cm^-3; R_SF ~5 pc; CALIBRATE FIRST
+        "DustCollisionDensityThresh": "600",  # cm^-3; ~100× CritPhysDensity (conservative)
+        "DustShockAmbientDensity":    "10.0",   # cm^-3; R_SF ~5 pc; CALIBRATE FIRST
 
         # Calibration
         "DustGrowthCalibration":      "0.7",    # monotonically increasing with resolution
@@ -336,6 +339,7 @@ RES_OVERRIDES = {
         "SofteningComovingClass6":    "0.75",   # Dust (match stars)
         "SofteningMaxPhysClass6":     "0.375",
         "MinimumComovingHydroSoftening": "0.5",
+        "MaxSizeTimestep":            "0.025",
     },
 }
 

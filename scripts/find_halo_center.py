@@ -1,99 +1,172 @@
 #!/usr/bin/env python3
-"""Find center of mass of stars in high-resolution region"""
+"""
+find_halo569_center.py
+======================
+Computes the density-weighted shrinking-sphere center of Halo 569
+from the LAST snapshot of a given run.  Prints the result in ckpc/h
+ready to paste into HALO569_CENTERS_CKPC_H in make_zoom_movie.py.
 
-import numpy as np
-import h5py
+Run this ONCE per resolution tier on a post-fix snapshot (z=0 preferred).
+
+Usage
+-----
+  python find_halo569_center.py --snapdir ../S10_output_2048 --resolution 2048
+  python find_halo569_center.py --snapdir ../S10_output_1024 --resolution 1024
+
+The script:
+  1. Finds the last available snapshot
+  2. Loads ALL gas particle positions + densities
+  3. Seeds a shrinking sphere near the old hardcoded center (or box center)
+  4. Iterates until convergence
+  5. Prints the new center in ckpc/h
+"""
+
+import argparse
 import glob
-import sys
 import os
+import sys
+from pathlib import Path
 
-def read_stars(snapshot_path):
-    # Handle directory or file input
-    if os.path.isdir(snapshot_path):
-        # It's a directory - find snapshot files in it
-        snapshot_files = sorted(glob.glob(os.path.join(snapshot_path, "snapshot_*.hdf5")))
-        if not snapshot_files:
-            raise FileNotFoundError(f"No snapshot files found in {snapshot_path}")
-    else:
-        # It's a file - use multi-file logic
-        base_path = snapshot_path.replace('.0.hdf5', '').replace('.hdf5', '')
-        snapshot_files = sorted(glob.glob(f"{base_path}.*.hdf5"))
-        if not snapshot_files:
-            snapshot_files = [snapshot_path]
-    
-    print(f"Reading {len(snapshot_files)} file(s)...")
-    if len(snapshot_files) > 1:
-        print(f"First: {os.path.basename(snapshot_files[0])}")
-        print(f"Last:  {os.path.basename(snapshot_files[-1])}")
-    
-    star_pos, star_mass = [], []
-    
-    for fpath in snapshot_files:
-        with h5py.File(fpath, 'r') as f:
-            if 'PartType4' in f:
-                star_pos.append(f['PartType4/Coordinates'][:])
-                star_mass.append(f['PartType4/Masses'][:])
-    
-    if star_pos:
-        star_pos = np.concatenate(star_pos)
-        star_mass = np.concatenate(star_mass)
-    else:
-        star_pos = np.array([])
-        star_mass = np.array([])
-    
-    return star_pos, star_mass
+import h5py
+import numpy as np
 
-if len(sys.argv) < 2:
-    print("Usage: python find_halo_center.py <snapshot_or_dir>")
-    print("\nExamples:")
-    print("  python find_halo_center.py snapshot_026.hdf5")
-    print("  python find_halo_center.py snapshot_026.0.hdf5")
-    print("  python find_halo_center.py snapdir_026/")
-    sys.exit(1)
+# Old centers as initial seeds (ckpc/h) — used as starting guess only
+SEED_CENTERS = {
+    512:  np.array([23052.975, 23205.770, 23703.861]),
+    1024: np.array([23048.920, 23163.650, 23699.611]),
+    2048: np.array([23085.406, 23512.129, 23653.939]),
+}
 
-snapshot = sys.argv[1]
-print(f"Reading {snapshot}...")
+def find_last_snap(snapdir):
+    """Return snap_entry for the highest-numbered snapshot."""
+    snaps = {}
+    for pat in ["snap_???.hdf5", "snap_????.hdf5"]:
+        for p in sorted(glob.glob(os.path.join(snapdir, pat))):
+            n = int(Path(p).stem.split("_")[-1])
+            snaps[n] = ("single", p)
+    for pat in ["snap_???", "snap_????"]:
+        for d in sorted(glob.glob(os.path.join(snapdir, pat))):
+            if os.path.isdir(d):
+                pieces = sorted(glob.glob(os.path.join(d, "*.hdf5")))
+                if pieces:
+                    n = int(Path(d).name.split("_")[-1])
+                    snaps[n] = ("multi", pieces)
+    # Gadget-4 default layout
+    if not snaps:
+        for d in sorted(glob.glob(os.path.join(snapdir, "snapdir_???"))):
+            if os.path.isdir(d):
+                n = int(Path(d).name.split("_")[-1])
+                pieces = sorted(glob.glob(os.path.join(d, "snapshot_???.*.hdf5")))
+                if not pieces:
+                    pieces = sorted(glob.glob(os.path.join(d, "snapshot_???.hdf5")))
+                if pieces:
+                    snaps[n] = ("multi", pieces) if len(pieces) > 1 else ("single", pieces[0])
+    if not snaps:
+        sys.exit(f"No snapshots found in {snapdir}")
+    last_num = max(snaps)
+    print(f"Using snapshot {last_num} (highest available)")
+    return last_num, snaps[last_num]
 
-star_pos, star_mass = read_stars(snapshot)
+def read_gas(snap_entry):
+    """Read gas Coordinates and Density across all chunks."""
+    kind, path = snap_entry
+    files = path if kind == "multi" else [path]
+    pos_chunks, rho_chunks = [], []
+    hdr, params = None, None
+    for fname in files:
+        with h5py.File(fname, "r") as f:
+            if hdr is None:
+                hdr = dict(f["Header"].attrs)
+                params = dict(f["Parameters"].attrs) if "Parameters" in f else {}
+            if "PartType0" not in f:
+                continue
+            pos_chunks.append(f["PartType0"]["Coordinates"][:].astype(np.float64))
+            rho_chunks.append(f["PartType0"]["Density"][:].astype(np.float64))
+    pos = np.concatenate(pos_chunks)
+    rho = np.concatenate(rho_chunks)
+    h = float(params.get("HubbleParam", hdr.get("HubbleParam", 0.6774)))
+    a = float(hdr["Time"])
+    boxsize = float(hdr["BoxSize"])
+    return pos, rho, h, a, boxsize
 
-if len(star_pos) == 0:
-    print("No stars found!")
-    sys.exit(1)
-
-# Overall center of mass
-com = np.average(star_pos, weights=star_mass, axis=0)
-print(f"\nAll stars COM: [{com[0]:.2f}, {com[1]:.2f}, {com[2]:.2f}] kpc")
-print(f"Total stellar mass: {np.sum(star_mass):.2e}")
-print(f"Number of stars: {len(star_pos)}")
-
-# Find densest region (most massive halo) - only if enough stars
-dense_com = com.copy()  # Initialize with overall COM
-if len(star_pos) > 100:
-    mass_threshold = np.percentile(star_mass, 90)
-    dense_mask = star_mass > mass_threshold
-    if np.sum(dense_mask) > 0:
-        dense_com = np.average(star_pos[dense_mask], weights=star_mass[dense_mask], axis=0)
-        print(f"\nDense region COM (top 10% by mass): [{dense_com[0]:.2f}, {dense_com[1]:.2f}, {dense_com[2]:.2f}] kpc")
-else:
-    print(f"\nToo few stars ({len(star_pos)}) to find dense region - using overall COM")
-
-# Iterative refinement: find center of densest sphere
-print(f"\nIterative refinement:")
-center = com.copy()
-radii = [100, 50, 30, 20, 10]  # Try different radii
-for radius in radii:
-    r = np.sqrt(np.sum((star_pos - center)**2, axis=1))
-    mask = r < radius
-    n_within = np.sum(mask)
-    if n_within > 10:
-        new_center = np.average(star_pos[mask], weights=star_mass[mask], axis=0)
-        shift = np.sqrt(np.sum((new_center - center)**2))
-        center = new_center
-        total_mass = np.sum(star_mass[mask])
-        print(f"  R={radius:3d} kpc: [{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}] - {n_within:5d} stars, mass={total_mass:.2e}, shift={shift:.2f} kpc")
-        if shift < 1.0:  # Converged
+def shrinking_sphere(pos, weights, seed_ckpc_h, r_init=300.0,
+                     r_min=5.0, shrink=0.95, n_min=50):
+    """
+    Density-weighted shrinking sphere.
+    pos, seed in ckpc/h (comoving).  r_init, r_min in ckpc/h.
+    """
+    cen = seed_ckpc_h.copy()
+    r = r_init
+    iteration = 0
+    while r > r_min:
+        dx = pos - cen
+        dist = np.sqrt((dx**2).sum(axis=1))
+        mask = dist < r
+        n_in = mask.sum()
+        if n_in < n_min:
+            print(f"  iter {iteration:3d}: r={r:.1f} ckpc/h  n={n_in} — too few particles, stopping")
             break
-    else:
-        print(f"  R={radius:3d} kpc: Only {n_within} stars - skipping")
+        w = weights[mask]
+        cen = np.average(pos[mask], weights=w, axis=0)
+        print(f"  iter {iteration:3d}: r={r:7.1f} ckpc/h  n={n_in:8,}  cen={cen}")
+        r *= shrink
+        iteration += 1
+    return cen
 
-print(f"\n*** Use this center: [{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}] ***")
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--snapdir",   required=True)
+    p.add_argument("--resolution",type=int, default=1024,
+                   help="512 / 1024 / 2048 — used to pick the seed center")
+    p.add_argument("--r_init",    type=float, default=300.0,
+                   help="Initial sphere radius in ckpc/h (default 300)")
+    p.add_argument("--r_min",     type=float, default=8.0,
+                   help="Stop shrinking below this radius in ckpc/h (default 8)")
+    p.add_argument("--snap",      type=int, default=None,
+                   help="Specific snapshot number (default: last available)")
+    args = p.parse_args()
+
+    if args.snap is not None:
+        # find that specific snap
+        snap_num, snap_entry = args.snap, None
+        snapdir = args.snapdir
+        for d in [f"snapdir_{args.snap:03d}", f"snapdir_{args.snap:04d}"]:
+            full = os.path.join(snapdir, d)
+            if os.path.isdir(full):
+                pieces = sorted(glob.glob(os.path.join(full, "*.hdf5")))
+                if pieces:
+                    snap_entry = ("multi", pieces)
+                    break
+        if snap_entry is None:
+            sys.exit(f"Snapshot {args.snap} not found")
+    else:
+        snap_num, snap_entry = find_last_snap(args.snapdir)
+
+    print(f"\nReading gas particles...")
+    pos, rho, h, a, boxsize = read_gas(snap_entry)
+    print(f"  {len(pos):,} gas particles  |  h={h}  a={a:.4f}  z={1/a-1:.3f}")
+    print(f"  Box: {boxsize:.1f} ckpc/h = {boxsize/h:.1f} ckpc = {boxsize/h/1000:.2f} Mpc")
+
+    # Seed
+    if args.resolution in SEED_CENTERS:
+        seed = SEED_CENTERS[args.resolution]
+        print(f"\nSeed center ({args.resolution}³): {seed} ckpc/h")
+    else:
+        seed = np.array([boxsize/2, boxsize/2, boxsize/2])
+        print(f"\nNo seed for resolution {args.resolution} — using box center: {seed}")
+
+    print(f"\nRunning shrinking sphere (r_init={args.r_init}, r_min={args.r_min} ckpc/h)...")
+    center = shrinking_sphere(pos, rho, seed,
+                              r_init=args.r_init, r_min=args.r_min)
+
+    center_pkpc = center * a / h
+    print(f"\n{'='*60}")
+    print(f"RESULT for {args.resolution}³ at snap {snap_num} (z={1/a-1:.3f})")
+    print(f"  Center (ckpc/h) : [{center[0]:.3f}, {center[1]:.3f}, {center[2]:.3f}]")
+    print(f"  Center (pkpc)   : [{center_pkpc[0]:.2f}, {center_pkpc[1]:.2f}, {center_pkpc[2]:.2f}]")
+    print(f"\nPaste into make_zoom_movie.py HALO569_CENTERS_CKPC_H:")
+    print(f"    {args.resolution}: np.array([{center[0]:.3f}, {center[1]:.3f}, {center[2]:.3f}]),")
+    print(f"{'='*60}")
+
+if __name__ == "__main__":
+    main()

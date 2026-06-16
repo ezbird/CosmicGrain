@@ -100,11 +100,13 @@ OBS_DGR_SIGMA      = 0.005
 OBS_DUST_MASS_MSUN = 4.3e7
 SNAP_REDSHIFTS     = [2.0, 1.0, 0.5, 0.0]
 
-FIGDIR = 'dust_figures'
+from pathlib import Path
+BASE_DIR = str(Path(__file__).resolve().parent.parent)  # gadget4/ directory
+
+FIGDIR = os.path.join(BASE_DIR, 'scripts', 'dust_figures')
 os.makedirs(FIGDIR, exist_ok=True)
 
 RESOLUTION = 512   # updated by --res argument
-
 # ─────────────────────────────────────────────────────────────────────────────
 # R200 / halo utilities
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,7 +117,7 @@ def find_catalog(run, snap_base):
     if not m:
         return None
     snap_num   = m.group(1)
-    groups_dir = os.path.join(f'{run}_output_{RESOLUTION}', f'groups_{snap_num}')
+    groups_dir = os.path.join(BASE_DIR, f'{run}_output_{RESOLUTION}', f'groups_{snap_num}')
     candidates = sorted(glob.glob(
         os.path.join(groups_dir, f'fof_subhalo_tab_{snap_num}.*.hdf5')))
     if candidates:
@@ -324,7 +326,7 @@ def get_r200_and_center(run, snap_base, verbose=True, catalog_only=False):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def find_snapshots(run):
-    output_dir = f'{run}_output_{RESOLUTION}'
+    output_dir = os.path.join(BASE_DIR, f'{run}_output_{RESOLUTION}')
     if not os.path.isdir(output_dir):
         return []
     seen_bases = set()
@@ -612,14 +614,14 @@ def get_gas_mass_curves(runs):
 
 def find_logfile(run):
     patterns = [
-        f'{run}_output_{RESOLUTION}/output_{run}_{RESOLUTION}.log',
-        f'{run}_output/output_{run}.log',
-        f'output_{run}.log',
+        os.path.join(BASE_DIR, f'{run}_output_{RESOLUTION}', f'output_{run}_{RESOLUTION}.log'),
+        os.path.join(BASE_DIR, f'{run}_output', f'output_{run}.log'),
+        os.path.join(BASE_DIR, f'output_{run}.log'),
     ]
     for p in patterns:
         if os.path.exists(p):
             return p
-    candidates = glob.glob(f'**/*{run}*{RESOLUTION}*.log', recursive=True)
+    candidates = glob.glob(os.path.join(BASE_DIR, '**', f'*{run}*{RESOLUTION}*.log'), recursive=True)
     if candidates:
         print(f'  [find_logfile] fallback glob: {candidates[0]}')
         return candidates[0]
@@ -1195,12 +1197,12 @@ def plot_grain_size_distribution(runs, target_redshifts=None):
     savefig(fig, 'grain_size_dist_allz.png')
 
 
-def compute_ism_dust_mass(gas, dust, hdr, center_ckpc_h, n_thresh_cgs=0.1):
+def compute_ism_dust_mass(gas, dust, hdr, center_ckpc_h, n_thresh_cgs=0.01):
     """
     Compute ISM-restricted dust mass, gas mass, metal mass, and mass-weighted
     mean grain radius.
  
-    ISM aperture: r < R_ISM_PKPC (20 pkpc) AND n_H > n_thresh_cgs (0.1 cm^-3).
+    ISM aperture: r < R_ISM_PKPC (20 pkpc) AND n_H > n_thresh_cgs (0.01 cm^-3).
     Dust particles are assigned to the ISM via their nearest gas neighbour
     (KDTree), with an additional direct radial cut on dust positions.
  
@@ -1227,12 +1229,23 @@ def compute_ism_dust_mass(gas, dust, hdr, center_ckpc_h, n_thresh_cgs=0.1):
     print(f"      DEBUG to_pkpc={to_pkpc:.4f}  a={a}  h={h}")
 
     dense_mask = nH > n_thresh_cgs
-    print(f"      Dense gas r_pkpc: {np.sort(r_pkpc[dense_mask])[:10]} ... max={r_pkpc[dense_mask].max():.1f}")
+    if dense_mask.any():
+            print(f"      Dense gas r_pkpc: {np.sort(r_pkpc[dense_mask])[:10]} ... max={r_pkpc[dense_mask].max():.1f}")
+    else:
+            print(f"      Dense gas r_pkpc: (none above threshold)")
 
-    # After the ism_mask computation, add:
-    print(f"      Dense gas radii: {np.sort(r_pkpc[nH > 0.1])}")
-    print(f"      Main halo SFR proxy — gas within 20 pkpc: {(r_pkpc < 20).sum()} particles, "
-          f"max nH={nH[r_pkpc < 20].max():.3e} cm^-3")
+    ism_hi = nH > 0.1
+    if ism_hi.any():
+        print(f"      Dense gas radii (nH>0.1): {np.sort(r_pkpc[ism_hi])}")
+    else:
+        print(f"      Dense gas radii (nH>0.1): (none)")
+    
+    inner = r_pkpc < 20
+    if inner.any():
+        print(f"      Main halo SFR proxy — gas within 20 pkpc: {inner.sum()} particles, "
+              f"max nH={nH[inner].max():.3e} cm^-3")
+    else:
+        print(f"      Main halo SFR proxy — gas within 20 pkpc: (none)")
 
     if not np.any(ism_mask):
         return 0.0, 0.0, 0.0, None
@@ -1612,11 +1625,26 @@ def compute_table_stats(runs, log_data):
             ts['DtoZ'] = 0.0
  
         # ── ISM-restricted quantities ─────────────────────────────────────────
-        # (r < 20 pkpc, n_H > 0.1 cm^-3, dust assigned via nearest gas KDTree)
-        if dust and len(dust.get('mass', [])) > 0 and gas and len(gas['mass']) > 0:
+        # ISM center: shrinking-sphere (gas density peak), not SUBFIND GroupPos.
+        # SUBFIND GroupPos is offset 440 ckpc/h from nucleus due to FOF bridging.
+        # ── ISM-restricted quantities ─────────────────────────────────────────
+        # Gas and dust must be loaded around the ISM center (shrinking-sphere),
+        # not the SUBFIND center, because the two are 440 ckpc/h apart.
+        # We use a 100 ckpc/h load radius to capture the full ISM aperture.
+        ISM_CENTERS = {
+            512:  np.array([23083.102, 23519.314, 23665.764]),
+            1024: np.array([23050.082, 23531.328, 23664.826]),
+            2048: np.array([23084.035, 23511.898, 23649.725]),
+        }
+        ism_ctr = ISM_CENTERS.get(RESOLUTION, ctr)
+        ISM_LOAD_RADIUS = 100.0  # ckpc/h — generous to capture 20 pkpc ISM aperture
+        gas_ism  = load_gas_for_snap(snap_base,  ism_ctr, ISM_LOAD_RADIUS)
+        dust_ism = load_dust_for_snap(snap_base, ism_ctr, ISM_LOAD_RADIUS)
+        if dust_ism and len(dust_ism.get('mass', [])) > 0 and \
+           gas_ism  and len(gas_ism.get('mass',  [])) > 0:
             hdr_local = _read_header(snap_base)
             M_dust_ISM, M_gas_ISM, M_metal_ISM, mean_a_ism = compute_ism_dust_mass(
-                gas, dust, hdr_local, ctr)
+                gas_ism, dust_ism, hdr_local, ism_ctr)
             ts['DtoG_ISM']   = M_dust_ISM / M_gas_ISM   if M_gas_ISM   > 0 else 0.0
             ts['DtoZ_ISM']   = M_dust_ISM / M_metal_ISM if M_metal_ISM > 0 else 0.0
             ts['mean_a_ism'] = mean_a_ism

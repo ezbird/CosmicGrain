@@ -1,0 +1,112 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# cosmicgrain.mplstyle
+# CosmicGrain methods paper — unified figure style
+#
+# Usage (top of every script, before any plt call):
+#   import matplotlib.pyplot as plt
+#   plt.style.use("path/to/cosmicgrain.mplstyle")
+#
+# Design goals
+# ────────────
+#   • White background, no gray axes fill (cleaner for print and PDF)
+#   • Very light grid, always behind data (axisbelow)
+#   • Okabe-Ito colorblind-safe cycle as default prop_cycle
+#   • Consistent font hierarchy:  title 14 > axis label 13 > tick 11 > legend 10
+#   • Minimal tick clutter: outward, minor visible, no duplicate top/right ticks
+#   • savefig defaults: 200 dpi, tight bbox — avoids per-script boilerplate
+#   • NO constrained_layout / tight_layout here — each script chooses one
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Font ──────────────────────────────────────────────────────────────────────
+# Inter is ideal for screen and print; falls back gracefully through the list.
+font.family         : sans-serif
+font.sans-serif     : Inter, Helvetica Neue, Helvetica, Arial, DejaVu Sans
+font.size           : 12
+
+# Math text rendered in the same sans-serif family — avoids the serif/sans mix
+# that makes matplotlib's default math look out of place next to axis labels.
+mathtext.fontset    : dejavusans
+
+# ── Figure ────────────────────────────────────────────────────────────────────
+figure.facecolor    : white
+figure.dpi          : 150
+
+# ── Axes ──────────────────────────────────────────────────────────────────────
+axes.facecolor      : white
+axes.edgecolor      : 0.15
+axes.linewidth      : 0.8
+axes.labelsize      : 13
+axes.labelcolor     : black
+axes.titlesize      : 14
+axes.titleweight    : normal          # bold titles look heavy in print
+axes.titlepad       : 6
+axes.axisbelow      : True            # grid always under data artists
+axes.grid           : True
+
+# Okabe-Ito colorblind-safe palette (7 colours):
+#   blue, vermillion, green, purple, orange, sky-blue, black
+# Provides strong contrast in colour AND greyscale AND for red-green colourblind.
+axes.prop_cycle     : cycler('color', ['0072B2', 'D55E00', '009E73', 'CC79A7', 'E69F00', '56B4E9', '000000'])
+
+# ── Grid ──────────────────────────────────────────────────────────────────────
+# Major grid: barely-there light grey lines.
+# Minor grid is NOT set here (mplstyle can't target which='minor' directly);
+# scripts that want it call: ax.grid(True, which='minor', color='0.93', lw=0.3)
+grid.color          : 0.88
+grid.linestyle      : -
+grid.linewidth      : 0.5
+grid.alpha          : 1.0
+
+# ── Lines ─────────────────────────────────────────────────────────────────────
+lines.linewidth     : 1.8
+lines.markersize    : 6
+lines.solid_capstyle: round
+
+# ── Ticks ─────────────────────────────────────────────────────────────────────
+xtick.color         : black
+ytick.color         : black
+xtick.direction     : out
+ytick.direction     : out
+xtick.major.size    : 4.0
+ytick.major.size    : 4.0
+xtick.minor.size    : 2.5
+ytick.minor.size    : 2.5
+xtick.major.width   : 0.8
+ytick.major.width   : 0.8
+xtick.minor.width   : 0.6
+ytick.minor.width   : 0.6
+xtick.labelsize     : 11
+ytick.labelsize     : 11
+xtick.minor.visible : True
+ytick.minor.visible : True
+# No ticks on top/right — reduces visual clutter without removing spines
+xtick.top           : False
+ytick.right         : False
+
+# ── Legend ────────────────────────────────────────────────────────────────────
+legend.frameon          : True
+legend.framealpha       : 0.85
+legend.edgecolor        : 0.8
+legend.fontsize         : 10
+legend.title_fontsize   : 10
+legend.borderpad        : 0.6
+legend.handlelength     : 1.6
+legend.handleheight     : 0.8
+legend.handletextpad    : 0.6
+legend.labelspacing     : 0.4
+legend.columnspacing    : 1.2
+
+# ── Patch (fill_between, bar, etc.) ──────────────────────────────────────────
+patch.linewidth     : 0.6
+patch.edgecolor     : none            # no border on filled patches by default
+
+# ── Scatter ───────────────────────────────────────────────────────────────────
+scatter.marker      : o
+scatter.edgecolors  : none
+
+# ── Saving ────────────────────────────────────────────────────────────────────
+# Every plt.savefig() call inherits these unless overridden per-call.
+savefig.dpi         : 200
+savefig.bbox        : tight
+savefig.facecolor   : white
+savefig.edgecolor   : none

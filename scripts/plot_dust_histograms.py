@@ -1,372 +1,362 @@
 #!/usr/bin/env python3
 """
 plot_dust_histograms.py
+-----------------------
+Grid of histograms showing dust particle properties for Halo 569.
 
-Create a grid of histograms showing dust particle properties from a Gadget-4 simulation
-using halo_utils to extract the target halo.
+Uses halo_utils.get_halo569_reference / get_halo569 for correct halo
+identification — consistent with all other CosmicGrain analysis scripts.
+
+Unit conventions:
+  Coordinates : comoving kpc/h  →  physical kpc via * a / h
+  Masses      : 1e10 Msun/h     →  Msun via * 1e10 / h
+  GrainRadius : already in nm in HDF5 (snap_io applies cm->nm on write)
+  h           : from f["Parameters"].attrs["HubbleParam"]  (NOT Header)
 
 Usage:
-    python plot_dust_histograms.py \
-        --catalog ../groups_049/fof_subhalo_tab_049.0.hdf5 \
-        --snapshot ../snapdir_049/snapshot_049 \
-        --out dust_histograms.png \
-        --rmax 300
+    python plot_dust_histograms.py ../S10_output_1024/
+    python plot_dust_histograms.py ../S10_output_2048/ --snap 049
+    python plot_dust_histograms.py ../S10_output_1024/ --out dust_hist_1024.png
+    python plot_dust_histograms.py ../S10_output_1024/ --rmax 50
 """
 
 import argparse
+import glob
+import sys
+import math
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import h5py
-import glob
+from pathlib import Path
 
-try:
-    from halo_utils import load_target_halo, extract_dust_spatially
-except ImportError:
-    print("ERROR: This script requires halo_utils.py in the same directory")
-    exit(1)
+from halo_utils import get_halo569_reference, get_halo569
 
+# Load shared paper style
+_STYLE = Path(__file__).parent / "cosmicgrain.mplstyle"
+if _STYLE.exists():
+    plt.style.use(str(_STYLE))
 
-def get_snapshot_info(snapshot_base):
-    """Get current time/scale factor and cosmology from snapshot header."""
-    files = sorted(glob.glob(f'{snapshot_base}.*.hdf5'))
-    if not files:
-        files = [f'{snapshot_base}.hdf5']
-    
-    with h5py.File(files[0], 'r') as f:
-        header = f['Header'].attrs
-        
-        info = {}
-        if 'Time' in header:
-            info['Time'] = float(header['Time'])
-        if 'Redshift' in header:
-            info['Redshift'] = float(header['Redshift'])
-        if 'HubbleParam' in header:
-            info['HubbleParam'] = float(header['HubbleParam'])
-        if 'Omega0' in header:
-            info['Omega0'] = float(header['Omega0'])
-        if 'OmegaLambda' in header:
-            info['OmegaLambda'] = float(header['OmegaLambda'])
-        
-        # Check what fields exist for PartType6
-        if 'PartType6' in f:
-            info['dust_fields'] = list(f['PartType6'].keys())
-        
-    return info
+MSUN_PER_CODE = 1e10   # Gadget default: 1 code unit = 1e10 Msun/h
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Header / cosmology helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def read_snap_meta(snap_files):
+    """Read h (from Parameters), a, z, box, cosmology from first chunk."""
+    with h5py.File(snap_files[0], "r") as f:
+        h   = float(f["Parameters"].attrs["HubbleParam"])
+        a   = float(f["Header"].attrs["Time"])
+        z   = float(f["Header"].attrs["Redshift"])
+        box = float(f["Header"].attrs["BoxSize"])
+        Om  = float(f["Header"].attrs.get("Omega0",      0.3158))
+        OL  = float(f["Header"].attrs.get("OmegaLambda", 0.6842))
+    return dict(h=h, a=a, z=z, box=box, Om=Om, OL=OL)
 
 
-def scale_factor_to_age(a, h=0.7, Om=0.3, OL=0.7):
+def age_of_universe_gyr(a, h, Om, OL):
+    """Age of universe at scale factor a in Gyr (flat ΛCDM)."""
+    H0    = (100.0 * h) / 3.085678e19   # s^-1
+    N     = 2000
+    la0   = math.log(1e-8)
+    la1   = math.log(a)
+    acc   = sum(
+        1.0 / math.sqrt(Om / math.exp(la0 + (i+0.5)*(la1-la0)/N)**3 + OL)
+        for i in range(N)
+    )
+    t_s = acc * (la1 - la0) / N / H0
+    return t_s / (3600 * 24 * 365.25 * 1e9)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Halo identification
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_center_r200(output_dir, snap_num_str):
     """
-    Convert scale factor to age of universe in Gyr for flat ΛCDM.
-    
-    Parameters:
-    -----------
-    a : float or array
-        Scale factor
-    h : float
-        Hubble parameter (H0 = h * 100 km/s/Mpc)
-    Om : float
-        Matter density parameter
-    OL : float
-        Dark energy density parameter
-    
-    Returns:
-    --------
-    age : float or array
-        Age in Gyr
+    Return (center_ckpch, r200_pkpc) for Halo 569 via halo_utils.
+    Consistent with snap_overview, plot_gsd_comparison, etc.
     """
-    from scipy.integrate import quad
-    
-    def integrand(a_prime):
-        # dt/da = 1/(a * H(a)) where H(a) = H0 * sqrt(Om/a^3 + OL)
-        return 1.0 / (a_prime * np.sqrt(Om / a_prime**3 + OL))
-    
-    # Hubble constant in proper units
-    # H0 = h * 100 km/s/Mpc
-    # Need to convert to Gyr^-1
-    # 1 km = 1e3 m
-    # 1 Mpc = 3.0857e22 m  
-    # 1 s = 1 s
-    # 1 Gyr = 3.1536e16 s
-    # H0 [s^-1] = (h * 100 km/s/Mpc) * (1e3 m/km) / (3.0857e22 m/Mpc)
-    #           = h * 100 * 1e3 / 3.0857e22 s^-1
-    #           = h * 3.241e-18 s^-1
-    # H0 [Gyr^-1] = h * 3.241e-18 * 3.1536e16 Gyr^-1
-    #             = h * 1.0226e-1 Gyr^-1
-    # Hubble time = 1/H0 = 9.778 / h Gyr
-    
-    t_H = 9.778 / h  # Hubble time in Gyr
-    
-    # Integrate from 0 to a
-    age, _ = quad(integrand, 0, a)
-    return age * t_H
+    snap_num   = int(snap_num_str)
+    groups_dir = Path(output_dir) / f"groups_{snap_num:03d}"
+
+    ref  = get_halo569_reference(output_dir)
+    halo = get_halo569(groups_dir, snap_num, ref, verbose=True)
+    if halo is None or halo["r200_ckpch"] <= 0:
+        raise RuntimeError(f"No valid halo for snap {snap_num}")
+
+    print(f"  Center (ckpc/h)  : [{halo['center'][0]:.1f}, "
+          f"{halo['center'][1]:.1f}, {halo['center'][2]:.1f}]")
+    print(f"  R_Crit200        : {halo['r200_ckpch']:.1f} ckpc/h  "
+          f"({halo['r200_pkpc']:.1f} pkpc)")
+    print(f"  M_Crit200        : {halo['m200_code']*MSUN_PER_CODE/ref['h']:.3e} Msun")
+
+    return halo["center"], halo["r200_pkpc"]
 
 
-def compute_velocity_magnitude(velocities):
-    """Compute velocity magnitude from velocity vectors."""
-    return np.sqrt(np.sum(velocities**2, axis=1))
+# ─────────────────────────────────────────────────────────────────────────────
+# Dust particle loader
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_dust(snap_files, ctr_ckpch, rmax_ckpch, box_ckpch, h, a):
+    """
+    Load PartType6 within rmax_ckpch of ctr_ckpch.
+    Returns dict of arrays with masses in Msun, positions in pkpc.
+    """
+    fields_wanted = ["Masses", "GrainRadius", "CarbonFraction",
+                     "Velocities", "DustTemperature", "DustFormationTime"]
+
+    buffers = {f: [] for f in fields_wanted}
+    buffers["pos_pkpc"] = []
+    n_total = len(snap_files)
+
+    for idx, fpath in enumerate(snap_files):
+        with h5py.File(fpath, "r") as f:
+            if "PartType6" not in f:
+                continue
+            pt6 = f["PartType6"]
+            if len(pt6["Masses"]) == 0:
+                continue
+
+            coords = pt6["Coordinates"][:]
+            dx     = coords - ctr_ckpch[None, :]
+            dx    -= box_ckpch * np.round(dx / box_ckpch)
+            r      = np.sqrt((dx**2).sum(axis=1))
+            mask   = r < rmax_ckpch
+            if not mask.any():
+                continue
+
+            buffers["pos_pkpc"].append(coords[mask] * a / h)
+            for field in fields_wanted:
+                if field in pt6:
+                    arr = pt6[field][:]
+                    buffers[field].append(
+                        arr[mask] if arr.ndim == 1 else arr[mask])
+
+        if (idx + 1) % 20 == 0 or (idx + 1) == n_total:
+            print(f"    chunk {idx+1}/{n_total}", end="\r", flush=True)
+    print()
+
+    if not buffers["pos_pkpc"]:
+        return None
+
+    result = {"pos_pkpc": np.vstack(buffers["pos_pkpc"])}
+    for field in fields_wanted:
+        if buffers[field]:
+            arr = (np.concatenate(buffers[field])
+                   if buffers[field][0].ndim == 1
+                   else np.vstack(buffers[field]))
+            result[field] = arr
+
+    # Convert masses to Msun
+    if "Masses" in result:
+        result["Masses"] = result["Masses"] * MSUN_PER_CODE / h
+
+    return result
 
 
-def make_histogram(ax, data, xlabel, title, bins=50, log_x=False, log_y=False, color='steelblue'):
-    """Create a histogram with nice formatting."""
-    
-    # Remove non-finite values
+# ─────────────────────────────────────────────────────────────────────────────
+# Histogram helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def make_histogram(ax, data, xlabel, title, bins=50,
+                   log_x=False, color="steelblue",
+                   xlim=None):
     data = data[np.isfinite(data)]
-    
     if len(data) == 0:
-        ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+        ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                transform=ax.transAxes)
         ax.set_title(title)
         return
-    
-    # Create histogram
+
     if log_x:
-        # Use log-spaced bins
-        data_pos = data[data > 0]
-        if len(data_pos) == 0:
-            ax.text(0.5, 0.5, 'No positive data', ha='center', va='center', transform=ax.transAxes)
+        data = data[data > 0]
+        if len(data) == 0:
+            ax.text(0.5, 0.5, "No positive data", ha="center", va="center",
+                    transform=ax.transAxes)
             ax.set_title(title)
             return
-        bins = np.logspace(np.log10(data_pos.min()), np.log10(data_pos.max()), bins)
-        data = data_pos
-    
-    counts, bin_edges, patches = ax.hist(data, bins=bins, color=color, alpha=0.7, edgecolor='black', linewidth=0.5)
-    
-    # Formatting
-    if log_x:
-        ax.set_xscale('log')
-    if log_y:
-        ax.set_yscale('log')
-    
-    ax.set_xlabel(xlabel, fontsize=10)
-    ax.set_ylabel('Count', fontsize=10)
-    ax.set_title(title, fontsize=11, fontweight='bold')
-    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-    
-    # Add statistics text
-    stats_text = f'N = {len(data):,}\nMedian = {np.median(data):.2e}\nMean = {np.mean(data):.2e}'
-    ax.text(0.4, 0.97, stats_text, transform=ax.transAxes, 
-            fontsize=8, verticalalignment='top', horizontalalignment='right',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        # Span the full xlim range so all bins are visible even if
+        # data clusters tightly (e.g. narrow mass range at injection)
+        lo = xlim[0] if xlim is not None else data.min()
+        hi = xlim[1] if xlim is not None else data.max()
+        bin_edges = np.logspace(np.log10(lo), np.log10(hi), bins)
+    else:
+        bin_edges = bins
 
+    ax.hist(data, bins=bin_edges, color=color, alpha=0.75,
+            edgecolor="white", linewidth=0.3)
+
+    if log_x:
+        ax.set_xscale("log")
+    if xlim is not None:
+        ax.set_xlim(xlim)
+
+    ax.set_xlabel(xlabel, fontsize=10)
+    ax.set_ylabel("Count", fontsize=10)
+    ax.set_title(title, fontsize=11, fontweight="bold")
+    ax.grid(True, alpha=0.3, lw=0.5)
+
+    stats = (
+             f"Median = {np.median(data):.2e}\n"
+             f"Mean = {np.mean(data):.2e}")
+    ax.text(0.04, 0.97, stats, transform=ax.transAxes,
+            fontsize=9.5, va="top", ha="left",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description='Plot dust particle histograms for target halo')
-    parser.add_argument('--catalog', required=True, help='Path to Subfind catalog (fof_subhalo_tab_*.hdf5)')
-    parser.add_argument('--snapshot', required=True, help='Base path to snapshot (e.g., snapshot_049)')
-    parser.add_argument('--out', default='dust_histograms.png', help='Output filename')
-    parser.add_argument('--rmax', type=float, default=None, 
-                        help='Max radius for dust extraction (kpc). Default: 2*halfmass_rad')
-    parser.add_argument('--bins', type=int, default=50, help='Number of bins per histogram')
-    parser.add_argument('--dpi', type=int, default=150, help='Output DPI')
-    parser.add_argument('--figsize', type=float, nargs=2, default=[14, 9], 
-                        help='Figure size in inches (width height)')
-    parser.add_argument('--show_plot', type=int, default=0,
-                    help='Show plot interactively (1=yes, 0=no). Default: 0')
-
+    parser = argparse.ArgumentParser(
+        description="Dust particle property histograms for Halo 569")
+    parser.add_argument("output_dir",
+                        help="Gadget-4 output directory (e.g. ../S10_output_1024/)")
+    parser.add_argument("--snap",    default="049",
+                        help="Snapshot number string (default: 049)")
+    parser.add_argument("--rmax",    type=float, default=None,
+                        help="Extraction radius in pkpc (default: R200)")
+    parser.add_argument("--out",     default=None,
+                        help="Output PNG (default: auto-named)")
+    parser.add_argument("--bins",    type=int,   default=50)
+    parser.add_argument("--dpi",     type=int,   default=150)
     args = parser.parse_args()
-    
-    print("="*60)
-    print("DUST HISTOGRAM PLOTTER")
-    print("="*60)
-    
-    # Get snapshot info
-    snap_info = get_snapshot_info(args.snapshot)
-    current_time = snap_info.get('Time')
-    redshift = snap_info.get('Redshift')
-    
-    print(f"\nSnapshot information:")
-    print(f"  Time (scale factor): {current_time:.6f}" if current_time else "  Time: Not found")
-    print(f"  Redshift: {redshift:.6f}" if redshift else "  Redshift: Not found")
-    if 'dust_fields' in snap_info:
-        print(f"  PartType6 fields available: {snap_info['dust_fields']}")
-    
-    # Load target halo
-    print("\nLoading halo info...")
-    halo = load_target_halo(
-        args.catalog,
-        args.snapshot,
-        particle_types=[],
-        verbose=True
-    )
-    
-    halo_info = halo['halo_info']
-    halo_pos = halo_info['position']
-    halo_mass = halo_info['mass']
-    halo_halfmass = halo_info['halfmass_rad']
-    
-    # Set extraction radius
-    rmax = args.rmax if args.rmax is not None else (halo_halfmass * 2.0)
-    print(f"\nExtracting dust within {rmax:.2f} kpc of halo center...")
-    
-    # Extract dust particles spatially
-    dust_data = extract_dust_spatially(
-        args.snapshot,
-        halo_pos,
-        radius_kpc=rmax,
-        verbose=True
-    )
-    
-    if dust_data is None or len(dust_data['Coordinates']) == 0:
-        print("ERROR: No dust particles found!")
-        return
-    
-    print(f"\nPreparing histograms...")
-    
-    # Extract dust properties
-    grain_radius = dust_data['GrainRadius']
-    carbon_frac = dust_data['CarbonFraction']
-    masses = dust_data['Masses'] * 1e10
-    velocities = dust_data['Velocities']
-    dust_temp = dust_data['DustTemperature']
-    
-    # Diagnose DustFormationTime
-    print("\n" + "="*60)
-    print("DIAGNOSING DUST FORMATION TIME")
-    print("="*60)
-    
-    has_formation_time = False
-    if 'DustFormationTime' in dust_data:
-        dust_formation = dust_data['DustFormationTime']
-        has_formation_time = True
-        print("✓ DustFormationTime field found")
-    elif 'StellarFormationTime' in dust_data:
-        dust_formation = dust_data['StellarFormationTime']
-        has_formation_time = True
-        print("✓ Using StellarFormationTime (DustFormationTime not found)")
+
+    output_dir = Path(args.output_dir)
+    snap_num   = args.snap.zfill(3)
+    snap_dir   = output_dir / f"snapdir_{snap_num}"
+    run_label  = output_dir.name
+
+    out_path = Path(args.out) if args.out else \
+               Path(f"dust_histograms_{run_label}_snap{snap_num}.png")
+
+    print("=" * 60)
+    print(f"Dust Histograms  |  {run_label}  |  snap {snap_num}")
+    print("=" * 60)
+
+    snap_base  = str(snap_dir / f"snapshot_{snap_num}")
+    snap_files = sorted(glob.glob(snap_base + "*.hdf5"))
+    if not snap_files:
+        sys.exit(f"ERROR: no snapshot files at {snap_base}*.hdf5")
+    print(f"Snapshot chunks: {len(snap_files)}")
+
+    meta = read_snap_meta(snap_files)
+    h, a, z = meta["h"], meta["a"], meta["z"]
+    box     = meta["box"]
+    print(f"h={h:.4f}  a={a:.6f}  z={z:.4f}  box={box:.1f} ckpc/h")
+
+    age_now = age_of_universe_gyr(a, h, meta["Om"], meta["OL"])
+    print(f"Age of universe at z={z:.3f}: {age_now:.3f} Gyr")
+
+    print("\nLocating Halo 569 ...")
+    ctr_ckpch, r200_pkpc = get_center_r200(str(output_dir), snap_num)
+
+    rmax_pkpc  = args.rmax if args.rmax is not None else r200_pkpc
+    rmax_ckpch = rmax_pkpc * h / a
+    print(f"\nExtraction radius: {rmax_pkpc:.1f} pkpc  "
+          f"({rmax_ckpch:.1f} ckpc/h)")
+
+    print("\nLoading PartType6 ...")
+    dust = load_dust(snap_files, ctr_ckpch, rmax_ckpch, box, h, a)
+    if dust is None:
+        sys.exit("ERROR: no dust particles found within aperture")
+
+    n_dust = len(dust["Masses"])
+    print(f"  Loaded {n_dust:,} dust particles")
+    print(f"  GrainRadius range: "
+          f"{dust['GrainRadius'].min():.2f} -- "
+          f"{dust['GrainRadius'].max():.2f} nm")
+
+    # Dust age from DustFormationTime (scale factor at injection)
+    dust_age_gyr = np.zeros(n_dust)
+    if "DustFormationTime" in dust:
+        a_form = dust["DustFormationTime"]
+        valid  = (a_form > 0) & (a_form <= a)
+        print(f"  DustFormationTime: {valid.sum():,} valid "
+              f"/ {n_dust:,} total")
+        for i in np.where(valid)[0]:
+            age_at_form        = age_of_universe_gyr(
+                float(a_form[i]), h, meta["Om"], meta["OL"])
+            dust_age_gyr[i]    = age_now - age_at_form
     else:
-        dust_formation = np.zeros(len(grain_radius))
-        print("✗ No formation time field found - using zeros")
-    
-    if has_formation_time:
-        print(f"  Min value: {dust_formation.min():.6f}")
-        print(f"  Max value: {dust_formation.max():.6f}")
-        print(f"  Median: {np.median(dust_formation):.6f}")
-        print(f"  Number of zeros: {np.sum(dust_formation == 0):,} / {len(dust_formation):,}")
-        print(f"  Number of non-zeros: {np.sum(dust_formation > 0):,}")
-        
-        # Check if values look like scale factors (0 < a < 1)
-        nonzero = dust_formation[dust_formation > 0]
-        if len(nonzero) > 0:
-            if np.all((nonzero > 0) & (nonzero <= 1)):
-                print("  → Values appear to be scale factors (0 < a ≤ 1)")
-            else:
-                print("  → Values do NOT look like scale factors")
-    
-    # Calculate age
-    if has_formation_time and current_time is not None:
-        # If formation times are scale factors and current_time is scale factor
-        if np.any(dust_formation > 0):
-            try:
-                from scipy.integrate import quad
-                
-                # Get cosmology
-                h = snap_info.get('HubbleParam', 0.7)
-                Om = snap_info.get('Omega0', 0.3)
-                OL = snap_info.get('OmegaLambda', 0.7)
-                
-                print(f"\nCalculating ages using cosmology:")
-                print(f"  h = {h}, Ωm = {Om}, ΩΛ = {OL}")
-                
-                # Calculate current age
-                current_age = scale_factor_to_age(current_time, h, Om, OL)
-                print(f"  Current age of universe: {current_age:.3f} Gyr")
-                
-                # Calculate ages for each particle
-                dust_age_gyr = np.zeros(len(dust_formation))
-                for i, a_form in enumerate(dust_formation):
-                    if a_form > 0 and a_form <= current_time:
-                        age_at_form = scale_factor_to_age(a_form, h, Om, OL)
-                        dust_age_gyr[i] = current_age - age_at_form
-                    elif a_form == 0:
-                        # Assume formed at z=0 (current time) if zero
-                        dust_age_gyr[i] = 0.0
-                
-                age_label = 'Age (Gyr)'
-                age_title = 'Age'
-                print(f"  Age range: {dust_age_gyr.min():.3f} to {dust_age_gyr.max():.3f} Gyr")
-                
-            except ImportError:
-                print("  Warning: scipy not available, using simple approximation")
-                dust_age = current_time - dust_formation
-                dust_age_gyr = dust_age * 13.8
-                age_label = 'Age (approx, Gyr)'
-                age_title = 'Age (approx)'
-        else:
-            print("  All formation times are zero - showing as zero age")
-            dust_age_gyr = np.zeros(len(dust_formation))
-            age_label = 'Age (Gyr)'
-            age_title = 'Age'
-    else:
-        print("\nCannot calculate age - using formation time directly")
-        dust_age_gyr = dust_formation
-        age_label = 'Formation Time (scale factor)'
-        age_title = 'Formation Scale Factor'
-    
-    print("="*60 + "\n")
-    
-    # Compute velocity magnitude
-    vel_mag = compute_velocity_magnitude(velocities)
-    
-    # Create figure with 2x3 grid - more space at top
-    fig = plt.figure(figsize=args.figsize)
-    gs = GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.3, top=0.89)
-    
-    # Create subplots
+        print("  DustFormationTime not found — age set to zero")
+
+    # Velocity magnitude
+    vel_mag = np.linalg.norm(dust["Velocities"], axis=1) \
+              if "Velocities" in dust else np.zeros(n_dust)
+
+    # ── Figure: 2x2 grid (grain radius, mass, velocity, age) ────────────
+    fig = plt.figure(figsize=(10, 7))
+    gs  = GridSpec(2, 2, figure=fig, hspace=0.42, wspace=0.30, top=0.86)
+
     ax1 = fig.add_subplot(gs[0, 0])
     ax2 = fig.add_subplot(gs[0, 1])
-    ax3 = fig.add_subplot(gs[0, 2])
-    ax4 = fig.add_subplot(gs[1, 0])
-    ax5 = fig.add_subplot(gs[1, 1])
-    ax6 = fig.add_subplot(gs[1, 2])
-    
-    # Plot histograms
-    make_histogram(ax1, grain_radius, 'Grain Radius (nm)', 'Grain Radius', 
-                   bins=args.bins, log_x=False, log_y=False, color='steelblue')
-    
-    make_histogram(ax2, carbon_frac, 'Carbon Fraction', 'Carbon Fraction', 
-                   bins=args.bins, log_x=False, log_y=False, color='forestgreen')
-    
-    make_histogram(ax3, masses, 'Mass (M$_\\odot$)', 'Masses', 
-                   bins=args.bins, log_x=True, log_y=False, color='coral')
-    ax3.set_xlim(1e0, 1e5)
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax4 = fig.add_subplot(gs[1, 1])
 
-    make_histogram(ax4, vel_mag, 'Velocity (km/s)', 'Velocity Magnitude', 
-                   bins=args.bins, log_x=False, log_y=False, color='purple')
-    
-    make_histogram(ax5, dust_temp, 'Temperature (K)', 'Temperature', 
-                   bins=args.bins, log_x=False, log_y=False, color='crimson')
-    ax5.set_xlim(16, 18)
+    make_histogram(ax1, dust["GrainRadius"],
+                   "Radius (nm)", "Grain Radius",
+                   bins=args.bins, color="steelblue")
 
-    make_histogram(ax6, dust_age_gyr, age_label, age_title, 
-                   bins=args.bins, log_x=False, log_y=False, color='darkorange')
-    
-    halo_mass*=1e10
-    # Add overall title with two lines
-    fig.text(0.5, 0.975, 'Dust Properties', 
-             fontsize=18, fontweight='bold', ha='center', va='top')
-    fig.text(0.5, 0.94, f'Target Halo (M={halo_mass:.2e}, R<{rmax:.1f} kpc)', 
-             fontsize=11, ha='center', va='top')
-    
-    # Save
-    plt.savefig(args.out, dpi=args.dpi, bbox_inches='tight')
-    print(f"Saved: {args.out}")
-    
-    # Print summary statistics
-    print("\n" + "="*60)
-    print("SUMMARY STATISTICS")
-    print("="*60)
-    print(f"Total dust particles: {len(grain_radius):,}")
-    print(f"\nGrain Radius (nm):    min={grain_radius.min():.2e}, max={grain_radius.max():.2e}, median={np.median(grain_radius):.2e}")
-    print(f"Carbon Fraction:      min={carbon_frac.min():.3f}, max={carbon_frac.max():.3f}, median={np.median(carbon_frac):.3f}")
-    print(f"Masses (Msun):        min={masses.min():.2e}, max={masses.max():.2e}, median={np.median(masses):.2e}")
-    print(f"Velocity (km/s):      min={vel_mag.min():.1f}, max={vel_mag.max():.1f}, median={np.median(vel_mag):.1f}")
-    print(f"Temperature (K):      min={dust_temp.min():.1f}, max={dust_temp.max():.1f}, median={np.median(dust_temp):.1f}")
-    print(f"Age (Gyr):            min={dust_age_gyr.min():.3f}, max={dust_age_gyr.max():.3f}, median={np.median(dust_age_gyr):.3f}")
-    
-    if args.show_plot:
-        plt.show()
-    else:
-        plt.close(fig)
+    make_histogram(ax2, dust["Masses"],
+                   r"Mass (M$_\odot$)", "Mass",
+                   bins=args.bins, log_x=True, color="coral",
+                   xlim=(1e1, 1e4))
+
+    make_histogram(ax3, vel_mag,
+                   "Velocity Magnitude (km/s)", "Velocity",
+                   bins=args.bins, color="purple",
+                   xlim=(0, 400))
+
+    make_histogram(ax4, dust_age_gyr,
+                   "Age (Gyr)", "Age",
+                   bins=args.bins, color="darkorange")
+
+    # Titles
+    import re as _re
+    _m = _re.search(r"(S\d+)_output_(\d+)", run_label)
+    run_fmt = (f"{_m.group(1)} ${_m.group(2)}^3$" if _m else run_label)
+    fig.text(0.5, 0.975, "Dust Properties",
+             fontsize=18, fontweight="bold", ha="center", va="top")
+    fig.text(0.5, 0.935,
+             (f"{run_fmt}  |  "
+              r"$R_{200}$" + f" < {rmax_pkpc:.1f} kpc  |  "
+              r"$N_{\mathrm{dust}}$" + f" = {n_dust:,}  |  "
+              f"$z = {z:.3f}$"),
+             fontsize=11, ha="center", va="top")
+
+    fig.savefig(str(out_path), dpi=args.dpi, bbox_inches="tight")
+    print(f"\nSaved: {out_path}")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print(f"Dust particles : {n_dust:,}")
+    print(f"GrainRadius    : {dust['GrainRadius'].min():.2f} -- "
+          f"{dust['GrainRadius'].max():.2f} nm  "
+          f"(median {np.median(dust['GrainRadius']):.2f})")
+    print(f"CarbonFraction : {dust['CarbonFraction'].min():.3f} -- "
+          f"{dust['CarbonFraction'].max():.3f}  "
+          f"(median {np.median(dust['CarbonFraction']):.3f})")
+    print(f"Mass           : {dust['Masses'].min():.2e} -- "
+          f"{dust['Masses'].max():.2e} Msun  "
+          f"(median {np.median(dust['Masses']):.2e})")
+    print(f"Velocity       : {vel_mag.min():.1f} -- "
+          f"{vel_mag.max():.1f} km/s  "
+          f"(median {np.median(vel_mag):.1f})")
+    if "DustTemperature" in dust:
+        T = dust["DustTemperature"]
+        print(f"Temperature    : {T.min():.1f} -- {T.max():.1f} K  "
+              f"(median {np.median(T):.1f})")
+    print(f"Dust age       : {dust_age_gyr.min():.3f} -- "
+          f"{dust_age_gyr.max():.3f} Gyr  "
+          f"(median {np.median(dust_age_gyr):.3f})")
 
 
 if __name__ == "__main__":

@@ -184,7 +184,7 @@ def load_remyruyer2015(data_dir):
         # We use logMdustGr (graphite) as the primary dust mass,
         # consistent with Remy-Ruyer+2015 Table 9 column 3.
         print("  [Remy-Ruyer+2015] Using hardcoded byte positions for logMdustGr (22:27)")
-        mdust9_bc = (22, 27)
+        mdust9_bc = (22, 28)
         name9_bc  = (9, 20)    # same as table4
 
     print(f"  [Remy-Ruyer+2015] logMdust at bytes {mdust9_bc}")
