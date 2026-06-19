@@ -267,6 +267,46 @@ def main():
             "delta_M_baryon_gas_stars_dust_step",
         ]].to_string(index=False))
 
+    # ── Final summary: first snapshot -> last snapshot, in Msun and % ────────
+    # Gadget-4 code units: mass in 1e10 Msun/h. HubbleParam read from any
+    # snapshot file's Parameters group (consistent across all snapshots).
+    first_file = snapshots[0][1][0]
+    with h5py.File(first_file, "r") as f:
+        params = f["Parameters"].attrs if "Parameters" in f else {}
+        h = float(params.get("HubbleParam", 0.6732))
+
+    msun_per_code = 1.0e10 / h
+
+    final_total  = df["M_total"].iloc[-1]
+    final_baryon = df["M_baryon_gas_stars_dust"].iloc[-1]
+
+    drift_total_code  = final_total - baseline_total
+    drift_baryon_code = final_baryon - baseline_baryon
+
+    drift_total_msun  = drift_total_code * msun_per_code
+    drift_baryon_msun = drift_baryon_code * msun_per_code
+
+    pct_total  = 100.0 * drift_total_code / baseline_total
+    pct_baryon = 100.0 * drift_baryon_code / baseline_baryon
+
+    z_first = df["redshift"].iloc[0]
+    z_last  = df["redshift"].iloc[-1]
+
+    print("\n" + "=" * 70)
+    print("=== FINAL MASS CONSERVATION SUMMARY (first snap -> last snap) ===")
+    print("=" * 70)
+    print(f"  HubbleParam used        : {h:.4f}")
+    print(f"  Redshift range          : z={z_first:.3f}  ->  z={z_last:.3f}")
+    print(f"  Initial baryon mass     : {baseline_baryon*msun_per_code:.4e} Msun")
+    print(f"  Final baryon mass       : {final_baryon*msun_per_code:.4e} Msun")
+    print(f"  Baryon mass drift       : {drift_baryon_msun:+.4e} Msun  "
+          f"({pct_baryon:+.5f}%)")
+    print(f"  Initial total mass      : {baseline_total*msun_per_code:.4e} Msun")
+    print(f"  Final total mass        : {final_total*msun_per_code:.4e} Msun")
+    print(f"  Total mass drift        : {drift_total_msun:+.4e} Msun  "
+          f"({pct_total:+.7f}%)")
+    print("=" * 70)
+
 
 if __name__ == "__main__":
     main()

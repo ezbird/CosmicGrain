@@ -41,6 +41,9 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 from pathlib import Path
+from halo_utils import (get_halo569_reference, get_halo569,
+                        glob_catalog_chunks, read_snap_header,
+                        find_shrinking_sphere_center)
 
 plt.style.use('cosmicgrain.mplstyle')
 
@@ -49,6 +52,19 @@ MSUN_PER_CODE = 1e10   # Gadget default: 1 code mass unit = 1e10 M_sun/h
 # ─────────────────────────────────────────────────────────────────────────────
 # Snapshot / catalog discovery
 # ─────────────────────────────────────────────────────────────────────────────
+def find_last_snap_num(output_dir):
+    """Return the highest snapshot number that has both a snapdir and a catalog."""
+    output_dir = Path(output_dir)
+    last = None
+    for groups_dir in sorted(output_dir.glob("groups_*")):
+        m = re.search(r'groups_(\d+)', groups_dir.name)
+        if not m:
+            continue
+        snap_num = int(m.group(1))
+        snapdir  = output_dir / f'snapdir_{snap_num:03d}'
+        if snapdir.exists():
+            last = snap_num
+    return last
 
 def find_all_snapshots(output_dir):
     """
@@ -89,79 +105,53 @@ def find_nearest_snapshot(entries, z_target):
     return min(entries, key=lambda e: abs(e[3] - z_target))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Primary halo identification — reads ALL catalog chunks, takes argmax(M200)
-# ─────────────────────────────────────────────────────────────────────────────
+
+
+_ref_cache = {}
 
 def get_primary_halo(catalog_file):
-    """
-    Identify Halo 569 as the FOF group with the highest STELLAR mass
-    (argmax GroupMassType[:,4]) across ALL catalog chunks.
+    p          = Path(catalog_file)
+    groups_dir = p.parent
+    output_dir = groups_dir.parent
+    m          = re.search(r'groups_(\d+)', groups_dir.name)
+    if not m:
+        return None, None, None, None, None
+    snap_num = int(m.group(1))
 
-    Using stellar mass correctly targets the zoom galaxy rather than
-    potentially more massive but star-poor neighbouring dark matter halos.
-    Falls back to argmax(M200) at early epochs before stars form.
+    snapdir = output_dir / f'snapdir_{snap_num:03d}'
+    if not snapdir.exists():
+        return None, None, None, None, None
+    try:
+        hdr = read_snap_header(snapdir)
+    except Exception:
+        return None, None, None, None, None
+    h, a, z = hdr['h'], hdr['a'], hdr['z']
 
-    Reading ALL chunks is essential — chunk .0 may contain only a small
-    fraction of the total groups and can silently return the wrong halo.
+    # Cache reference per output_dir
+    key = str(output_dir)
+    if key not in _ref_cache:
+        try:
+            last_snap = find_last_snap_num(output_dir)
+            if last_snap is None:
+                print(f'  [get_primary_halo] no snapshots found in {output_dir}')
+                return None, None, None, None, None
+            _ref_cache[key] = get_halo569_reference(output_dir,
+                                                     snap_num_z0=last_snap)
+        except Exception as e:
+            print(f'  [get_primary_halo] reference failed: {e}')
+            return None, None, None, None, None
+    ref = _ref_cache[key]
 
-    Gadget-4 catalog units:
-      GroupPos        : comoving kpc/h  →  physical kpc  (* a/h)
-      Group_R_Crit200 : comoving kpc/h  →  physical kpc  (* a/h)
-      GroupMassType   : 1e10 M_sun/h   →  M_sun          (* 1e10/h)
-
-    Returns (center_phys_kpc, r200_phys_kpc, z, h, a)
-    or (None, None, None, None, None) if catalog is empty.
-    """
-    p         = Path(catalog_file)
-    stem_base = re.sub(r"\.\d+$", "", p.stem)
-    chunks    = sorted(p.parent.glob(f"{stem_base}*.hdf5"))
-    if not chunks:
-        chunks = [p]
-
-    all_pos   = []
-    all_r200  = []
-    all_m200  = []
-    all_mstar = []
-    a = h = z = None
-
-    for chunk in chunks:
-        with h5py.File(str(chunk), "r") as f:
-            if "Group" not in f:
-                continue
-            grp = f["Group"]
-            if "GroupPos" not in grp or "Group_M_Crit200" not in grp:
-                continue
-            if len(grp["GroupPos"]) == 0:
-                continue
-            if a is None:
-                a = float(f["Header"].attrs["Time"])
-                z = float(f["Header"].attrs["Redshift"])
-                h = float(f["Parameters"].attrs["HubbleParam"])
-            all_pos.append(grp["GroupPos"][:])
-            all_r200.append(grp["Group_R_Crit200"][:])
-            all_m200.append(grp["Group_M_Crit200"][:])
-            if "GroupMassType" in grp:
-                all_mstar.append(grp["GroupMassType"][:, 4])
-            else:
-                all_mstar.append(np.zeros(len(grp["GroupPos"])))
-
-    if not all_m200 or a is None:
+    halo = get_halo569(groups_dir, snap_num, ref, verbose=False)
+    if halo is None:
         return None, None, None, None, None
 
-    pos_all   = np.concatenate(all_pos,   axis=0)
-    r200_all  = np.concatenate(all_r200,  axis=0)
-    m200_all  = np.concatenate(all_m200,  axis=0)
-    mstar_all = np.concatenate(all_mstar, axis=0)
+    print(f'  DEBUG halo dict: r200_ckpch={halo["r200_ckpch"]:.2f} '
+          f'r200_pkpc={halo["r200_pkpc"]:.2f} '
+          f'm200={halo["m200_code"]:.3f}')
 
-    # Select by stellar mass; fall back to M200 if no stars yet
-    if mstar_all.max() > 0:
-        idx = int(np.argmax(mstar_all))
-    else:
-        idx = int(np.argmax(m200_all))
-
-    center_phys = pos_all[idx]         * a / h
-    r200_phys   = float(r200_all[idx]) * a / h
+    center_phys = halo['center'] * a / h
+    r200_phys   = halo['r200_pkpc']
 
     return center_phys, r200_phys, z, h, a
 

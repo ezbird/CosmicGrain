@@ -10,6 +10,12 @@ Interactive 3D Plotly viewer for Gadget-4 HDF5 snapshots with:
 - robust color-by handling (log scaling, percentile clipping)
 - fixed axis ranges AND fixed aspect ratio so toggling traces doesn't rescale the scene
 
+CENTERING NOTE:
+  In halo mode, the center defaults to SubhaloCM[0] (center of mass of the
+  main subhalo), NOT GroupPos (FOF group center of mass).  GroupPos is biased
+  toward the outer halo/satellite mass and is typically offset ~10-50 kpc from
+  the stellar/dust concentration.  SubhaloCM[0] tracks the galaxy itself.
+
 Examples:
   # Normal mode (full snapshot):
   python plotly_snapshot_viewer.py ../snapdir_015 --snap 15 \
@@ -17,7 +23,10 @@ Examples:
       --center 25000 25000 25000 --rmax 3000
 
   # HALO MODE (extract target halo automatically):
-  python plotly_snapshot_single_halo.py ../7_output_zoom_2048_halo569_50Mpc_dust/snapdir_009 --snap 9 --catalog ../7_output_zoom_2048_halo569_50Mpc_dust/groups_009/fof_subhalo_tab_009.0.hdf5 --types 0 1 4 6 --rmax 200 --out my_halo.html
+  python plotly_snapshot_viewer.py ../S10_output_2048_cygnus_ISM_devoid/snapdir_049 \
+      --snap 49 \
+      --catalog ../S10_output_2048_cygnus_ISM_devoid/groups_049/fof_subhalo_tab_049.0.hdf5 \
+      --types 0 1 4 6 --rmax 200 --out my_halo.html
 """
 
 import argparse
@@ -99,27 +108,25 @@ def _find_snapshot_files(path: str, snap: Optional[int]) -> List[str]:
 def _get_snapshot_base(path: str, snap: Optional[int]) -> str:
     """Get the snapshot base path for halo_utils (e.g., 'snapdir_049/snapshot_049')."""
     if os.path.isfile(path):
-        # Remove .X.hdf5 suffix if present
         base = path
         if '.hdf5' in base:
             base = base[:base.rfind('.hdf5')]
-            # If it ends with .0, .1, etc., remove that too
-            if base[-2:].startswith('.') and base[-1].isdigit():
-                base = base[:-2]
+            # Strip trailing .N (any number of digits after a dot)
+            import re
+            base = re.sub(r'\.\d+$', '', base)
         return base
-    
+
     # Directory path
     if snap is None:
         raise ValueError("Must provide --snap when using directory path with --catalog")
-    
+
     s = f"{snap:03d}"
-    # Try different naming conventions
     for prefix in ['snapshot', 'snap']:
         candidate = os.path.join(path, f"{prefix}_{s}")
         test_files = glob.glob(f"{candidate}.*.hdf5") or glob.glob(f"{candidate}.hdf5")
         if test_files:
             return candidate
-    
+
     raise FileNotFoundError(f"Cannot determine snapshot base in {path} for snap {snap}")
 
 
@@ -172,6 +179,76 @@ def _get_redshift(files: List[str]) -> Optional[float]:
         except Exception:
             pass
 
+    return None
+
+
+# -------------------------
+# Halo center helpers
+# -------------------------
+
+def _get_subhalo_cm(catalog_path: str) -> np.ndarray:
+    """
+    Return the best center for visualization from the subfind catalog.
+
+    Priority:
+      1. SubhaloCM[0]  — center of mass of the most massive subhalo
+                         (tracks the stellar/dust concentration directly)
+      2. SubhaloPos[0] — position of most bound particle of subhalo 0
+      3. GroupPos[0]   — FOF group center of mass (last resort; can be
+                         offset from galaxy center by 10-100 kpc if the
+                         halo has significant satellite mass)
+
+    All values are in comoving kpc/h, matching Gadget-4 snapshot Coordinates.
+    """
+    # Handle multi-file catalogs: the .0.hdf5 file has the first chunk
+    if not os.path.isfile(catalog_path):
+        # Try to find it
+        base = catalog_path.replace('.hdf5', '')
+        candidates = glob.glob(f"{base}.hdf5") + glob.glob(f"{base}.0.hdf5")
+        if not candidates:
+            raise FileNotFoundError(f"Catalog not found: {catalog_path}")
+        catalog_path = candidates[0]
+
+    with h5py.File(catalog_path, 'r') as f:
+        if 'Subhalo' in f:
+            sh = f['Subhalo']
+            if 'SubhaloCM' in sh and sh['SubhaloCM'].shape[0] > 0:
+                cm = np.array(sh['SubhaloCM'][0], dtype=np.float64)
+                print(f"  Center: SubhaloCM[0] = [{cm[0]:.2f}, {cm[1]:.2f}, {cm[2]:.2f}] ckpc/h")
+                return cm
+            if 'SubhaloPos' in sh and sh['SubhaloPos'].shape[0] > 0:
+                pos = np.array(sh['SubhaloPos'][0], dtype=np.float64)
+                print(f"  Center: SubhaloPos[0] = [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}] ckpc/h  (SubhaloCM absent)")
+                return pos
+
+        if 'Group' in f and 'GroupPos' in f['Group']:
+            gpos = np.array(f['Group']['GroupPos'][0], dtype=np.float64)
+            print(f"  Center: GroupPos[0] = [{gpos[0]:.2f}, {gpos[1]:.2f}, {gpos[2]:.2f}] ckpc/h  (Subhalo table absent)")
+            return gpos
+
+    raise RuntimeError(f"Could not read any center from catalog: {catalog_path}")
+
+
+def _get_halo_r200(catalog_path: str) -> Optional[float]:
+    """
+    Read Group_R_Crit200 (preferred) or Group_R_Mean200 from the catalog.
+    Returns value in ckpc/h, or None if absent.
+    """
+    if not os.path.isfile(catalog_path):
+        candidates = glob.glob(catalog_path.replace('.hdf5', '.0.hdf5'))
+        if not candidates:
+            return None
+        catalog_path = candidates[0]
+
+    with h5py.File(catalog_path, 'r') as f:
+        if 'Group' not in f:
+            return None
+        grp = f['Group']
+        for key in ('Group_R_Crit200', 'Group_R_Mean200'):
+            if key in grp and grp[key].shape[0] > 0:
+                r = float(grp[key][0])
+                print(f"  R200 from catalog ({key}): {r:.2f} ckpc/h")
+                return r
     return None
 
 
@@ -337,13 +414,13 @@ def build_figure(traces: List[go.Scatter3d],
             dragmode="orbit",
         ),
         scene_camera=dict(eye=dict(x=1.4, y=1.4, z=1.15)),
-        margin=dict(l=0, r=0, t=120, b=0),  # Increased top margin to make room
+        margin=dict(l=0, r=0, t=120, b=0),
         legend=dict(
-            orientation="h",      # Horizontal layout
+            orientation="h",
             yanchor="bottom",
-            y=1.02,               # Just above the plot area
+            y=1.02,
             xanchor="center",
-            x=0.5,                # Centered
+            x=0.5,
             itemsizing="constant"
         ),
     )
@@ -361,7 +438,7 @@ def parse_args():
     ap.add_argument("--snap", type=int, default=None, help="Snapshot number (used when path is a snapdir).")
 
     # HALO MODE
-    ap.add_argument("--catalog", default=None, 
+    ap.add_argument("--catalog", default=None,
                     help="Subfind catalog (e.g., fof_subhalo_tab_049.0.hdf5) to extract target halo. "
                          "Enables halo extraction mode.")
 
@@ -373,9 +450,10 @@ def parse_args():
                     help="embed=offline self-contained, cdn=smaller HTML. Default: embed")
 
     ap.add_argument("--center", type=float, nargs=3, default=None,
-                    help="Center for radius cut. In halo mode, defaults to halo center. Otherwise: 0 0 0")
+                    help="Override center for radius cut (ckpc/h). "
+                         "In halo mode, defaults to SubhaloCM[0] from the catalog.")
     ap.add_argument("--rmax", type=float, default=None,
-                    help="Max radius to include. In halo mode, defaults to 2*halfmass_rad.")
+                    help="Max radius to include (ckpc/h). In halo mode, defaults to R_Crit200.")
 
     ap.add_argument("--color-by", default=None,
                     help="Dataset name inside each PartType group to color points by.")
@@ -405,7 +483,7 @@ def parse_args():
 
     ap.add_argument("--seed", type=int, default=42, help="Random seed. Default: 42")
     ap.add_argument("--show", action="store_true", help="Open in browser.")
-    
+
     ap.add_argument("--convert-mass", action="store_true",
                     help="Convert masses from code units (1e10 Msun) to Msun. Only in halo mode.")
 
@@ -422,7 +500,7 @@ def main():
 
     # Check if halo mode is requested
     halo_mode = args.catalog is not None
-    
+
     if halo_mode and not HALO_UTILS_AVAILABLE:
         print("ERROR: --catalog requires halo_utils.py. Make sure it's in the same directory.", file=sys.stderr)
         sys.exit(1)
@@ -458,40 +536,55 @@ def main():
         print("=" * 60)
         print("HALO EXTRACTION MODE")
         print("=" * 60)
-        
+
         snapshot_base = _get_snapshot_base(args.path, args.snap)
         print(f"Snapshot base: {snapshot_base}")
         print(f"Catalog: {args.catalog}")
         print()
-        
-        # Extract halo
+
+        # ── Determine center ──────────────────────────────────────────────────
+        # Use SubhaloCM[0] by default — this tracks the galaxy's stellar/dust
+        # concentration rather than the FOF group's center of mass.
+        if args.center is not None:
+            center = np.array(args.center, dtype=np.float64)
+            print(f"  Center: user-supplied {center} ckpc/h")
+        else:
+            center = _get_subhalo_cm(args.catalog)
+
+        # ── Determine rmax ────────────────────────────────────────────────────
+        if args.rmax is not None:
+            rmax = float(args.rmax)
+            print(f"  rmax: user-supplied {rmax:.2f} ckpc/h")
+        else:
+            r200 = _get_halo_r200(args.catalog)
+            if r200 is not None:
+                rmax = r200
+                print(f"  rmax defaulting to R_Crit200 = {rmax:.2f} ckpc/h")
+            else:
+                rmax = 200.0
+                print(f"  rmax defaulting to 200 ckpc/h (no R200 in catalog)")
+
+        print(f"\nFinal center: [{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}] ckpc/h")
+        print(f"Final rmax:   {rmax:.2f} ckpc/h")
+
+        # ── Extract halo particles via halo_utils ─────────────────────────────
         halo = load_target_halo(
             args.catalog,
             snapshot_base,
             particle_types=args.types,
             verbose=True
         )
-        
-        # Get halo properties
+
         halo_info = halo['halo_info']
-        halo_pos = halo_info['position']
-        halo_mass = halo_info['mass']
-        halo_halfmass = halo_info['halfmass_rad']
-        
-        # Set defaults for center and rmax
-        center = np.array(args.center) if args.center is not None else halo_pos
-        rmax = args.rmax if args.rmax is not None else (halo_halfmass * 2.0)
-        
-        print(f"\nUsing center: {center}")
-        print(f"Using rmax: {rmax:.2f} kpc")
-        
+        halo_mass = halo_info['mass'] if 'mass' in halo_info else halo_info.get('m200', float('nan'))
+
         # Extract dust spatially if requested
         if 6 in args.types:
             print("\nExtracting dust spatially (Subfind doesn't track PartType6)...")
-            dust_data = extract_dust_spatially(snapshot_base, halo_pos, radius_kpc=rmax, verbose=True)
+            dust_data = extract_dust_spatially(snapshot_base, center, radius_kpc=rmax, verbose=True)
             if dust_data is not None:
                 halo['dust'] = dust_data
-        
+
         # Convert units if requested
         if args.convert_mass:
             print("\nConverting masses to M_sun...")
@@ -500,16 +593,15 @@ def main():
                 pname = ptype_names.get(pt)
                 if pname and pname in halo:
                     convert_to_physical_units(halo[pname], mass_in_msun=True)
-        
+
         # Prepare data dict for plotting
-        # Map particle type numbers to names
         ptype_names = {0: 'gas', 1: 'dm', 2: 'dm2', 4: 'stars', 5: 'bh', 6: 'dust'}
         halo_data = {}
         for pt in args.types:
             pname = ptype_names.get(pt)
             if pname and pname in halo:
                 halo_data[pt] = halo[pname]
-        
+
         print("\n" + "=" * 60)
     else:
         # Normal mode
@@ -517,6 +609,7 @@ def main():
         rmax = args.rmax
         halo_data = None
         halo_info = None
+        halo_mass = float('nan')
 
     # ======================
     # PLOTTING
@@ -531,10 +624,10 @@ def main():
     for pt in args.types:
         # Get coordinates
         if halo_mode and halo_data and pt in halo_data:
-            coords = halo_data[pt]['Coordinates']
+            coords = halo_data[pt].get('Coordinates')
         else:
             coords = _read_block(files, pt, "Coordinates")
-        
+
         if coords is None:
             print(f"Warning: PartType{pt} has no Coordinates. Skipping.")
             continue
@@ -544,7 +637,7 @@ def main():
             print(f"Warning: PartType{pt} Coordinates shape {coords.shape} unexpected. Skipping.")
             continue
 
-        # Radius cut (in halo mode, this is already applied, but user might specify additional rmax)
+        # Radius cut
         rad_mask = _apply_radius_cut(coords, center, rmax)
         idx0 = np.nonzero(rad_mask)[0]
         n_in = int(idx0.size)
@@ -569,10 +662,9 @@ def main():
                     density = halo_data[pt].get(args.density_field)
                 else:
                     density = _read_block(files, pt, args.density_field)
-                
+
                 if density is None:
                     print(f"Warning: PartType{pt} missing '{args.density_field}' for density subsample.")
-                    density = None
 
             if args.subsample == "stride":
                 rel = _subsample_indices_stride(n_in, args.stride)
@@ -604,7 +696,7 @@ def main():
                 c_raw = halo_data[pt].get(args.color_by)
             else:
                 c_raw = _read_block(files, pt, args.color_by)
-            
+
             if c_raw is None:
                 print(f"Warning: PartType{pt} missing '{args.color_by}'. Using uniform color.")
                 c = np.zeros(coords_sel.shape[0], dtype=np.float64)
@@ -688,13 +780,14 @@ def main():
         parts_lines.append(f"{_ptype_label(pt)}: {a:,} avail / {p:,} plotted")
     counts_str = " | ".join(parts_lines)
 
-    if halo_mode and halo_info:
+    if halo_mode:
         title_html = (
-            f"Target Halo (ID={halo_info['id']}, M={halo_info['mass']:.2e})"
+            f"Target Halo (M={halo_mass:.2e})"
             f"<br><sup>"
             f"snap={snap_str} | z={z_str}"
             f"<br>{counts_str}"
-            f"<br>center=({center[0]:.1f},{center[1]:.1f},{center[2]:.1f}) | rmax={rmax:.1f} kpc"
+            f"<br>center=({center[0]:.1f},{center[1]:.1f},{center[2]:.1f}) ckpc/h"
+            f" | rmax={rmax:.1f} ckpc/h"
             f"</sup>"
         )
     else:
@@ -727,9 +820,8 @@ def main():
         print(f"  {_ptype_label(pt)} (PartType{pt}): {a:,} avail / {p:,} plotted")
 
     print(f"\nSaved: {args.out}")
-    if halo_mode and halo_info:
-        print(f"Halo mass: {halo_info['mass']:.2e} (code units)")
-        print(f"Halfmass radius: {halo_info['halfmass_rad']:.2f} kpc")
+    print(f"Center used: [{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}] ckpc/h  (SubhaloCM[0])")
+    print(f"rmax used:   {rmax:.2f} ckpc/h")
     print(f"Total plotted points: {total_plotted:,}")
 
     if args.show:

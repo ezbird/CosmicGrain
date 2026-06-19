@@ -219,11 +219,15 @@ double coolsfr::convert_u_to_temp(double u, double rho, double *ne_guess, gas_st
 
   if(iter >= MAXITER)
     {
+      //Terminate("convergence failure");
+
+      // Try just returning the current temp instead of crashing the simulation
+      printf("WARNING: returning unconverged temp=%.4g for task=%d, proceeding\n", temp, ThisTask);
       printf("failed to converge in convert_u_to_temp()\n");
       printf("u_input= %g\nrho_input=%g\n ne_input=%g\n", u_input, rho_input, ne_input);
       printf("DoCool->u_old_input=%g\nDoCool->rho_input= %g\nDoCool->dt_input= %g\nDoCool->ne_guess_input= %g\n", DoCool->u_old_input,
              DoCool->rho_input, DoCool->dt_input, DoCool->ne_guess_input);
-      Terminate("convergence failure");
+      return temp;
     }
 
   return temp;

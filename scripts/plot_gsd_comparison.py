@@ -61,7 +61,7 @@ RHO_SIL  = 3.5    # g/cm^3  amorphous silicate
 RHO_CARB = 2.2    # g/cm^3  amorphous carbon
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-DEFAULT_SNAP   = "049"
+DEFAULT_SNAP   = "047"
 DEFAULT_R_ISM  = 20.0    # physical kpc
 DEFAULT_N_BINS = 45
 DEFAULT_OUTPUT = None    # auto-named from output_dir + snap

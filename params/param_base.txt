@@ -126,8 +126,8 @@ SofteningClassOfPartType6   6   % Dust
 
 %---- Cooling and star formation --------------------------------------------------
 MaxSfrTimescale       1.5
-FactorSN              0.15
-FactorEVP             1500
+FactorSN              0.1
+FactorEVP             1000
 TempSupernova         1e8
 TempClouds            1000
 CritOverDensity       57.7

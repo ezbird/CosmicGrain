@@ -1,0 +1,9 @@
+HDF5_INCL = -I$(TACC_HDF5_INC)
+GSL_INCL  = -I$(TACC_GSL_INC)
+FFTW_INCL = -I/opt/apps/intel24/impi21/fftw3/3.3.10/include
+
+HDF5_LIBS = -L$(TACC_HDF5_LIB) -lhdf5
+GSL_LIBS  = -L$(TACC_GSL_LIB) -lgsl -lgslcblas
+FFTW_LIBS = -L/opt/apps/intel24/impi21/fftw3/3.3.10/lib -lfftw3 -lfftw3f
+
+

@@ -56,7 +56,6 @@ Assumptions:
 import re
 import glob
 import os
-import sys
 import argparse
 import numpy as np
 import matplotlib
@@ -66,6 +65,7 @@ import matplotlib.ticker
 import matplotlib.colors as mcolors
 from collections import defaultdict
 from scipy.spatial import cKDTree
+from halo_utils import get_halo569_reference, get_halo569
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -1624,19 +1624,21 @@ def compute_table_stats(runs, log_data):
             ts['DtoG'] = 0.0
             ts['DtoZ'] = 0.0
  
-        # ── ISM-restricted quantities ─────────────────────────────────────────
-        # ISM center: shrinking-sphere (gas density peak), not SUBFIND GroupPos.
-        # SUBFIND GroupPos is offset 440 ckpc/h from nucleus due to FOF bridging.
-        # ── ISM-restricted quantities ─────────────────────────────────────────
-        # Gas and dust must be loaded around the ISM center (shrinking-sphere),
-        # not the SUBFIND center, because the two are 440 ckpc/h apart.
-        # We use a 100 ckpc/h load radius to capture the full ISM aperture.
-        ISM_CENTERS = {
-            512:  np.array([23083.102, 23519.314, 23665.764]),
-            1024: np.array([23050.082, 23531.328, 23664.826]),
-            2048: np.array([23084.035, 23511.898, 23649.725]),
-        }
-        ism_ctr = ISM_CENTERS.get(RESOLUTION, ctr)
+
+        # In compute_table_stats, replace the ISM_CENTERS block with:
+        # Find last snapshot number for this run
+        last_snap_num = int(re.search(r'snapshot_(\d+)$', snap_base).group(1))
+        ref = get_halo569_reference(
+            os.path.join(BASE_DIR, f'{run}_output_{RESOLUTION}'),
+            snap_num_z0=last_snap_num)
+
+        snap_m = re.search(r'snapshot_(\d+)$', snap_base)
+        snap_num = int(snap_m.group(1))
+        groups_dir = os.path.join(
+            BASE_DIR, f'{run}_output_{RESOLUTION}', f'groups_{snap_num:03d}')
+        halo = get_halo569(groups_dir, snap_num, ref, verbose=True)
+        ism_ctr = halo['center']  # already shrinking-sphere refined
+
         ISM_LOAD_RADIUS = 100.0  # ckpc/h — generous to capture 20 pkpc ISM aperture
         gas_ism  = load_gas_for_snap(snap_base,  ism_ctr, ISM_LOAD_RADIUS)
         dust_ism = load_dust_for_snap(snap_base, ism_ctr, ISM_LOAD_RADIUS)

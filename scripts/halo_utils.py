@@ -97,6 +97,37 @@ MSUN_PER_CODE = 1e10   # Gadget default: 1 code unit = 1e10 M_sun/h
 # Internal I/O helpers
 # ==============================================================================
 
+def find_last_snap_num(output_dir):
+    """
+    Return the highest snapshot number in output_dir that has both
+    a snapdir_NNN directory and a groups_NNN catalog directory.
+    Returns None if no complete snapshot is found.
+    """
+    output_dir = Path(output_dir)
+    last = None
+    for snapdir in sorted(output_dir.glob("snapdir_*")):
+        m = re.search(r"snapdir_(\d+)", snapdir.name)
+        if not m:
+            continue
+        snap_num   = int(m.group(1))
+        groups_dir = output_dir / f"groups_{snap_num:03d}"
+        if groups_dir.exists() and list(groups_dir.glob("fof_subhalo_tab_*.hdf5")):
+            last = snap_num
+    return last
+
+def _compute_r200_from_m200_simple(m200_code, h, a, Omega0=0.3158, OmegaL=0.6842):
+    """Compute R200 in ckpc/h from M200 in code units."""
+    G_cgs     = 6.674e-8
+    KM_IN_CM  = 1e5
+    MPC_IN_CM = 3.085678e24
+    um_cgs    = 1.989e43
+    ul_cm     = 3.085678e21
+    H0_cgs    = 100.0 * h * KM_IN_CM / MPC_IN_CM
+    Hz_cgs    = H0_cgs * np.sqrt(Omega0 * a**-3 + OmegaL)
+    rho_crit  = 3.0 * Hz_cgs**2 / (8.0 * np.pi * G_cgs)
+    r200_cm   = (3.0 * m200_code * um_cgs / (4.0 * np.pi * 200.0 * rho_crit))**(1.0/3.0)
+    return r200_cm / ul_cm  # ckpc/h
+
 def glob_snap_chunks(path):
     """Return sorted HDF5 chunk files for a snapshot directory or base path."""
     p = Path(path)
@@ -257,6 +288,57 @@ _HALO569_Z0_OVERRIDES = {
                   # R200=318.9 pkpc and logM*=11.10 -- wrong object
 }
 
+def find_shrinking_sphere_center(snap_path, initial_center, box,
+                                  start_r=300.0, shrink=0.75,
+                                  n_min=50, n_iter=40, verbose=False):
+    """
+    Density-weighted shrinking sphere center from gas particles.
+    
+    Starting from initial_center (ckpc/h), iteratively shrinks a sphere
+    and recomputes the density-weighted centroid until fewer than n_min
+    particles remain or n_iter is reached.
+    
+    Returns converged center in ckpc/h.
+    """
+    chunks = glob_snap_chunks(snap_path)
+    all_pos, all_rho = [], []
+    for chunk in chunks:
+        with h5py.File(chunk, 'r') as f:
+            if 'PartType0' not in f: continue
+            pos = f['PartType0/Coordinates'][:]
+            rho = f['PartType0/Density'][:]
+            # Pre-filter to 2x start_r to avoid loading entire box
+            dx = pos - initial_center
+            dx -= box * np.round(dx / box)
+            mask = np.sqrt((dx**2).sum(1)) < 2 * start_r
+            if mask.any():
+                all_pos.append(pos[mask])
+                all_rho.append(rho[mask])
+
+    if not all_pos:
+        if verbose:
+            print(f'  [shrinking_sphere] no gas found near {initial_center}')
+        return initial_center.copy()
+
+    pos = np.concatenate(all_pos)
+    rho = np.concatenate(all_rho)
+    ctr = initial_center.copy().astype(float)
+    r   = float(start_r)
+
+    for i in range(n_iter):
+        dx   = pos - ctr
+        dx  -= box * np.round(dx / box)
+        d    = np.sqrt((dx**2).sum(1))
+        mask = d < r
+        if mask.sum() < n_min:
+            break
+        ctr = np.average(pos[mask], weights=rho[mask], axis=0)
+        r  *= shrink
+        if verbose:
+            print(f'    iter {i:2d}: r={r:.1f} N={mask.sum()} ctr={ctr}')
+
+    return ctr
+
 def _get_z0_override(output_dir):
     """Return hardcoded group index override for output_dir, or None."""
     s = str(output_dir)
@@ -266,32 +348,20 @@ def _get_z0_override(output_dir):
     return None
 
 
-def get_halo569_reference(output_dir, snap_num_z0=49):
+def get_halo569_reference(output_dir, snap_num_z0=None):
     """
-    Establish Halo 569's z=0 comoving position and box size.
-    Call ONCE at the start of any multi-snapshot analysis loop.
-
-    Halo 569 is identified as the FOF group with the highest STELLAR mass
-    (argmax GroupMassType[:,4]) across ALL catalog chunks at z=0.
-
-    Parameters
-    ----------
-    output_dir  : str or Path
-    snap_num_z0 : int -- z=0 snapshot number (default 49)
-
-    Returns
-    -------
-    dict:
-      center_ckpch  (3,) array  primary halo GroupPos at z=0 [ckpc/h]
-      box_ckpch     float       BoxSize [ckpc/h]
-      h             float       HubbleParam
-      a             float       scale factor at z=0
-      r200_ckpch    float       R_Crit200 at z=0 [ckpc/h]
-      r200_pkpc     float       R_Crit200 at z=0 [physical kpc]
-      m200_code     float       M_Crit200 at z=0 [1e10 Msun/h]
-      snap_num_z0   int
+    Establish Halo 569's z=0 (or last available) comoving position.
+    If snap_num_z0 is None, automatically uses the highest snapshot
+    number with both a snapdir and a catalog.
     """
     output_dir = Path(output_dir)
+
+    if snap_num_z0 is None:
+        snap_num_z0 = find_last_snap_num(output_dir)
+        if snap_num_z0 is None:
+            raise RuntimeError(
+                f"No complete snapshot (snapdir+catalog) found in {output_dir}")
+
     groups_dir = output_dir / f"groups_{snap_num_z0:03d}"
     snapdir    = output_dir / f"snapdir_{snap_num_z0:03d}"
 
@@ -301,35 +371,40 @@ def get_halo569_reference(output_dir, snap_num_z0=49):
         raise RuntimeError(
             f"No FOF groups in {groups_dir} -- cannot establish z=0 reference")
 
-    h   = hdr["h"]
-    a   = hdr["a"]
+    h = hdr["h"]
+    a = hdr["a"]
 
-    # Check for hardcoded override first (some resolutions have a massive
-    # neighbour that wins the stellar mass argmax at z=0)
     override_idx = _get_z0_override(output_dir)
     if override_idx is not None:
-        idx      = override_idx
-        sel_by   = f"hardcoded override (idx={idx})"
+        idx    = override_idx
+        sel_by = f"hardcoded override (idx={idx})"
     else:
         idx, sel_by = _select_primary_halo_idx(cat)
 
-    center = cat["pos"][idx].astype(float)
-    r200   = float(cat["r200"][idx])
-    m200   = float(cat["m200"][idx])
-    mstar  = float(cat["mstar"][idx]) * MSUN_PER_CODE / h
+    fof_center = cat["pos"][idx].astype(float)
+    r200       = float(cat["r200"][idx])
+    m200       = float(cat["m200"][idx])
+    mstar      = float(cat["mstar"][idx]) * MSUN_PER_CODE / h
+
+    # Refine center with shrinking sphere on gas density peak
+    refined_center = find_shrinking_sphere_center(
+        snapdir, fof_center, hdr["box"], verbose=True)
+    offset = np.linalg.norm(refined_center - fof_center)
 
     print(f"[halo_utils] Halo 569 z=0 reference  (selected by {sel_by})")
-    print(f"  FOF group idx : {idx}  (across {len(cat['pos'])} total groups)")
-    print(f"  centre        : [{center[0]:.1f}, {center[1]:.1f}, "
-          f"{center[2]:.1f}] ckpc/h")
-    print(f"  R_Crit200     : {r200:.1f} ckpc/h  ({r200/h*a:.1f} pkpc)")
-    print(f"  M_Crit200     : {m200:.3e} [1e10 Msun/h]  ({m200*1e10/h:.3e} Msun)")
-    print(f"  M_star        : {mstar:.3e} Msun")
-    print(f"  search radius : {HALO569_SEARCH_RADIUS_CKPCH:.0f} ckpc/h"
+    print(f"  FOF group idx   : {idx}  (across {len(cat['pos'])} total groups)")
+    print(f"  FOF centre      : [{fof_center[0]:.1f}, {fof_center[1]:.1f}, "
+          f"{fof_center[2]:.1f}] ckpc/h")
+    print(f"  Refined centre  : [{refined_center[0]:.1f}, {refined_center[1]:.1f}, "
+          f"{refined_center[2]:.1f}] ckpc/h  (offset={offset:.1f} ckpc/h)")
+    print(f"  R_Crit200       : {r200:.1f} ckpc/h  ({r200/h*a:.1f} pkpc)")
+    print(f"  M_Crit200       : {m200:.3e} [1e10 Msun/h]  ({m200*1e10/h:.3e} Msun)")
+    print(f"  M_star          : {mstar:.3e} Msun")
+    print(f"  search radius   : {HALO569_SEARCH_RADIUS_CKPCH:.0f} ckpc/h"
           f"  ({HALO569_SEARCH_RADIUS_CKPCH/h:.0f} pkpc)")
 
     return dict(
-        center_ckpch = center,
+        center_ckpch = refined_center,  # shrinking-sphere, not FOF
         box_ckpch    = hdr["box"],
         h            = h,
         a            = a,
@@ -343,28 +418,6 @@ def get_halo569_reference(output_dir, snap_num_z0=49):
 def get_halo569(groups_dir, snap_num, ref,
                 search_radius_ckpch=HALO569_SEARCH_RADIUS_CKPCH,
                 verbose=True):
-    """
-    Find Halo 569 at a given snapshot by proximity to its z=0 position.
-
-    Selection: CLOSEST group to the reference position within the search
-    radius. "Most massive within radius" is wrong when a larger neighbour
-    passes through the search sphere. The progenitor track stays near its
-    z=0 comoving position; the interloper sits at a distinct location.
-
-    Parameters
-    ----------
-    groups_dir          : str or Path
-    snap_num            : int
-    ref                 : dict from get_halo569_reference()
-    search_radius_ckpch : float [ckpc/h]
-    verbose             : bool
-
-    Returns
-    -------
-    dict: center, r200_ckpch, r200_pkpc, m200_code,
-          dist_ckpch, n_within, used_fallback
-    or None if no catalog exists.
-    """
     cat = read_fof_catalog(groups_dir, snap_num)
     if cat is None:
         return None
@@ -383,22 +436,62 @@ def get_halo569(groups_dir, snap_num, ref,
     fallback = False
 
     if n_within == 0:
-        # No group near reference — fall back to stellar mass argmax
         idx, sel_by = _select_primary_halo_idx(cat)
-        fallback     = True
+        fallback    = True
         if verbose:
             print(f"  [halo569] snap {snap_num:03d}: no group within "
-                  f"{search_radius_ckpch:.0f} ckpc/h "
-                  f"(nearest = {dist.min():.0f} ckpc/h). "
+                  f"{search_radius_ckpch:.0f} ckpc/h. "
                   f"Falling back to {sel_by} argmax (idx={idx}).")
     else:
-        # Closest to reference position within search radius
-        dist_masked = np.where(within, dist, np.inf)
-        idx         = int(np.argmin(dist_masked))
+        # Among groups within search radius, prefer those with substantial M200
+        # Minimum threshold: 1.0 code unit = 1.5e10 Msun (excludes satellites)
+        M200_MIN = 1.0
+        valid = within & (cat["m200"] >= M200_MIN) & (cat["r200"] > 0)
+        if valid.any():
+            dist_valid = np.where(valid, dist, np.inf)
+            idx = int(np.argmin(dist_valid))
+            if verbose:
+                print(f"  [halo569] snap {snap_num:03d}: selected group {idx} "
+                      f"with M200={cat['m200'][idx]:.2f}, "
+                      f"dist={dist[idx]:.0f} ckpc/h")
+        else:
+            # Fall back to stellar mass argmax
+            idx, sel_by = _select_primary_halo_idx(cat)
+            fallback = True
+            if verbose:
+                print(f"  [halo569] snap {snap_num:03d}: no group with "
+                      f"M200>{M200_MIN} within search radius, "
+                      f"falling back to {sel_by} argmax (idx={idx})")
 
-    center = cat["pos"][idx].astype(float)
-    r200   = float(cat["r200"][idx])
-    m200   = float(cat["m200"][idx])
+    fof_center = cat["pos"][idx].astype(float)
+    r200 = float(cat["r200"][idx])
+    m200 = float(cat["m200"][idx])
+    
+    # R200 can be zero during merger fragmentation — compute from M200
+    if r200 <= 0 and m200 > 0:
+        r200 = _compute_r200_from_m200_simple(m200, h, a)
+        if verbose:
+            print(f"  [halo569] snap {snap_num:03d}: R200=0 in catalog, "
+                      f"computed from M200={m200:.3f}: R200={r200:.1f} ckpc/h")
+
+    # Refine center with shrinking sphere on gas density peak
+    groups_path = Path(groups_dir)
+    output_dir  = groups_path.parent
+    snapdir     = output_dir / f"snapdir_{snap_num:03d}"
+
+    if snapdir.exists():
+        refined_center = find_shrinking_sphere_center(
+            snapdir, fof_center, box, verbose=False)
+        if verbose:
+            offset = np.linalg.norm(refined_center - fof_center)
+            print(f"  [halo569] snap {snap_num:03d}: FOF={fof_center}, "
+                  f"refined={refined_center}, offset={offset:.1f} ckpc/h")
+        center = refined_center
+    else:
+        if verbose:
+            print(f"  [halo569] snap {snap_num:03d}: no snapdir found, "
+                  f"using FOF center")
+        center = fof_center
 
     return dict(
         center       = center,
