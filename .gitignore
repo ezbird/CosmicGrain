@@ -3,12 +3,21 @@ S[0-9]_output_*/
 S[0-9][0-9]_output_*/
 full_*_backup_*/
 snapdir_*/
-ICs/
 
 # Python
 *.pyc
 .venv/
 venv/
+.env/
+camb_env/
+
+# CAMB virtual environment
+ICs/camb_env/
+
+# Large ICs
+ICs/IC_zoom_1024*.hdf5
+ICs/IC_zoom_2048*.hdf5
+ICs/IC_zoom_4096*.hdf5
 
 # Old/scratch scripts
 *_old.py
@@ -34,6 +43,15 @@ compare_grid_dust_old*.py
 *.tar
 *.tar.gz
 *.tgz
+
+*.hdf5
+*.dat
+
+!ICs/matterpower.dat
+!ICs/camb_matterpower_z99.dat
+!ICs/camb_z99_transfer.dat
+!ICs/IC_parent_50Mpc_128_music.hdf5
+!ICs/IC_zoom_512_halo569_50Mpc_music_ellipsoid_with_dust.hdf5
 
 # Gadget runtime output files
 balance.txt
