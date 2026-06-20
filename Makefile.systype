@@ -5,8 +5,8 @@
 # a new system.
 
 #SYSTYPE="Stampede"
-#SYSTYPE="Cygnus"
-SYSTYPE="Generic-gcc"
+SYSTYPE="Cygnus"
+#SYSTYPE="Generic-gcc"
 #SYSTYPE="Generic-intel"
 #SYSTYPE="Generic-gcc-single"
 #SYSTYPE="Generic-intel-single"
