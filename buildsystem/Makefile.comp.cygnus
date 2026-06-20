@@ -1,0 +1,18 @@
+CPP = mpicxx -std=c++11
+
+OPTIMIZE = -O3 -march=native -mtune=native -ffast-math -fno-math-errno -fno-trapping-math \
+           -funroll-loops -Wall -Wno-format-security -Wno-unused-result
+
+OPT += -flto
+
+# HDF5 on Linux Mint / Ubuntu
+HDF5_INCL = -I/usr/include/hdf5/serial
+HDF5_LIBS = -L/usr/lib/x86_64-linux-gnu/hdf5/serial -lhdf5 -lz
+
+ifeq (EXPLICIT_VECTORIZATION,$(findstring EXPLICIT_VECTORIZATION,$(CONFIGVARS)))
+CFLAGS_VECTOR += -mavx2 -mfma -fabi-version=0
+CPV = $(CPP)
+else
+CFLAGS_VECTOR =
+CPV = $(CPP)
+endif

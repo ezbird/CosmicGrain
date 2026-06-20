@@ -1,35 +1,9 @@
-CPP      =  mpicxx  -std=c++11 # sets the C++-compiler
+CPP = mpicxx -std=c++11
 
-CFLAGS = $(OPTIMIZE) $(OPT) $(HDF5_INCL) $(GSL_INCL) $(FFTW_INCL) $(HWLOC_INCL) $(VTUNE_INCL) $(MAPS_INCL) -I$(BUILD_DIR) -I$(SRC_DIR) -I${TACC_HDF5_INC}
+OPTIMIZE = -O3 -march=core-avx2 -mtune=generic -ffast-math -Wall -Wno-format-security -Wno-unused-result
 
-LIBS = $(MATH_LIBS) $(HDF5_LIBS) $(GSL_LIBS) $(FFTW_LIBS) $(HWLOC_LIBS) $(VTUNE_LIBS) $(TEST_LIBS) $(MAPS_LIBS) $(SHMEM_LIBS)
+CFLAGS = $(OPTIMIZE) $(OPT) $(HDF5_INCL) $(GSL_INCL) $(FFTW_INCL) $(HWLOC_INCL) \
+         $(VTUNE_INCL) $(MAPS_INCL) -I$(BUILD_DIR) -I$(SRC_DIR) -I${TACC_HDF5_INC}
 
-#PROFILE ?= native
-
-# Start from what the buildsystem set, then sanitize
-# (remove flags we plan to control explicitly below)
-OPT      := $(filter-out -march=native -mtune=native -flto,$(OPT))
-OPTIMIZE := $(filter-out -march=native -mtune=native -flto,$(OPTIMIZE))
-
-ifeq ($(PROFILE),native)
-  # ===== Workstation: Intel Ultra 9 285K (new CPU) =====
-  # -march=native enables AVX2/FMA/BMI2 etc.
-  FAST_MARCH  := -march=native -mtune=native
-  FAST_OPTS   := -O3 $(FAST_MARCH) -ffast-math -fno-math-errno -fno-trapping-math -funroll-loops
-  # Enable LTO if your toolchain & libs support it cleanly on this box
-  FAST_OPTS   += -flto
-  OPT         := $(FAST_OPTS)
-  OPTIMIZE    := $(FAST_OPTS)
-
-else
-  # ===== Portable: older cluster nodes (AVX but no AVX2) =====
-  PORT_MARCH  := -march=core-avx-i -mtune=generic
-  PORT_OPTS   := -O3 $(PORT_MARCH) -ffast-math
-  OPT         := $(PORT_OPTS)
-  OPTIMIZE    := $(PORT_OPTS)
-endif
-
-# Rebuild CFLAGS from our chosen OPT/OPTIMIZE so the compile lines reflect it
-override CFLAGS := $(OPTIMIZE) $(OPT) $(HDF5_INCL) $(GSL_INCL) $(FFTW_INCL) \
-                   $(HWLOC_INCL) $(VTUNE_INCL) $(MAPS_INCL) \
-                   -I$(BUILD_DIR) -I$(SRC_DIR) -I${TACC_HDF5_INC} 
+LIBS = $(MATH_LIBS) $(HDF5_LIBS) $(GSL_LIBS) $(FFTW_LIBS) $(HWLOC_LIBS) \
+       $(VTUNE_LIBS) $(TEST_LIBS) $(MAPS_LIBS) $(SHMEM_LIBS)

@@ -88,10 +88,6 @@ else
 include Makefile.systype
 endif
 
-# Fastest for running on Cygnus
-# OPTIMIZE ?= -O3 -march=native -ffast-math -fno-math-errno -fno-trapping-math
-
-
 $(info Build configuration:)
 $(info SYSTYPE: $(SYSTYPE))
 $(info CONFIG: $(CONFIG))
@@ -110,10 +106,22 @@ RESULT     := $(shell SRC_DIR=$(SRC_DIR) BUILD_DIR=$(BUILD_DIR) ./buildsystem/gi
 ##########################
 #define available Systems#
 ##########################
+
+ifeq ($(SYSTYPE),"Stampede")
+include buildsystem/Makefile.gen.libs
+include buildsystem/Makefile.comp.stampede
+endif
+
+ifeq ($(SYSTYPE),"Cygnus")
+include buildsystem/Makefile.gen.libs
+include buildsystem/Makefile.comp.cygnus
+endif
+
 ifeq ($(SYSTYPE),"Generic-gcc")
 include buildsystem/Makefile.gen.libs
 include buildsystem/Makefile.comp.gcc
 endif
+
 ifeq ($(SYSTYPE),"Generic-intel")
 include buildsystem/Makefile.comp.gcc-paranoia
 include buildsystem/Makefile.gen.libs
@@ -438,7 +446,6 @@ VTUNE_LIBS =
 endif
 
 GSL_LIBS   += -lgsl -lgslcblas
-HDF5_LIBS  += -L/usr/lib/x86_64-linux-gnu/hdf5/serial -lhdf5 -lz
 MATH_LIBS  = -lm
 
 ifneq ($(SYSTYPE),"Darwin")
@@ -453,54 +460,12 @@ MAKEFILES = $(MAKEFILE_LIST) buildsystem/Makefile.config
 #combine compiler options#
 ##########################
 
-CFLAGS = $(OPTIMIZE) $(OPT) $(HDF5_INCL) $(GSL_INCL) $(FFTW_INCL) $(HWLOC_INCL) $(VTUNE_INCL) $(MAPS_INCL) -I$(BUILD_DIR) -I$(SRC_DIR) -I/usr/include/hdf5/serial
+CFLAGS = $(OPTIMIZE) $(OPT) $(HDF5_INCL) $(GSL_INCL) $(FFTW_INCL) \
+         $(HWLOC_INCL) $(VTUNE_INCL) $(MAPS_INCL) \
+         -I$(BUILD_DIR) -I$(SRC_DIR)
 
-LIBS = $(MATH_LIBS) $(HDF5_LIBS) $(GSL_LIBS) $(FFTW_LIBS) $(HWLOC_LIBS) $(VTUNE_LIBS) $(TEST_LIBS) $(MAPS_LIBS) $(SHMEM_LIBS)
-
-
-# ----------------------
-# FOR OPTIMIZING CYGNUS
-
-# ===== Build profiles: native (fast workstation) vs portable (old cluster) =====
-# Usage:
-#   make PROFILE=native   EXEC=Gadget4_native     # fastest on the 24-core server
-#   make PROFILE=portable EXEC=Gadget4_portable   # runs on older cluster nodes
-#
-PROFILE ?= native
-
-# Start from what the buildsystem set, then sanitize
-# (remove flags we plan to control explicitly below)
-OPT      := $(filter-out -march=native -mtune=native -flto,$(OPT))
-OPTIMIZE := $(filter-out -march=native -mtune=native -flto,$(OPTIMIZE))
-
-ifeq ($(PROFILE),native)
-  # ===== Workstation: Intel Ultra 9 285K (new CPU) =====
-  # -march=native enables AVX2/FMA/BMI2 etc.
-  FAST_MARCH  := -march=native -mtune=native
-  FAST_OPTS   := -O3 $(FAST_MARCH) -ffast-math -fno-math-errno -fno-trapping-math -funroll-loops
-  # Enable LTO if your toolchain & libs support it cleanly on this box
-  FAST_OPTS   += -flto
-  OPT         := $(FAST_OPTS)
-  OPTIMIZE    := $(FAST_OPTS)
-
-else
-  # ===== Portable: older cluster nodes (AVX but no AVX2) =====
-  PORT_MARCH  := -march=core-avx-i -mtune=generic
-  PORT_OPTS   := -O3 $(PORT_MARCH) -ffast-math
-  OPT         := $(PORT_OPTS)
-  OPTIMIZE    := $(PORT_OPTS)
-endif
-
-# Rebuild CFLAGS from our chosen OPT/OPTIMIZE so the compile lines reflect it
-override CFLAGS := $(OPTIMIZE) $(OPT) $(HDF5_INCL) $(GSL_INCL) $(FFTW_INCL) \
-                   $(HWLOC_INCL) $(VTUNE_INCL) $(MAPS_INCL) \
-                   -I$(BUILD_DIR) -I$(SRC_DIR) -I/usr/include/hdf5/serial
-
-# -----------------------------
-
-
-
-
+LIBS = $(MATH_LIBS) $(HDF5_LIBS) $(GSL_LIBS) $(FFTW_LIBS) \
+       $(HWLOC_LIBS) $(VTUNE_LIBS) $(TEST_LIBS) $(MAPS_LIBS) $(SHMEM_LIBS)
 
 SUBDIRS := $(addprefix $(BUILD_DIR)/,$(SUBDIRS))
 OBJS := $(addprefix $(BUILD_DIR)/,$(OBJS)) $(BUILD_DIR)/compile_time_info.o $(BUILD_DIR)/compile_time_info_hdf5.o $(BUILD_DIR)/version.o
