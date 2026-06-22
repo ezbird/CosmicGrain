@@ -149,7 +149,7 @@ RES_OVERRIDES = {
         "SofteningComovingClass6":    "6.0",    # Dust (match stars)
         "SofteningMaxPhysClass6":     "3.0",
         "MinimumComovingHydroSoftening": "4.0",
-        "MaxSizeTimestep":            "0.025",
+        "MaxSizeTimestep":            "0.01",   # this was calibrated by trial and error (higher timestep produces fewer stars and dust)
     },
 
     # ── 1024³ ─────────────────────────────────────────────────────────────────
@@ -253,7 +253,7 @@ RES_OVERRIDES = {
         "SofteningComovingClass6":    "1.5",
         "SofteningMaxPhysClass6":     "0.75",
         "MinimumComovingHydroSoftening": "1.0",
-        "MaxSizeTimestep":            "0.025",
+        "MaxSizeTimestep":            "0.0125",
     },
 
     # ── 4096³ ─────────────────────────────────────────────────────────────────
