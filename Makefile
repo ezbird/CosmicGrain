@@ -108,7 +108,7 @@ RESULT     := $(shell SRC_DIR=$(SRC_DIR) BUILD_DIR=$(BUILD_DIR) ./buildsystem/gi
 ##########################
 
 ifeq ($(SYSTYPE),"Stampede")
-include buildsystem/Makefile.gen.libs
+include buildsystem/Makefile.path.stampede
 include buildsystem/Makefile.comp.stampede
 endif
 
