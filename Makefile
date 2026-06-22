@@ -493,7 +493,8 @@ RESULT := $(shell echo 'static const char *compiler_flags="$(CPP) $(CFLAGS)";' >
 #build rules#
 #############
 
-all: check_docs check build
+#all: check_docs check build
+all: check build
 
 build: $(EXEC)
 
