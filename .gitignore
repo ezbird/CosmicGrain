@@ -43,10 +43,10 @@ compare_grid_dust_old*.py
 *.tar
 *.tar.gz
 *.tgz
-
 *.hdf5
 *.dat
 
+!buildsystem/git_version.sh
 !ICs/matterpower.dat
 !ICs/camb_matterpower_z99.dat
 !ICs/camb_z99_transfer.dat

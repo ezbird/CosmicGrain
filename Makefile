@@ -62,11 +62,11 @@
 
 
 ifdef DIR
-EXEC = $(DIR)/Gadget4
+EXEC = $(DIR)/CosmicGrain
 CONFIG = $(DIR)/Config.sh
 BUILD_DIR = $(DIR)/build
 else
-EXEC   = Gadget4
+EXEC   = CosmicGrain
 
 # CHOOSE CONFIGURATION FILE HERE
 #CONFIG   = configs/Config_parent.sh
