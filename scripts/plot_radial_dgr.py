@@ -32,6 +32,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker
+from datetime import datetime
 
 from halo_utils import (
     get_halo569_reference,
@@ -39,28 +40,39 @@ from halo_utils import (
     read_snap_header,
     glob_snap_chunks,
 )
+plt.style.use('sleek.mplstyle')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Run styling
 # ─────────────────────────────────────────────────────────────────────────────
 RUN_CONFIGS = {
-    "S0":  {"label": "S0: Creation only",            "color": "#888888"},
-    "S1":  {"label": "S1: + Cooling",                "color": "#1f77b4"},
-    "S2":  {"label": "S2: + Drag",                   "color": "#ff7f0e"},
-    "S3":  {"label": "S3: + Astration",              "color": "#2ca02c"},
-    "S4":  {"label": "S4: + Thermal sputtering",     "color": "#d62728"},
-    "S5":  {"label": "S5: + Grain growth",           "color": "#9467bd"},
-    "S6":  {"label": "S6: + Clumping factor",        "color": "#8c564b"},
-    "S7":  {"label": "S7: + SN shock destruction",   "color": "#e377c2"},
-    "S8":  {"label": "S8: + Coagulation",            "color": "#17becf"},
-    "S9":  {"label": "S9: + Shattering",             "color": "#bcbd22"},
-    "S10": {"label": "S10: + Rad. pressure (full)",  "color": "#000000"},
+    "S0":  {"label": "S0: Creation only",           "color": "#888888", "marker": "o"},
+    "S1":  {"label": "S1: + Cooling",               "color": "#1f77b4", "marker": "s"},
+    "S2":  {"label": "S2: + Drag",                  "color": "#ff7f0e", "marker": "^"},
+    "S3":  {"label": "S3: + Astration",             "color": "#2ca02c", "marker": "D"},
+    "S4":  {"label": "S4: + Thermal sputtering",    "color": "#d62728", "marker": "v"},
+    "S5":  {"label": "S5: + Grain growth",          "color": "#9467bd", "marker": "P"},
+    "S6":  {"label": "S6: + Clumping factor",       "color": "#8c564b", "marker": "X"},
+    "S7":  {"label": "S7: + SN shock destruction",  "color": "#e377c2", "marker": "<"},
+    "S8":  {"label": "S8: + Coagulation",           "color": "#17becf", "marker": ">"},
+    "S9":  {"label": "S9: + Shattering",            "color": "#bcbd22", "marker": "h"},
+    "S10": {"label": "S10: + Rad. pressure (full)", "color": "#1f9e89", "marker": "*"},
 }
 
 FIGDIR        = "dust_figures"
 RESOLUTION    = 512
 R_MAX_DEFAULT = 50.0   # physical kpc
 BIN_WIDTH     = 5.0    # physical kpc
+
+# Radial region guides for the top of the figure.
+# These are deliberately simple visual guides, not hard physical cuts.
+REGION_BOUNDS_PKPC = [5.0, 15.0, 25.0]
+REGION_LABELS = [
+    "Inner galaxy",
+    "Stellar disk",
+    "Outer disk",
+    "Disk-Halo interface",
+]
 
 os.makedirs(FIGDIR, exist_ok=True)
 
@@ -83,7 +95,7 @@ def remy_ruyer_dtz(r_kpc, r0=8.0, dtz0=0.5, grad=-0.04, alpha=1.5):
 
 def find_snapshots(run):
     """Return sorted list of snapshot base paths for this run/resolution."""
-    output_dir = f"{run}_output_{RESOLUTION}"
+    output_dir = f"../{run}_output_{RESOLUTION}"
     if not os.path.isdir(output_dir):
         return []
     seen, bases = set(), []
@@ -145,15 +157,19 @@ def get_halo_center_r200(run, snap_base):
         print(f"  [get_halo_center_r200] cannot parse snap_num from {snap_base}")
         return None, None
     snap_num   = int(m.group(1))
-    output_dir = f"{run}_output_{RESOLUTION}"
+    output_dir = f"../{run}_output_{RESOLUTION}"
     groups_dir = os.path.join(output_dir, f"groups_{snap_num:03d}")
 
     # Establish z=0 reference once (cached per run via module-level dict)
-    ref = _get_ref(run, output_dir)
+    ref = _get_ref(run, output_dir, refine_center=False)
     if ref is None:
         return None, None
 
-    halo = get_halo569(groups_dir, snap_num, ref, verbose=False)
+    halo = get_halo569(
+        groups_dir, snap_num, ref,
+        verbose=False,
+        refine_center=False,
+    )
     if halo is None or halo["r200_ckpch"] <= 0:
         return None, None
 
@@ -163,14 +179,18 @@ def get_halo_center_r200(run, snap_base):
 # Module-level cache so get_halo569_reference is called once per run
 _ref_cache = {}
 
-def _get_ref(run, output_dir):
-    if run not in _ref_cache:
+def _get_ref(run, output_dir, refine_center=True):
+    key = (run, refine_center)
+    if key not in _ref_cache:
         try:
-            _ref_cache[run] = get_halo569_reference(output_dir)
+            _ref_cache[key] = get_halo569_reference(
+                output_dir,
+                refine_center=refine_center,
+            )
         except Exception as e:
             print(f"  [{run}] get_halo569_reference failed: {e}")
-            _ref_cache[run] = None
-    return _ref_cache[run]
+            _ref_cache[key] = None
+    return _ref_cache[key]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -315,6 +335,48 @@ def compute_radial_profiles(snap_base, run, r_max_pkpc, r_bins_pkpc):
     return r_cen, dgr, dtz, r200_pkpc
 
 
+def add_radial_region_guides(ax_hdr, axes, r_max_pkpc):
+    """
+    Add the same region-header style used by run_radial_evolution.py:
+    a thin horizontal rule above the labels, broad pale vertical boundary bands
+    that continue through the header and both panels, and no darker center line.
+    """
+    bounds = [b for b in REGION_BOUNDS_PKPC if 0.0 < b < r_max_pkpc]
+    edges = [0.0] + bounds + [r_max_pkpc]
+    centers = [0.5 * (edges[i] + edges[i + 1])
+               for i in range(len(edges) - 1)]
+
+    # Match the companion plot: broad translucent boundary bands, no thin line.
+    band_half_width = 0.45  # pkpc
+    for ax in list(axes) + [ax_hdr]:
+        for b in bounds:
+            ax.axvspan(
+                b - band_half_width,
+                b + band_half_width,
+                color="0.70",
+                alpha=0.35,
+                linewidth=0,
+                zorder=1,
+            )
+
+    # Header row with labels, styled like the radial-evolution figure.
+    ax_hdr.set_xlim(0.0, r_max_pkpc)
+    ax_hdr.set_ylim(0.0, 1.0)
+    ax_hdr.axis("off")
+    ax_hdr.axhline(1.0, color="black", lw=0.8, zorder=10)
+
+    for x, label in zip(centers, REGION_LABELS):
+        ax_hdr.text(
+            x, 0.45, label,
+            ha="center",
+            va="center",
+            fontsize=8.5,
+            color="0.3",
+            fontweight="normal",
+            transform=ax_hdr.transData,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main plot
 # ─────────────────────────────────────────────────────────────────────────────
@@ -328,10 +390,14 @@ def plot_radial_profiles(runs, r_max_pkpc=None, output_path=None):
     if os.path.exists(_style):
         plt.style.use(_style)
 
-    fig, (ax_dgr, ax_dtz) = plt.subplots(
-        2, 1, figsize=(9, 9), sharex=True,
-        gridspec_kw={"hspace": 0.06},
+    fig = plt.figure(figsize=(9, 9))
+    outer = fig.add_gridspec(
+        2, 1, height_ratios=[0.08, 2.0], hspace=0.0
     )
+    ax_hdr = fig.add_subplot(outer[0])
+    inner = outer[1].subgridspec(2, 1, hspace=0.06)
+    ax_dgr = fig.add_subplot(inner[0])
+    ax_dtz = fig.add_subplot(inner[1], sharex=ax_dgr)
 
     handles_runs = []
 
@@ -340,8 +406,8 @@ def plot_radial_profiles(runs, r_max_pkpc=None, output_path=None):
         color     = cfg.get("color", "black")
         label     = cfg.get("label", run)
         linestyle = "-" if run == "S10" else ":"
-        lw        = 2.4 if run == "S10" else 1.5
-        alpha     = 1.0 if run == "S10" else 0.75
+        lw        = 3.8 if run == "S10" else 1.5
+        alpha     = 1.0 if run == "S10" else 0.72
 
         snaps = find_snapshots(run)
         if not snaps:
@@ -356,8 +422,20 @@ def plot_radial_profiles(runs, r_max_pkpc=None, output_path=None):
         if r_cen is None:
             continue
 
-        kw = dict(color=color, lw=lw, alpha=alpha, linestyle=linestyle,
-                  marker="o", markersize=4.0, markeredgewidth=0.0)
+        marker = cfg.get("marker", "o")
+
+        kw = dict(
+            color=color,
+            lw=lw,
+            alpha=alpha,
+            linestyle=linestyle,
+            marker=marker,
+            markersize=9.0 if run != "S10" else 15.0,
+            markerfacecolor=color,
+            markeredgecolor="white",
+            markeredgewidth=0.9 if run != "S10" else 1.4,
+            zorder=20 if run == "S10" else 5,
+        )
 
         good_dgr = np.isfinite(dgr) & (dgr > 0)
         good_dtz = np.isfinite(dtz) & (dtz > 0)
@@ -368,9 +446,18 @@ def plot_radial_profiles(runs, r_max_pkpc=None, output_path=None):
             ax_dtz.plot(r_cen[good_dtz], dtz[good_dtz], **kw)
 
         handles_runs.append(
-            plt.Line2D([0], [0], color=color, lw=1.8,
-                       marker="o", markersize=4.5, markeredgewidth=0.0,
-                       label=label))
+            plt.Line2D(
+                [0], [0],
+                color=color,
+                lw=3.0 if run == "S10" else 1.8,
+                marker=marker,
+                markersize=9.0 if run != "S10" else 14.0,
+                markerfacecolor=color,
+                markeredgecolor="white",
+                markeredgewidth=0.9 if run != "S10" else 1.4,
+                label=label,
+            )
+        )
 
     # Reference curves
     r_ref = np.linspace(0.5, r_max, 300)
@@ -390,36 +477,48 @@ def plot_radial_profiles(runs, r_max_pkpc=None, output_path=None):
 
     # Axes: D/G
     ax_dgr.set_yscale("log")
-    ax_dgr.set_ylim(1e-5, 5e-1)
+    ax_dgr.set_ylim(3e-5, 5e-1)
     ax_dgr.set_ylabel("Dust-to-Gas Ratio (D/G)", fontsize=12)
     ax_dgr.yaxis.set_major_locator(
         matplotlib.ticker.LogLocator(base=10, numticks=10))
     ax_dgr.yaxis.set_major_formatter(
         matplotlib.ticker.LogFormatterSciNotation(labelOnlyBase=True))
-    ax_dgr.grid(True, alpha=0.25, which="both", lw=0.5)
+    ax_dgr.grid(True, which="major", axis="y", color="0.88", lw=0.5, alpha=0.75)
+    ax_dgr.grid(False, which="minor", axis="both")
 
     # Axes: D/Z
     ax_dtz.set_yscale("log")
-    ax_dtz.set_ylim(1e-3, 10)
+    ax_dtz.set_ylim(3e-3, 20)
     ax_dtz.set_ylabel("Dust-to-Metals Ratio (D/Z)", fontsize=12)
     ax_dtz.set_xlabel("Galactocentric Radius (kpc)", fontsize=12)
     ax_dtz.yaxis.set_major_locator(
         matplotlib.ticker.LogLocator(base=10, numticks=10))
     ax_dtz.yaxis.set_major_formatter(
         matplotlib.ticker.LogFormatterSciNotation(labelOnlyBase=True))
-    ax_dtz.grid(True, alpha=0.25, which="both", lw=0.5)
+    ax_dtz.grid(True, which="major", axis="y", color="0.88", lw=0.5, alpha=0.75)
+    ax_dtz.grid(False, which="minor", axis="both")
 
     ax_dtz.set_xlim(0, r_max)
     ax_dtz.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(10))
     ax_dtz.xaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(5))
+    plt.setp(ax_dgr.get_xticklabels(), visible=False)
+
+    # Radial region guides: header plus boundary bands through both panels.
+    add_radial_region_guides(ax_hdr, (ax_dgr, ax_dtz), r_max)
 
     ax_dgr.legend(handles=handles_runs, fontsize=7.5, loc="upper right",
                   framealpha=0.9, edgecolor="0.8", ncol=1,
                   handlelength=2.2, labelspacing=0.35, borderpad=0.6)
 
-    plt.tight_layout()
-    out = output_path or os.path.join(FIGDIR, f"radial_dg_dz_{RESOLUTION}.png")
-    fig.savefig(out, dpi=150, bbox_inches="tight")
+    # Manual spacing avoids tight_layout warnings and keeps the header aligned.
+    fig.subplots_adjust(left=0.12, right=0.97, bottom=0.09, top=0.94)
+
+    today = datetime.now().strftime("%-m-%-d-%y")
+    out = output_path or os.path.join(
+        FIGDIR,
+        f"radial_dg_dz_{RESOLUTION}_{today}.pdf"
+    )
+    fig.savefig(out, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"\nSaved: {out}")
 

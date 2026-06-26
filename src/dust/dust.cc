@@ -104,9 +104,11 @@
 // large enough to prevent creating enormous numbers from trace metal ejecta.
 #define MIN_DUST_PARTICLE_MASS  1e-10
 
-// Threshold below which a dust particle is considered destroyed and will be
-// removed from the particle array by destroy_dust_particles(). Must be
-// positive and much smaller than any real grain mass.
+// remember that dust particles represent ensembles of grains rather than
+// individual grains. If the represented dust mass falls below this value,
+// the particle is considered negligible and is removed.
+// This threshold should be many orders of magnitude below the typical
+// simulation dust particle mass...
 #define DUST_MASS_TO_DESTROY    1e-30
 
 // Grain radius limits (nanometres). DUST_MAX_GRAIN_SIZE should match
@@ -438,12 +440,11 @@ void dust_grain_shattering(simparticles *Sp, int dust_idx, int gas_idx, double d
   NShatteringEvents++;
   TotalSizeReductionShattering += (a - a_new);
 
-  if(All.ThisTask == 0 && (NShatteringEvents <= 100 || NShatteringEvents % 10000 == 0))
-    DUST_PRINT("[SHATTERING] Event #%lld: a=%.1f→%.1f nm  "
-               "n_H=%.2f n_eff=%.2f cm^-3  T=%.0f K  "
-               "v_turb=%.2f km/s  tau=%.1f Myr  P=%.3e\n",
-               NShatteringEvents, a, a_new,
-               n_H, n_eff, T_gas,
+if(All.ThisTask == 0 && (NShatteringEvents <= 100 || NShatteringEvents % 10000 == 0))
+    DUST_PRINT("[SHATTERING] event=%lld a_nm_old=%.1f a_nm_new=%.1f "
+               "n_H_cm3=%.2f n_eff_cm3=%.2f T_gas_K=%.0f "
+               "v_turb_kms=%.2f tau_shatter_Myr=%.1f shatter_probability=%.3e\n",
+               NShatteringEvents, a, a_new, n_H, n_eff, T_gas,
                v_turb_kms, tau_shat_yr / 1e6, P_shatter);
 }
 
@@ -727,6 +728,7 @@ int erode_dust_grain_shock(simparticles *Sp, int dust_idx, double shock_velocity
                                              : find_nearest_gas_particle(Sp, dust_idx, 5.0, NULL);
 
   // ── Step 1: Outright shattering (stochastic, velocity-gated) ─────────────
+// ── Step 1: Outright shattering (stochastic, velocity-gated) ─────────────
   if(local_velocity > 50.0) {
     double velocity_factor = std::min(1.0, (local_velocity - 50.0) / 350.0);
     double destr_factor    = std::max(0.3, std::min(3.0, 50.0 / a));
@@ -734,9 +736,21 @@ int erode_dust_grain_shock(simparticles *Sp, int dust_idx, double shock_velocity
 
     if(get_random_number() < destruction_prob) {
       log_dust_particle_event(Sp, dust_idx, nearest_gas, DUST_EVENT_SHOCK);
+
+      static long long shock_destroy_logged = 0;
+      shock_destroy_logged++;
+      // First 100 unconditionally, then every 500 (denser than growth/erosion
+      // since this is the rarer, higher-value mechanism for verification).
+      if(All.ThisTask == 0 && (shock_destroy_logged <= 100 || shock_destroy_logged % 500 == 0))
+        DUST_PRINT("[SHOCK_DESTROY] event=%lld grain_radius_nm=%.1f "
+                   "shock_velocity_local_kms=%.1f distance_to_sn_kpc=%.4f "
+                   "shock_radius_kpc=%.4f destruction_prob=%.3f "
+                   "carbon_fraction=%.2f mass_destroyed_code=%.3e\n",
+                   shock_destroy_logged, a, local_velocity, distance_to_sn, shock_radius,
+                   destruction_prob, Sp->DustP[dust_idx].CarbonFraction, Sp->P[dust_idx].getMass());
+
       return destroy_dust_particle_to_gas(Sp, dust_idx, nearest_gas,
-                                          &NDustDestroyedByShock,
-                                          &TotalMassDestroyedByShock);
+                                          &NDustDestroyedByShock, &TotalMassDestroyedByShock);
     }
   }
 
@@ -767,6 +781,17 @@ int erode_dust_grain_shock(simparticles *Sp, int dust_idx, double shock_velocity
   double old_mass  = Sp->P[dust_idx].getMass();
   double mass_lost = old_mass * (1.0 - mass_ratio);
   Sp->P[dust_idx].setMass(old_mass - mass_lost);
+
+  // mass_lost now exists -- print AFTER it's computed, not before.
+  static long long shock_erode_logged = 0;
+  shock_erode_logged++;
+  if(All.ThisTask == 0 && (shock_erode_logged <= 100 || shock_erode_logged % 2000 == 0))
+    DUST_PRINT("[SHOCK_ERODE] event=%lld grain_radius_nm_old=%.1f grain_radius_nm_new=%.1f "
+               "shock_velocity_local_kms=%.1f distance_to_sn_kpc=%.4f "
+               "shock_radius_kpc=%.4f bocchio_efficiency=%.3f size_factor=%.2f "
+               "mass_eroded_code=%.3e carbon_fraction=%.2f\n",
+               shock_erode_logged, a, a_new, local_velocity, distance_to_sn, shock_radius,
+               erosion_fraction, size_factor, mass_lost, Sp->DustP[dust_idx].CarbonFraction);
 
   if(nearest_gas >= 0) {
       double gas_mass     = Sp->P[nearest_gas].getMass();
@@ -2533,15 +2558,20 @@ void destroy_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx,
     DUST_PRINT("[SN_RATE] %lld SN calls, %lld found dust (%.1f%%)\n",
                sn_total_calls, sn_found_dust, 100.0 * sn_found_dust / sn_total_calls);
 
+  double mass_to_msun = All.UnitMass_in_g / 1.989e33;
   if(All.ThisTask == 0 && M_to_destroy > 0.0)
     DUST_PRINT("[DUST_SN] physical_r=%.4f kpc  search_r=%.3f kpc  "
-               "v=%.1f km/s  f_vol=%.3e  eff=%.3f  "
-               "M_local=%.3e  M_target=%.3e  M_lost=%.3e Msun  "
-               "n_dust=%d  destroyed=%d  eroded=%d\n",
-               physical_radius_kpc, effective_search_radius,
-               shock_velocity_km_s, f_vol, bocchio_eff,
-               M_dust_local, M_to_destroy, M_actually_lost,
-               n_dust_found, dust_destroyed, dust_eroded);
+           "v=%.1f km/s  f_vol=%.3e  eff=%.3f  "
+           "M_local=%.3e code (%.3e Msun)  "
+           "M_target=%.3e code (%.3e Msun)  "
+           "M_lost=%.3e code (%.3e Msun)  "
+           "n_dust=%d  destroyed=%d  eroded=%d\n",
+           physical_radius_kpc, effective_search_radius,
+           shock_velocity_km_s, f_vol, bocchio_eff,
+           M_dust_local, M_dust_local * mass_to_msun,
+           M_to_destroy, M_to_destroy * mass_to_msun,
+           M_actually_lost, M_actually_lost * mass_to_msun,
+           n_dust_found, dust_destroyed, dust_eroded);
 }
 
 
@@ -2696,12 +2726,12 @@ void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double 
   record_coagulation_event(n_H, n_eff);
 
   if(All.ThisTask == 0 && (NCoagulationEvents <= 100 || NCoagulationEvents % 10000 == 0))
-    DUST_PRINT("[COAGULATION] Event #%lld: a=%.1f→%.1f nm  M=%.3e Msun (conserved)  "
-               "n_H=%.2f n_eff=%.2f (C=%.0f) cm^-3  T=%.0f K  "
-               "tau=%.1f Myr  swept_f=%.3e\n",
-               NCoagulationEvents, a, a_new, M_dust,
-               n_H, n_eff, DustClumpingFactor,
-               T_gas, tau_coag_yr / 1e6, swept_fraction);
+      DUST_PRINT("[COAGULATION] event=%lld a_nm_old=%.1f a_nm_new=%.1f M_dust_code=%.3e "
+                "n_H_cm3=%.2f n_eff_cm3=%.2f clumping_factor=%.0f T_gas_K=%.0f "
+                "tau_coag_Myr=%.1f swept_fraction=%.3e\n",
+                NCoagulationEvents, a, a_new, M_dust,
+                n_H, n_eff, DustClumpingFactor, T_gas,
+                tau_coag_yr / 1e6, swept_fraction);
 }
 
 
@@ -2935,17 +2965,17 @@ void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, doub
   TotalMassGrown += dm;
 
   static int growth_count = 0;
-  growth_count++;
-  if(growth_count % 10000 == 0 && All.ThisTask == 0) {
-    DUST_PRINT("[HK11_GROWTH] Event #%d: species=%s CF=%.2f f_mol=%.3f "
-               "n_H=%.1f → n_eff=%.1f cm^-3 (C=%.0f)\n",
-               growth_count, (species==1 ? "carb" : "sil"), CF, f_mol,
-               n_H, n_eff_cm3, DustClumpingFactor);
-    DUST_PRINT("[HK11_GROWTH] tau_acc=%.2e yr | n_eff=%.0f cm^-3 T_eff=%.0f K Z=%.4f\n",
-               tau_acc_yr, n_eff_for_growth, T_eff_K, Z_gas);
-    DUST_PRINT("[HK11_GROWTH] a=%.2f→%.2f nm | dm=%.3e (M: %.3e→%.3e) | Z=%.4f→%.4f\n",
-               a, a_new, dm, M_dust, M_dust + dm, Z_gas, Z_new);
-  }
+    growth_count++;
+    if(growth_count % 10000 == 0 && All.ThisTask == 0) {
+      DUST_PRINT("[HK11_GROWTH] event=%d species=%s carbon_fraction=%.2f f_mol=%.3f "
+                "n_H_cm3=%.1f n_eff_cm3=%.1f clumping_factor=%.0f "
+                "tau_acc_yr=%.3e T_eff_K=%.0f Z_gas_before=%.4f Z_gas_after=%.4f "
+                "a_nm_old=%.2f a_nm_new=%.2f dm_code=%.3e M_dust_before=%.3e M_dust_after=%.3e\n",
+                growth_count, (species==1 ? "carb" : "sil"), CF, f_mol,
+                n_H, n_eff_cm3, DustClumpingFactor,
+                tau_acc_yr, T_eff_K, Z_gas, Z_new,
+                a, a_new, dm, M_dust, M_dust + dm);
+    }
 }
 
 #endif /* DUST */

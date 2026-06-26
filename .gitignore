@@ -4,6 +4,10 @@ S[0-9][0-9]_output_*/
 full_*_backup_*/
 snapdir_*/
 
+# Executables
+CosmicGrain
+Gadget4
+
 # Python
 *.pyc
 .venv/

@@ -989,6 +989,38 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
           double h_code   = Sp->SphP[i].Hsml * All.cf_atime;
           double u_jeans  = All.G * rho_code * h_code * h_code
                             / (M_PI * GAMMA * GAMMA_MINUS1);
+
+          // SAFETY CEILING: the Jeans floor must never push a particle above the
+          // same hard temperature cap feedback.cc enforces (u_max_particle =
+          // TK_to_ucode(1.0e8)). Without this, a dense, freshly-fed-back-on
+          // particle (small Hsml, high rho) can be re-heated by this floor to
+          // above the feedback ceiling entirely outside feedback's own clamping
+          // logic -- this path never touches deposit_energy_stochastic()'s caps,
+          // so no [FEEDBACK_CAP_FAIL] warning is ever printed when it happens.
+          // That silent re-heating is what was driving MaxSignalVel up to the
+          // ~1e8 K sound speed and collapsing dt_courant to the integer-timestep
+          // floor at 2048^3.
+          //
+          // mu here intentionally mirrors feedback.cc's mu_default(), not
+          // gs->yhelium/ne, so this ceiling and feedback's ceiling agree on the
+          // same physical temperature rather than drifting apart by whatever
+          // small difference the two mu conventions would imply.
+          const double FEEDBACK_HARD_CAP_K = 1.0e8;
+          {
+              double mu_cap = (FEEDBACK_HARD_CAP_K > 1.5e4) ? 0.62 : 1.22;
+              double u_jeans_ceiling =
+                  (BOLTZMANN * FEEDBACK_HARD_CAP_K) / (GAMMA_MINUS1 * mu_cap * PROTONMASS)
+                  / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
+              if(u_jeans > u_jeans_ceiling) {
+                  static long long jeans_clamp_count = 0;
+                  if(++jeans_clamp_count % 50 == 1 && ThisTask == 0)
+                      printf("[JEANS_CLAMP|Step=%d] ID=%lld Hsml=%.3f rho=%.3e u_jeans_raw=%.3e clamped_to=%.3e\n",
+                            All.NumCurrentTiStep, (long long)Sp->P[i].ID.get(),
+                            Sp->SphP[i].Hsml, rho_phys, u_jeans, u_jeans_ceiling);
+                  u_jeans = u_jeans_ceiling;
+              }
+          }
+
           if(unew < u_jeans)
               unew = u_jeans;
       }

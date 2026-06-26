@@ -34,14 +34,17 @@ python plot_halo_projection_full_ladder.py \\
 Tips
 ----
 * Use --npix 256 for a fast draft; bump to 512 for the final figure.
-* --half-width defaults to R_200c of halo 0 (read from the reference rung catalog).
+* --half-width defaults to Halo 569 R_200c from the updated halo_utils tracker.
 * --gas-compare-rung defaults to the last entry in --rungs.
 * Pass --no-circle to suppress the R_200c ring on every panel.
+* Halo centers/R200 are taken from halo_utils with refine_center=False.
 """
 
 import argparse
 import os
 import sys
+import re
+from pathlib import Path
 
 import h5py
 import matplotlib
@@ -52,6 +55,8 @@ from matplotlib.colors import LogNorm
 from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 from scipy.ndimage import gaussian_filter
+
+from halo_utils import get_halo569_reference, get_halo569
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 PROTONMASS = 1.6726e-24
@@ -135,20 +140,103 @@ def read_header(snap_files):
         h = float(f['Parameters'].attrs['HubbleParam'])
         a = float(f['Header'].attrs['Time'])
         z = float(f['Header'].attrs['Redshift'])
-    return dict(h=h, a=a, z=z)
+        box = float(f['Header'].attrs.get('BoxSize', 0.0))
+    return dict(h=h, a=a, z=z, box=box)
+
+
+# ── Updated Halo 569 / periodic helpers ───────────────────────────────────────
+_HALO_REF_CACHE = {}
+
+
+def _infer_output_dir_from_group_file(group_file):
+    p = Path(group_file).resolve()
+    if p.parent.name.startswith("groups_"):
+        return p.parent.parent
+    for parent in p.parents:
+        if any(parent.glob("groups_*")):
+            return parent
+    raise RuntimeError(f"Could not infer output_dir from group_file={group_file}")
+
+
+def _infer_snap_num_from_group_file(group_file):
+    p = Path(group_file)
+    for part in p.parts:
+        m = re.match(r"groups_(\d+)", part)
+        if m:
+            return int(m.group(1))
+    m = re.search(r"fof_subhalo_tab_(\d+)", p.name)
+    if m:
+        return int(m.group(1))
+    raise RuntimeError(f"Could not infer snapshot number from group_file={group_file}")
+
+
+def _find_last_snap_num(output_dir):
+    output_dir = Path(output_dir)
+    last = None
+    for groups_dir in sorted(output_dir.glob("groups_*")):
+        m = re.search(r"groups_(\d+)", groups_dir.name)
+        if not m:
+            continue
+        snap_num = int(m.group(1))
+        snapdir = output_dir / f"snapdir_{snap_num:03d}"
+        if snapdir.exists():
+            last = snap_num
+    return last
+
+
+def _get_halo569_from_paths(group_file, verbose=False):
+    output_dir = _infer_output_dir_from_group_file(group_file)
+    snap_num = _infer_snap_num_from_group_file(group_file)
+    groups_dir = output_dir / f"groups_{snap_num:03d}"
+
+    key = str(output_dir.resolve())
+    if key not in _HALO_REF_CACHE:
+        last_snap = _find_last_snap_num(output_dir)
+        if last_snap is None:
+            raise RuntimeError(f"No valid reference snapshot found in {output_dir}")
+        _HALO_REF_CACHE[key] = get_halo569_reference(
+            output_dir,
+            snap_num_z0=last_snap,
+            refine_center=False,
+            verbose=verbose,
+        )
+
+    ref = _HALO_REF_CACHE[key]
+    halo = get_halo569(
+        groups_dir,
+        snap_num,
+        ref,
+        refine_center=False,
+        verbose=verbose,
+    )
+    if halo is None:
+        raise RuntimeError(f"halo_utils could not locate Halo 569 at snap {snap_num:03d}")
+
+    center = np.asarray(halo["center"], dtype=float)
+    r200_pkpc = float(halo["r200_pkpc"])
+    r200_ckpch = float(halo["r200_ckpch"])
+    used_fallback = bool(
+        halo.get("used_catalog_fallback", halo.get("used_fallback", False))
+    )
+    return center, r200_pkpc, r200_ckpch, halo, used_fallback
+
+
+def _periodic_delta(pos, center, box):
+    dx = np.asarray(pos, dtype=float) - np.asarray(center, dtype=float)[None, :]
+    if box is not None and np.isfinite(box) and box > 0:
+        dx -= box * np.round(dx / box)
+    return dx
 
 def read_halo_center(group_file, halo_id, hdr):
-    with h5py.File(group_file, 'r') as gf:
-        first_sub = int(gf['Group/GroupFirstSub'][halo_id])
-        pos   = gf['Subhalo/SubhaloPos'][first_sub]
-        r200c = gf['Group/Group_R_Crit200'][halo_id]
-    return pos, to_phys_kpc(r200c, hdr['a'], hdr['h'])
+    # Compatibility wrapper: halo_id ignored because this script tracks Halo 569.
+    center, r200_pkpc, _, _, _ = _get_halo569_from_paths(group_file, verbose=False)
+    return center, r200_pkpc
 
-def _box_mask(pos, center, half_h, depth_h, axis):
+def _box_mask(pos, center, half_h, depth_h, axis, box=None):
     axes_map = {'x': 0, 'y': 1, 'z': 2}
     los  = axes_map[axis]
     perp = [i for i in range(3) if i != los]
-    dx   = pos - center
+    dx   = _periodic_delta(pos, center, box)
     return (np.all(np.abs(dx[:, perp]) < half_h, axis=1) &
             (np.abs(dx[:, los]) < depth_h))
 
@@ -281,8 +369,8 @@ def _find_center_offset(snap_files, center, hw_c, dep_c, axis, hw, hdr):
                          {'Coordinates': False, 'Masses': False})
     if sdata is not None:
         sp    = sdata['Coordinates']
-        smask = _box_mask(sp, center, hw_c * 4, dep_c * 8, axis)
-        spos  = to_phys_kpc(sp[smask] - center, a, h)[:, perp]
+        smask = _box_mask(sp, center, hw_c * 4, dep_c * 8, axis, hdr.get('box'))
+        spos  = to_phys_kpc(_periodic_delta(sp[smask], center, hdr.get('box')), a, h)[:, perp]
         sm    = to_msun(sdata['Masses'][smask], h)
         if len(sm) >= 10:
             cx, cy = 0.0, 0.0
@@ -302,8 +390,8 @@ def _find_center_offset(snap_files, center, hw_c, dep_c, axis, hw, hdr):
                          {'Coordinates': False, 'Masses': False})
     if gdata is not None:
         pos   = gdata['Coordinates']
-        gmask = _box_mask(pos, center, hw_c, dep_c, axis)
-        gpos  = to_phys_kpc(pos[gmask] - center, a, h)[:, perp]
+        gmask = _box_mask(pos, center, hw_c, dep_c, axis, hdr.get('box'))
+        gpos  = to_phys_kpc(_periodic_delta(pos[gmask], center, hdr.get('box')), a, h)[:, perp]
         if len(gpos) > 10:
             r2d   = np.sqrt(gpos[:, 0]**2 + gpos[:, 1]**2)
             inner = r2d < hw * 0.3
@@ -329,7 +417,7 @@ def project_rung_dust(snap_files, group_file, halo_id, half_width, depth_frac,
     """
     if hdr is None:
         hdr = read_header(snap_files)
-    center, r200 = read_halo_center(group_file, halo_id, hdr)
+    center, r200, r200_ckpch, halo, used_fallback = _get_halo569_from_paths(group_file)
     hw    = half_width if half_width is not None else r200
     depth = hw * depth_frac
     a, h  = hdr['a'], hdr['h']
@@ -348,8 +436,8 @@ def project_rung_dust(snap_files, group_file, halo_id, half_width, depth_frac,
                          {'Coordinates': False, 'Masses': False,
                           'Metallicity': True})
     pos   = gdata['Coordinates']
-    gmask = _box_mask(pos, center, hw_c, dep_c, axis)
-    gpos_all = to_phys_kpc(pos[gmask] - center, a, h)[:, perp]
+    gmask = _box_mask(pos, center, hw_c, dep_c, axis, hdr.get('box'))
+    gpos_all = to_phys_kpc(_periodic_delta(pos[gmask], center, hdr.get('box')), a, h)[:, perp]
     gpos_all[:, 0] -= dx_corr
     gpos_all[:, 1] -= dy_corr
     gm = to_msun(gdata['Masses'][gmask], h)
@@ -366,8 +454,8 @@ def project_rung_dust(snap_files, group_file, halo_id, half_width, depth_frac,
     ism_r = 20.0   # ISM aperture (pkpc) — consistent with analysis scripts
     if ddata is not None:
         dp    = ddata['Coordinates']
-        dmask = _box_mask(dp, center, hw_proj_c, dep_c, axis)
-        dpos  = to_phys_kpc(dp[dmask] - center, a, h)[:, perp]
+        dmask = _box_mask(dp, center, hw_proj_c, dep_c, axis, hdr.get('box'))
+        dpos  = to_phys_kpc(_periodic_delta(dp[dmask], center, hdr.get('box')), a, h)[:, perp]
         dm    = to_msun(ddata['Masses'][dmask], h)
         dpos[:, 0] -= dx_corr
         dpos[:, 1] -= dy_corr
@@ -420,7 +508,8 @@ def project_rung_dust(snap_files, group_file, halo_id, half_width, depth_frac,
                 n_gas=int(gmask.sum()), n_dust=n_dust,
                 m_dust_ism=m_dust_ism, m_dust_cgm=m_dust_cgm,
                 m_dust_tot=m_dust_tot, dg_ism=dg_ism, dz_ism=dz_ism,
-                center_offset=(dx_corr, dy_corr))
+                center_offset=(dx_corr, dy_corr),
+                used_catalog_fallback=used_fallback)
 
 
 def project_rung_gas(snap_files, group_file, halo_id, half_width, depth_frac,
@@ -452,7 +541,7 @@ def project_rung_gas(snap_files, group_file, halo_id, half_width, depth_frac,
     """
     if hdr is None:
         hdr = read_header(snap_files)
-    center, r200 = read_halo_center(group_file, halo_id, hdr)
+    center, r200, r200_ckpch, halo, used_fallback = _get_halo569_from_paths(group_file)
     hw    = half_width if half_width is not None else r200
     depth = hw * depth_frac
     a, h  = hdr['a'], hdr['h']
@@ -485,8 +574,8 @@ def project_rung_gas(snap_files, group_file, halo_id, half_width, depth_frac,
     # a hard black edge on one side of the gas panel.
     offset_frac = (abs(dx_corr) + abs(dy_corr)) / max(hw, 1.0)
     mask_pad    = 1.15 + offset_frac   # 15% baseline + offset correction
-    gmask = _box_mask(pos, center, hw_c * mask_pad, dep_c, axis)
-    gpos  = to_phys_kpc(pos[gmask] - center, a, h)[:, perp]
+    gmask = _box_mask(pos, center, hw_c * mask_pad, dep_c, axis, hdr.get('box'))
+    gpos  = to_phys_kpc(_periodic_delta(pos[gmask], center, hdr.get('box')), a, h)[:, perp]
     gpos[:, 0] -= dx_corr
     gpos[:, 1] -= dy_corr
     gm    = to_msun(gdata['Masses'][gmask], h)
@@ -523,6 +612,7 @@ def project_rung_gas(snap_files, group_file, halo_id, half_width, depth_frac,
 
     return dict(gas_sigma=gas_sigma, z=hdr['z'], r200_pkpc=r200, hw=hw,
                 n_gas=int(gmask.sum()),
+                used_catalog_fallback=used_fallback,
                 center_offset=(dx_corr, dy_corr))
 
 
@@ -969,7 +1059,7 @@ def main():
         sys.exit(f'ERROR: cannot find snapshot for reference rung '
                  f'{ref_rung}: {ref_snap}')
     ref_hdr = read_header(ref_files)
-    _, r200_ref = read_halo_center(ref_groups, args.halo_id, ref_hdr)
+    _, r200_ref, _, ref_halo, ref_used_fallback = _get_halo569_from_paths(ref_groups)
 
     if args.view == 'ism':
         half_width = 20.0
@@ -980,7 +1070,8 @@ def main():
     else:
         half_width = r200_ref
 
-    print(f'Reference rung : {ref_rung},  R_200c = {r200_ref:.1f} pkpc')
+    fb_note = " [catalog fallback]" if ref_used_fallback else ""
+    print(f'Reference rung : {ref_rung},  R_200c = {r200_ref:.1f} pkpc{fb_note}')
     print(f'Projection     : half-width={half_width:.1f} pkpc, '
           f'depth={half_width * args.depth_frac:.1f} pkpc, '
           f'axis={args.axis}')
@@ -1005,8 +1096,9 @@ def main():
             args.npix, args.dust_smooth, hdr=hdr,
             dust_adaptive_k=args.dust_adaptive_k,
             dust_adaptive_min=args.dust_adaptive_min)
+        fb = " [catalog fallback]" if data.get("used_catalog_fallback", False) else ""
         print(f'  z={data["z"]:.3f}  R200={data["r200_pkpc"]:.1f} pkpc  '
-              f'gas={data["n_gas"]:,}  dust={data["n_dust"]:,}')
+              f'gas={data["n_gas"]:,}  dust={data["n_dust"]:,}{fb}')
         rung_maps.append(data)
         actual_rungs.append(rung)
 
@@ -1057,8 +1149,9 @@ def main():
                 adaptive_min_smooth=gas_amin,
                 adaptive_max_smooth=gas_amax)
             gas_rung_label = gc_rung
+            fb = " [catalog fallback]" if gas_map.get("used_catalog_fallback", False) else ""
             print(f'  z={gas_map["z"]:.3f}  R200={gas_map["r200_pkpc"]:.1f} pkpc  '
-                  f'gas={gas_map["n_gas"]:,}')
+                  f'gas={gas_map["n_gas"]:,}{fb}')
 
     # ── Render ─────────────────────────────────────────────────────────────────
     print(f'\nRendering 4×3 dust ladder → {args.out}')

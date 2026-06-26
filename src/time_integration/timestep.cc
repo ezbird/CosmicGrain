@@ -93,18 +93,24 @@ void simparticles::assign_hydro_timesteps(void)
           TimeBinsHydro.timebin_move_particle(target, P[target].getTimeBinHydro(), bin);
 
           /* ---- BIN_FLOOR diagnostic ---- */
-          if(bin <= 13) {
+          if(bin <= 10) {
             double u_cgs = get_utherm_from_entropy(target) 
                * All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s;
             double T = u_cgs / (1.5 * BOLTZMANN / (0.62 * PROTONMASS));
             double nH = SphP[target].Density * All.cf_a3inv
                         * All.UnitDensity_in_cgs * HYDROGEN_MASSFRAC / PROTONMASS;
             static long long bin_floor_hits = 0;
-            if(++bin_floor_hits % 100 == 0 && All.ThisTask == 0)
-              printf("[BIN_FLOOR|Step=%d] bin=%d T=%.2e K nH=%.2e cm^-3 "
-                     "h=%.3f kpc SFR=%.2e count=%lld\n",
-                     All.NumCurrentTiStep, bin, T, nH,
-                     SphP[target].Hsml, SphP[target].Sfr, bin_floor_hits);
+            ++bin_floor_hits;
+            // Added task number and particle ID so this is directly joinable
+            // by ID against [FEEDBACK_HIGH_T]/[RESERVOIR_OVERFLOW] lines,
+            // rather than only inferred from coincident step numbers. Also
+            // dropped the ThisTask==0 restriction since the actual crash was
+            // on tasks 3/12/17, not task 0.
+            printf("[BIN_FLOOR|task=%d|Step=%d] bin=%d ID=%lld T=%.2e K nH=%.2e cm^-3 "
+                   "h=%.3f kpc SFR=%.2e count=%lld\n",
+                   All.ThisTask, All.NumCurrentTiStep, bin,
+                   (long long)P[target].ID.get(), T, nH,
+                   SphP[target].Hsml, SphP[target].Sfr, bin_floor_hits);
           }
           /* ------------------------------ */
 
@@ -463,14 +469,28 @@ integertime simparticles::get_timestep_hydro(int p /*!< particle index */)
 
   integertime ti_step = (integertime)(dt / All.Timebase_interval);
 
-if(ti_step <= 2 && All.NumCurrentTiStep < 50)
-    printf("[TINY_DT|task=%d|step=%d] p=%d ti_step=%lld dt=%.3e "
-           "dt_kin=%.3e dt_courant=%.3e dt_hsml=%.3e dt_tree=%.3e "
-           "Hsml=%.3e DtHsml=%.3e MaxSignalVel=%.3e\n",
-           ThisTask, All.NumCurrentTiStep, p, (long long)ti_step, dt,
-           dt_kin*All.cf_hubble_a, dt_courant*All.cf_hubble_a,
-           dt_hsml*All.cf_hubble_a, dt_treebased*All.cf_hubble_a,
-           SphP[p].Hsml, SphP[p].DtHsml, SphP[p].MaxSignalVel);
+    // Original gate only covered the first 50 steps (startup transients).
+    // Widened so any future near-floor event is caught regardless of when it
+    // happens, not just at startup. ti_step<=1 is the exact condition that
+    // leads to "time-step of integer size 1 not allowed" in
+    // timebins_get_bin_and_do_validity_checks(), so that case always prints
+    // and includes the particle ID/mass needed to trace it to a feedback or
+    // dust event via [DUST_SN]/[FEEDBACK] logs at the same a/z.
+    bool tiny_dt_startup  = (ti_step <= 2 && All.NumCurrentTiStep < 50);
+    bool tiny_dt_critical = (ti_step <= 1);
+
+    if(tiny_dt_startup || tiny_dt_critical)
+      printf("[TINY_DT|task=%d|step=%d] p=%d ID=%lld mass=%.3e ti_step=%lld dt=%.3e "
+            "dt_kin=%.3e dt_courant=%.3e dt_hsml=%.3e dt_tree=%.3e "
+            "Hsml=%.3e DtHsml=%.3e MaxSignalVel=%.3e a=%.6g z=%.3f%s\n",
+            ThisTask, All.NumCurrentTiStep, p,
+            (long long)P[p].ID.get(), P[p].getMass(),
+            (long long)ti_step, dt,
+            dt_kin*All.cf_hubble_a, dt_courant*All.cf_hubble_a,
+            dt_hsml*All.cf_hubble_a, dt_treebased*All.cf_hubble_a,
+            SphP[p].Hsml, SphP[p].DtHsml, SphP[p].MaxSignalVel,
+            All.Time, 1.0/All.Time - 1.0,
+            tiny_dt_critical ? "  <-- CRITICAL (ti_step<=1)" : "");
 
   if(!(ti_step > 0 && ti_step < TIMEBASE))
     {

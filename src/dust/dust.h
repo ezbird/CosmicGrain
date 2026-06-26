@@ -240,20 +240,19 @@ inline void dust_integrity_check(simparticles *Sp, const char *label,
 
     MPI_Allreduce(send, recv, 3, MPI_LONG_LONG, MPI_SUM, Communicator);
 
-    int ThisTask;
-    MPI_Comm_rank(Communicator, &ThisTask);
-    if(ThisTask == 0)
-    {
-        printf("[DUST_CHECK|%s] "
-               "ndust=%lld valid=%lld invalid=%lld\n",
-               label,
-               recv[0],
-               recv[1],
-               recv[2]);
-    }
+    // If dust corruption is occurring, print to see status
+    // int ThisTask;
+    // MPI_Comm_rank(Communicator, &ThisTask);
+    // if(ThisTask == 0)
+    // {
+    //    printf("[DUST_CHECK|%s] "
+    //           "ndust=%lld valid=%lld invalid=%lld\n",
+    //           label,
+    //           recv[0],
+    //           recv[1],
+    //           recv[2]);
+    // }
 }
-
-
 
 
 #endif /* DUST */

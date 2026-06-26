@@ -233,7 +233,7 @@ def main():
     run_label  = output_dir.name
 
     out_path = Path(args.out) if args.out else \
-               Path(f"dust_histograms_{run_label}_snap{snap_num}.png")
+               Path(f"dust_histograms_{run_label}_snap{snap_num}.pdf")
 
     print("=" * 60)
     print(f"Dust Histograms  |  {run_label}  |  snap {snap_num}")

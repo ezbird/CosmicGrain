@@ -11,10 +11,7 @@ Spatial regions:
   CGM : R_ISM_PKPC <= r < R200_pkpc
 
 Halo identification uses halo_utils.get_halo569_reference / get_halo569,
-consistent with all other CosmicGrain analysis scripts. The primary halo
-is selected by stellar mass argmax across ALL catalog chunks, with a
-hardcoded override for 2048^3 where the most massive DM group is a
-merger-inflated neighbour.
+consistent with all other CosmicGrain analysis scripts.
 
 Unit conventions:
   GrainRadius   : values in HDF5 are already in nm (snap_io applies
@@ -42,6 +39,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import h5py
 from pathlib import Path
+from datetime import datetime
 
 from halo_utils import (
     get_halo569_reference,
@@ -97,16 +95,22 @@ def get_center_r200(output_dir, snap_num_str):
     Return (center_ckpch, r200_pkpc) for Halo 569.
 
     Uses halo_utils stellar-mass argmax with per-resolution overrides,
-    consistent with snap_overview and all other analysis scripts.
+    frozen FOF/catalog centering, and catalog SO fallback if needed.
     """
     snap_num   = int(snap_num_str)
     groups_dir = Path(output_dir) / f"groups_{snap_num:03d}"
 
-    ref = get_halo569_reference(output_dir)
+    ref = get_halo569_reference(output_dir, refine_center=False)
     if ref is None:
         raise RuntimeError("get_halo569_reference returned None")
 
-    halo = get_halo569(groups_dir, snap_num, ref, verbose=True)
+    halo = get_halo569(
+        groups_dir,
+        snap_num,
+        ref,
+        verbose=True,
+        refine_center=False,
+    )
     if halo is None or halo["r200_ckpch"] <= 0:
         raise RuntimeError(
             f"get_halo569 returned no valid halo for snap {snap_num}")
@@ -138,7 +142,6 @@ def read_dust(snap_files, box_ckpch, ctr_ckpch, r200_ckpch, h, a):
                 continue
 
             coords = pt6["Coordinates"][:]   # ckpc/h
-            # Periodic boundary wrap
             dx   = coords - ctr_ckpch[None, :]
             dx  -= box_ckpch * np.round(dx / box_ckpch)
             r    = np.sqrt((dx**2).sum(axis=1))
@@ -227,6 +230,16 @@ def build_histogram(dust, h, n_bins=DEFAULT_N_BINS,
     return bc, dn_c, dn_s
 
 
+def dust_masses_msun(dust, h):
+    """Return total carbonaceous, silicate, and total dust masses in Msun."""
+    mass_msun = dust["mass_code"] * 1e10 / h
+    fc = dust["fc"]
+
+    m_carb = np.sum(fc * mass_msun)
+    m_sil  = np.sum((1.0 - fc) * mass_msun)
+    return m_carb, m_sil, m_carb + m_sil
+
+
 # ── Analytic reference models ─────────────────────────────────────────────────
 
 def normalise(arr):
@@ -273,34 +286,43 @@ def themis_carbon_dn(a):
 # ── Figure ────────────────────────────────────────────────────────────────────
 
 def make_figure(bc, dn_c, dn_s, dn_c_cgm, dn_s_cgm,
+                ism_masses, cgm_masses,
                 r_ism, r200, output_path, run_label):
     """
-    4-panel 2x2 figure.
-      Rows    : top = dn/da,  bottom = a^4 dn/da
-      Columns : left = carbonaceous,  right = silicate
-    """
-    fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.5),
-                             sharex=True, sharey="row",
-                             constrained_layout=True)
+    3-panel figure:
+      left   = carbonaceous a^4 dn/da
+      middle = silicate a^4 dn/da
+      right  = integrated dust mass by region/composition
 
-    a_ref     = np.logspace(np.log10(1.0), np.log10(200.0), 600)
+    The GSD panels are independently peak-normalized.
+    The mass panel uses absolute dust masses.
+    """
+    fig, axes = plt.subplots(
+        1, 3, figsize=(13.5, 4.8),
+        gridspec_kw={"width_ratios": [1.05, 1.05, 0.9]},
+        constrained_layout=True
+    )
+
+    a_ref = np.logspace(np.log10(1.0), np.log10(200.0), 600)
+
     ISM_COLOR = "#7B2FBE"
     CGM_COLOR = "#009E73"
 
     ism_label = f"ISM  ($r < {r_ism:.0f}$ pkpc)"
-    cgm_label = f"CGM  ({r_ism:.0f}--{r200:.0f} pkpc)"
+    cgm_label = f"CGM  ({r_ism:.0f} pkpc < r < R$_{{200}}$)"
 
     ref_raw = {
-        "MRN (1977)":   dict(ls="--", color="0.2",     lw=1.8,
-                             sil=normalise(mrn_dn(a_ref)),
-                             carb=normalise(mrn_dn(a_ref))),
-        "W & D (2001)": dict(ls="-.", color="#E07B22",  lw=1.8,
+        "MRN (1977)": dict(ls="--", color="0.2", lw=1.8,
+                           sil=normalise(mrn_dn(a_ref)),
+                           carb=normalise(mrn_dn(a_ref))),
+        "W & D (2001)": dict(ls="-.", color="#E07B22", lw=1.8,
                              sil=wd01_silicate_dn(a_ref),
                              carb=wd01_carbonaceous_dn(a_ref)),
-        "THEMIS":       dict(ls=":",  color="#3A7EC9",  lw=2.0,
-                             sil=themis_silicate_dn(a_ref),
-                             carb=themis_carbon_dn(a_ref)),
+        "THEMIS": dict(ls=":", color="#3A7EC9", lw=2.0,
+                       sil=themis_silicate_dn(a_ref),
+                       carb=themis_carbon_dn(a_ref)),
     }
+
     ref_a4 = {
         name: dict(ls=kw["ls"], color=kw["color"], lw=kw["lw"],
                    sil=normalise(a_ref**4 * kw["sil"]),
@@ -308,70 +330,124 @@ def make_figure(bc, dn_c, dn_s, dn_c_cgm, dn_s_cgm,
         for name, kw in ref_raw.items()
     }
 
-    sim = {
-        ("dn", "carb"): normalise(dn_c),
-        ("dn", "sil") : normalise(dn_s),
-        ("a4", "carb"): normalise(bc**4 * dn_c),
-        ("a4", "sil") : normalise(bc**4 * dn_s),
+    sim_ism = {
+        "carb": normalise(bc**4 * dn_c),
+        "sil":  normalise(bc**4 * dn_s),
     }
+
     sim_cgm = {
-        ("dn", "carb"): normalise(dn_c_cgm),
-        ("dn", "sil") : normalise(dn_s_cgm),
-        ("a4", "carb"): normalise(bc**4 * dn_c_cgm),
-        ("a4", "sil") : normalise(bc**4 * dn_s_cgm),
+        "carb": normalise(bc**4 * dn_c_cgm),
+        "sil":  normalise(bc**4 * dn_s_cgm),
     }
 
     panels = [
-        (axes[0, 0], "dn", "carb", "Carbonaceous", False),
-        (axes[0, 1], "dn", "sil",  "Silicate",     False),
-        (axes[1, 0], "a4", "carb", "Carbonaceous", False),
-        (axes[1, 1], "a4", "sil",  "Silicate",     True),
+        (axes[0], "carb", "Carbonaceous"),
+        (axes[1], "sil",  "Silicate"),
     ]
 
-    for ax, rep, comp, col_label, show_legend in panels:
-        refs     = ref_raw if rep == "dn" else ref_a4
-        ism_data = sim[(rep, comp)]
-        cgm_data = sim_cgm[(rep, comp)]
+    # Dedicated handles for separated legends
+    ref_handles = []
+    region_handles = [
+        plt.Line2D([0], [0], color=ISM_COLOR, lw=2.6, label=ism_label),
+        plt.Line2D([0], [0], color=CGM_COLOR, lw=2.6, label=cgm_label),
+    ]
 
-        for name, kw in refs.items():
-            y   = kw[comp]
+    for ax, comp, title in panels:
+        ax.set_axisbelow(True)
+
+        for name, kw in ref_a4.items():
+            y = kw[comp]
             vis = np.isfinite(y) & (y > 0)
-            ax.plot(a_ref[vis], y[vis],
-                    ls=kw["ls"], color=kw["color"], lw=kw["lw"],
-                    label=name, zorder=2)
+            line, = ax.plot(a_ref[vis], y[vis],
+                            ls=kw["ls"], color=kw["color"], lw=kw["lw"],
+                            label=name, zorder=3)
+            if ax is axes[0]:
+                ref_handles.append(line)
 
-        v = np.isfinite(cgm_data) & (cgm_data > 0)
-        ax.step(bc[v], cgm_data[v], where="mid",
-                color=CGM_COLOR, lw=2.2, zorder=4, label=cgm_label)
-        ax.fill_between(bc[v], 1e-10, cgm_data[v],
-                        step="mid", alpha=0.15, color=CGM_COLOR, zorder=3)
-
-        v = np.isfinite(ism_data) & (ism_data > 0)
-        ax.step(bc[v], ism_data[v], where="mid",
+        y_ism = sim_ism[comp]
+        v = np.isfinite(y_ism) & (y_ism > 0)
+        ax.step(bc[v], y_ism[v], where="mid",
                 color=ISM_COLOR, lw=2.2, zorder=6, label=ism_label)
-        ax.fill_between(bc[v], 1e-10, ism_data[v],
-                        step="mid", alpha=0.15, color=ISM_COLOR, zorder=5)
+        ax.fill_between(bc[v], 1e-10, y_ism[v],
+                        step="mid", alpha=0.15, color=ISM_COLOR, zorder=2)
 
-        ax.text(0.97, 0.97, col_label,
-                transform=ax.transAxes, ha="right", va="top", fontsize=11)
+        y_cgm = sim_cgm[comp]
+        v = np.isfinite(y_cgm) & (y_cgm > 0)
+        ax.step(bc[v], y_cgm[v], where="mid",
+                color=CGM_COLOR, lw=2.2, zorder=5, label=cgm_label)
+        ax.fill_between(bc[v], 1e-10, y_cgm[v],
+                        step="mid", alpha=0.15, color=CGM_COLOR, zorder=1)
+
+        ax.set_title(title, fontsize=12)
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlim(0.8, 220.0)
-        ax.grid(True, which="minor", color="0.93", lw=0.3)
+        ax.set_ylim(5e-5, 3.0)
+
+        # Keep the GSD-panel grids, but force them behind all data.
+        ax.grid(True, which="major", color="0.78", lw=0.5, zorder=0)
+        ax.grid(True, which="minor", color="0.92", lw=0.3, zorder=0)
         ax.xaxis.set_major_formatter(
-            ticker.FuncFormatter(lambda x, _: f"{x:g}"))
+            ticker.FuncFormatter(lambda x, _: f"{x:g}")
+        )
+        ax.set_xlabel(r"Grain radius (nm)")
 
-        if show_legend:
-            ax.legend(loc="lower left", fontsize=8.5)
+    axes[0].set_ylabel(r"$a^4\,\mathrm{d}n/\mathrm{d}a$ (normalized to peak)")
+    leg0 = axes[0].legend(
+        handles=ref_handles,
+        loc="lower left",
+        fontsize=8.5,
+        framealpha=0.95,
+        edgecolor="0.8",
+    )
+    leg0.set_zorder(50)
 
-    axes[0, 0].set_ylim(1e-8, 3.0)
-    axes[1, 0].set_ylim(5e-5, 3.0)
-    axes[0, 0].set_ylabel(r"$\mathrm{dn/da}$")
-    axes[1, 0].set_ylabel(r"$a^4\,\mathrm{dn/da}$")
-    axes[1, 0].set_xlabel(r"Grain radius (nm)")
-    axes[1, 1].set_xlabel(r"Grain radius (nm)")
+    # Mass panel
+    ax = axes[2]
+    ax.set_axisbelow(True)
 
-    fig.suptitle(f"CosmicGrain GSD — {run_label}  $z=0$", fontsize=12)
+    ism_carb, ism_sil, ism_tot = ism_masses
+    cgm_carb, cgm_sil, cgm_tot = cgm_masses
+
+    labels = ["Carbon", "Silicate", "Total"]
+    x = np.arange(len(labels))
+    width = 0.36
+
+    ism_vals = np.array([ism_carb, ism_sil, ism_tot])
+    cgm_vals = np.array([cgm_carb, cgm_sil, cgm_tot])
+
+    # ISM is now left, CGM is right.
+    ax.bar(x - width/2, ism_vals, width,
+           color=ISM_COLOR, alpha=0.75, label=ism_label, zorder=3)
+    ax.bar(x + width/2, cgm_vals, width,
+           color=CGM_COLOR, alpha=0.75, label=cgm_label, zorder=3)
+
+    ax.set_yscale("log")
+    ax.set_ylim(1e5, 1e8)
+    ax.set_ylabel(r"Dust mass ($M_\odot$)")
+    ax.set_title(r"Total Dust Mass within $R_{200}$", fontsize=12)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=25, ha="right")
+
+    # No grid/tick lines on the mass panel.
+    ax.grid(False)
+    ax.minorticks_off()
+
+    ax.legend(
+        handles=region_handles,
+        fontsize=8.5,
+        loc="upper left",
+        framealpha=0.95,
+        edgecolor="0.8",
+    )
+
+    for xpos, val in zip(x - width/2, ism_vals):
+        ax.text(xpos, val * 1.12, f"{val:.2e}",
+                ha="center", va="bottom", fontsize=8, color=ISM_COLOR)
+
+    for xpos, val in zip(x + width/2, cgm_vals):
+        ax.text(xpos, val * 1.12, f"{val:.2e}",
+                ha="center", va="bottom", fontsize=8, color=CGM_COLOR)
 
     out = Path(output_path)
     fig.savefig(out, dpi=200, bbox_inches="tight")
@@ -405,8 +481,9 @@ def main():
     run_label   = output_dir.name
 
     # Auto output name
+    today = datetime.now().strftime("%-m-%-d-%y")
     if args.output is None:
-        out_path = Path(f"gsd_comparison_{run_label}_snap{snap_num}.png")
+        out_path = Path(f"gsd_comparison_{run_label}_snap{snap_num}_{today}.pdf")
     else:
         out_path = Path(args.output)
 
@@ -453,12 +530,22 @@ def main():
     print("  CGM:")
     _,  dn_c_cgm, dn_s_cgm = build_histogram(cgm, h, n_bins=args.n_bins)
 
+    print("\nComputing dust masses ...")
+    ism_masses = dust_masses_msun(ism, h)
+    cgm_masses = dust_masses_msun(cgm, h)
+
+    print(f"  ISM masses [carb, sil, total] Msun: "
+          f"{ism_masses[0]:.3e}, {ism_masses[1]:.3e}, {ism_masses[2]:.3e}")
+    print(f"  CGM masses [carb, sil, total] Msun: "
+          f"{cgm_masses[0]:.3e}, {cgm_masses[1]:.3e}, {cgm_masses[2]:.3e}")
+
     print("\nRendering figure ...")
     make_figure(bc, dn_c, dn_s, dn_c_cgm, dn_s_cgm,
+                ism_masses=ism_masses,
+                cgm_masses=cgm_masses,
                 r_ism=r_ism, r200=r200_pkpc,
                 output_path=str(out_path),
                 run_label=run_label)
-    print("Done.")
 
 
 if __name__ == "__main__":

@@ -897,6 +897,28 @@ void sph::hydro_evaluate_kernel(pinfo &pdat)
               if(kernel.vsig > MaxSignalVel)
                 MaxSignalVel = kernel.vsig;
 
+//TEMOPORARY
+if(P_i->ID.get() == 5674915 && kernel.vsig > 1.0e6)
+{
+  printf("[SIGNAL_WATCH|task=%d step=%d] "
+         "target_i=%d ID_i=%lld n=%d "
+         "vsig=%g sound_i=%g sound_j=%g "
+         "rho_i=%g rho_j=%g h_i=%g h_j=%g "
+         "Pressure_i=%g Pressure_j=%g "
+         "r=%g vdotr2=%g "
+         "mass_i=%g mass_j=%g\n",
+         D->ThisTask, All.NumCurrentTiStep,
+         pdat.target, (long long)P_i->ID.get(), n,
+         kernel.vsig, kernel.sound_i, kernel.sound_j,
+         SphP_i->Density, SphP_j->Density,
+         kernel.h_i, kernel.h_j,
+         SphP_i->Pressure, SphP_j->Pressure,
+         kernel.r, kernel.vdotr2,
+         P_i->getMass(), P_j->Mass);
+}
+
+
+
               double visc = 0;
 
               if(kernel.vdotr2 < 0) /* ... artificial viscosity */

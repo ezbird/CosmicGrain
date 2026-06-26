@@ -222,7 +222,7 @@ struct spatial_hash_zoom {
       if(m > 0.0 && std::isfinite(m) && m < local_min_mass)
         local_min_mass = m;
     }
-    double global_min_mass = local_min_mass;
+double global_min_mass = local_min_mass;
     MPI_Allreduce(&local_min_mass, &global_min_mass, 1, MPI_DOUBLE, MPI_MIN, comm);
 
     // 8× = one DM refinement level; robustly separates zoom from background
@@ -233,6 +233,32 @@ struct spatial_hash_zoom {
     // span many orders of magnitude due to growth/destruction. The 8× threshold
     // could be near zero and incorrectly exclude real grains. Disable it.
     if(part_type == 6) zoom_mass_threshold = 1e30;
+
+    // DIAGNOSTIC: track global_min_mass / zoom_mass_threshold over time per
+    // hash type. If mass-conservation changes (dust growth depleting gas
+    // particle mass, metal deposits, etc.) are progressively shrinking the
+    // global minimum gas mass, this threshold will drift downward over the
+    // run -- which shrinks the bbox computed from it, which can newly
+    // exclude particles that used to be safely inside the zoom region.
+    // That's a plausible precondition for the bbox-clamp issue fixed in
+    // find_nearest_particle/find_neighbors. Printed on every rebuild
+    // (rebuilds are already rate-limited by REBUILD_EVERY_DLOGA in the
+    // caller, so this is cheap) so the trend is visible without having to
+    // cross-reference the separate print_stats() call.
+    if(All.ThisTask == 0) {
+      static double last_min_mass[7] = {-1,-1,-1,-1,-1,-1,-1};  // indexed by part_type (0-6)
+      double prev = (part_type >= 0 && part_type < 7) ? last_min_mass[part_type] : -1.0;
+      double pct_change = (prev > 0.0) ? 100.0 * (global_min_mass - prev) / prev : 0.0;
+      printf("[HASH_MASS_THRESHOLD|type=%d|a=%.6g z=%.3f] global_min_mass=%.6e "
+             "zoom_mass_threshold=%.6e%s\n",
+             part_type, (double)All.Time, 1.0/All.Time - 1.0,
+             global_min_mass, zoom_mass_threshold,
+             (prev > 0.0) ? "" : "  (first rebuild for this type)");
+      if(prev > 0.0 && std::fabs(pct_change) > 0.01)
+        printf("[HASH_MASS_THRESHOLD|type=%d]   change since last rebuild: %.3f%%\n",
+               part_type, pct_change);
+      if(part_type >= 0 && part_type < 7) last_min_mass[part_type] = global_min_mass;
+    }
 
     // ── Step 2: bbox scan over zoom-region particles only ────────────────────
     int n_scan = (part_type == 0) ? Sp->NumGas : Sp->NumPart;
@@ -410,7 +436,7 @@ struct spatial_hash_zoom {
   // hash instance. Positions outside the bbox are clamped before searching
   // so that grains near (but not beyond) the bbox edge still find neighbours.
   // ──────────────────────────────────────────────────────────────────────────
-  int find_nearest_particle(simparticles *Sp, int idx, double max_search_radius,
+int find_nearest_particle(simparticles *Sp, int idx, double max_search_radius,
                              double *out_distance) const
   {
     if(!is_built) return -1;
@@ -422,6 +448,40 @@ struct spatial_hash_zoom {
     double clamped_pos[3];
     for(int d = 0; d < 3; d++)
       clamped_pos[d] = std::max(bbox_min[d], std::min(bbox_max[d], pos[d]));
+
+    // DIAGNOSTIC + GUARD: if the query particle is meaningfully outside the
+    // bbox (not just touching the padded edge), the clamp above silently
+    // searches from a position that does NOT correspond to where the
+    // particle actually is. Without this check, a particle far outside the
+    // bbox gets snapped to whatever is in the nearest edge cell, with a
+    // returned "distance" that reflects the clamped position, not the real
+    // one. This was found to be a likely culprit for unexplained extreme
+    // temperatures in isolated, large-Hsml, very-low-density gas particles
+    // at 2048^3 (suspected mechanism for the [BIN_FLOOR] T~1e10-1e11 K
+    // particles, e.g. ID=5161069 and ID=4393117).
+    double clamp_dist2 = 0.0;
+    for(int d = 0; d < 3; d++) {
+      double diff = pos[d] - clamped_pos[d];
+      clamp_dist2 += diff * diff;
+    }
+    double clamp_dist = std::sqrt(clamp_dist2);
+
+    if(clamp_dist > cell_size) {
+      static long long clamp_reject_count = 0;
+      clamp_reject_count++;
+      if(All.ThisTask == 0 && (clamp_reject_count <= 50 || clamp_reject_count % 10000 == 0))
+        printf("[HASH_CLAMP_REJECT] count=%lld idx=%d ID=%lld pos=(%.2f,%.2f,%.2f) "
+               "clamped_to=(%.2f,%.2f,%.2f) clamp_dist=%.3f kpc cell_size=%.3f kpc "
+               "bbox=[%.1f,%.1f]x[%.1f,%.1f]x[%.1f,%.1f]\n",
+               clamp_reject_count, idx, (long long)Sp->P[idx].ID.get(),
+               pos[0], pos[1], pos[2],
+               clamped_pos[0], clamped_pos[1], clamped_pos[2],
+               clamp_dist, cell_size,
+               bbox_min[0], bbox_max[0], bbox_min[1], bbox_max[1],
+               bbox_min[2], bbox_max[2]);
+      if(out_distance) *out_distance = -1.0;
+      return -1;
+    }
 
     int n_search = (int)std::ceil(max_search_radius / cell_size) + 1;
     n_search = std::min(n_search, n_cells_per_dim);
@@ -477,7 +537,7 @@ struct spatial_hash_zoom {
   //
   // Local operation — no MPI.
   // ──────────────────────────────────────────────────────────────────────────
-  void find_neighbors(simparticles *Sp, int idx, double search_radius,
+void find_neighbors(simparticles *Sp, int idx, double search_radius,
                       int *neighbor_indices, double *neighbor_distances,
                       int *n_neighbors, int max_neighbors) const
   {
@@ -492,6 +552,30 @@ struct spatial_hash_zoom {
     double clamped_pos[3];
     for(int d = 0; d < 3; d++)
       clamped_pos[d] = std::max(bbox_min[d], std::min(bbox_max[d], pos[d]));
+
+    // DIAGNOSTIC + GUARD: see identical block in find_nearest_particle for
+    // full explanation. A particle meaningfully outside the bbox must not
+    // silently search from its clamped position -- return zero neighbors
+    // instead of corrupted ones.
+    double clamp_dist2 = 0.0;
+    for(int d = 0; d < 3; d++) {
+      double diff = pos[d] - clamped_pos[d];
+      clamp_dist2 += diff * diff;
+    }
+    double clamp_dist = std::sqrt(clamp_dist2);
+
+    if(clamp_dist > cell_size) {
+      static long long clamp_reject_count_ngb = 0;
+      clamp_reject_count_ngb++;
+      if(All.ThisTask == 0 && (clamp_reject_count_ngb <= 50 || clamp_reject_count_ngb % 10000 == 0))
+        printf("[HASH_CLAMP_REJECT_NGB] count=%lld idx=%d ID=%lld pos=(%.2f,%.2f,%.2f) "
+               "clamped_to=(%.2f,%.2f,%.2f) clamp_dist=%.3f kpc cell_size=%.3f kpc\n",
+               clamp_reject_count_ngb, idx, (long long)Sp->P[idx].ID.get(),
+               pos[0], pos[1], pos[2],
+               clamped_pos[0], clamped_pos[1], clamped_pos[2],
+               clamp_dist, cell_size);
+      return;  // *n_neighbors already 0
+    }
 
     int n_search = (int)std::ceil(search_radius / cell_size) + 1;
     n_search = std::min(n_search, n_cells_per_dim);

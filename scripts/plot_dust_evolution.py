@@ -28,17 +28,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from pathlib import Path
-
-# ── Global font sizes ─────────────────────────────────────────────────────────
-plt.rcParams.update({
-    "font.size":        13,
-    "axes.labelsize":   14,
-    "axes.titlesize":   13,
-    "xtick.labelsize":  12,
-    "ytick.labelsize":  12,
-    "legend.fontsize":  12,
-    "axes.linewidth":   0.9,
-})
+from halo_utils import get_halo569_reference, get_halo569
+plt.style.use('sleek.mplstyle')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -290,7 +281,7 @@ def make_plot(runs, output_path):
     All 5 panels share the redshift x-axis.
     """
     fig, axes = plt.subplots(
-        5, 1, figsize=(8, 14),
+        5, 1, figsize=(8, 10),
         sharex=True,
         gridspec_kw={"hspace": 0.06},
     )
@@ -321,11 +312,26 @@ def make_plot(runs, output_path):
 
         # Panel 3: Net dust rate — linear ±1
         ax_rate.plot(z, rate, **kw)
-        ax_rate.fill_between(z, rate, 0,
-                             where=rate >= 0, color=c, alpha=0.15)
-        ax_rate.fill_between(z, rate, 0,
-                             where=rate <  0, color=c, alpha=0.08,
-                             hatch="////", linewidth=0)
+        #ax_rate.fill_between(z, rate, 0,
+        #                     where=rate >= 0, color=c, alpha=0.15)
+        #ax_rate.fill_between(z, rate, 0,
+        #                     where=rate <  0, color=c, alpha=0.08,
+        #                     hatch="////", linewidth=0)
+        ax_rate.fill_between(
+            z, rate, 0,
+            where=(rate >= 0),
+            color="#2ca02c",      # green
+            alpha=0.20,
+            interpolate=True,
+        )
+
+        ax_rate.fill_between(
+            z, rate, 0,
+            where=(rate < 0),
+            color="#d62728",      # red
+            alpha=0.20,
+            interpolate=True,
+        )
 
         # Panel 4: D/G vs redshift
         good_d = np.isfinite(dgr_s) & (dgr_s > 0)
@@ -385,7 +391,7 @@ def make_plot(runs, output_path):
     for ax in axes:
         ax.set_axisbelow(True)
         ax.grid(True, which="major", color="0.88", lw=0.5)
-        ax.grid(True, which="minor", color="0.93", lw=0.3)
+        #ax.grid(True, which="minor", color="0.93", lw=0.3)
 
     # ── Lookback-time axis on top ─────────────────────────────────────────────
     ax2 = ax_dust.twiny()
@@ -396,26 +402,26 @@ def make_plot(runs, output_path):
     ax2.set_xticklabels(age_lbls, fontsize=11)
     ax2.set_xlabel("Lookback time (Gyr)", fontsize=12)
     ax2.invert_xaxis()
+    ax2.grid(False)
 
     # ── Legend ────────────────────────────────────────────────────────────────
     from matplotlib.lines import Line2D
     if len(runs) == 1:
         c0 = COLORS[0]
         ax_dust.legend(handles=[
-            Line2D([0],[0], color=c0, lw=2.2, label=r"$M_\mathrm{dust}$"),
-            Line2D([0],[0], color=c0, lw=1.5, ls="--", alpha=0.5,
-                   label=r"$M_*$"),
-        ], fontsize=12, loc="lower right", framealpha=0.85)
+            Line2D([0],[0], color=c0, lw=1.5, ls="--", alpha=0.5, label=r"$M_*$"),
+            Line2D([0],[0], color=c0, lw=2.2, label=r"$M_\mathrm{dust}$"),            
+        ], fontsize=10, loc="lower left", framealpha=0.85)
     else:
         handles = [Line2D([0],[0], color=COLORS[j], lw=2.2, label=runs[j][0])
                    for j in range(len(runs))]
         handles += [
-            Line2D([0],[0], color="0.4", lw=2.2,
-                   label=r"$M_\mathrm{dust}$ (solid)"),
             Line2D([0],[0], color="0.4", lw=1.5, ls="--", alpha=0.5,
                    label=r"$M_*$ (dashed)"),
+            Line2D([0],[0], color="0.4", lw=2.2,
+                   label=r"$M_\mathrm{dust}$ (solid)"),
         ]
-        ax_dust.legend(handles=handles, fontsize=11, loc="lower right",
+        ax_dust.legend(handles=handles, fontsize=10, loc="lower left",
                        framealpha=0.85)
 
     plt.tight_layout()
@@ -433,7 +439,7 @@ def main():
     parser.add_argument("output_dirs", nargs="+")
     parser.add_argument("--labels",     nargs="*", default=None)
     parser.add_argument("--skip-every", type=int,  default=1)
-    parser.add_argument("--output",     default="dust_evolution.png")
+    parser.add_argument("--output",     default="dust_evolution.pdf")
     args = parser.parse_args()
 
     n      = len(args.output_dirs)

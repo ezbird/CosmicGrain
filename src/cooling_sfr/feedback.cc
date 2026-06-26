@@ -84,6 +84,18 @@ static void agb_diag_reset()
   agb_stars_eligible   = 0;
 }
 
+// DIAGNOSTIC TOGGLE: the reservoir system was originally added to manage
+// runaway velocities crushing timesteps. That issue was later fixed instead
+// by adjusting CourantFac, and the reservoir's original purpose may no longer
+// apply. Suspected (unconfirmed) of being implicated in extreme-temperature
+// diffuse-gas particles seen at 2048^3 -- the overflow-vent path specifically
+// targets isolated, large-Hsml particles as its release target, which matches
+// the profile of the particles in question. Set to 0 to fully bypass
+// reservoir release (banking still happens via apply_feedback_event, energy
+// simply accumulates and is never spent) and test whether the extreme-T
+// particles stop appearing.
+static const int RESERVOIR_RELEASE_ENABLED = 0;  // 0 = disable for testing
+
 // Reservoir diagnostics (reset each call to apply_stellar_feedback)
 static int    reservoir_release_attempts  = 0;
 static int    reservoir_release_successes = 0;
@@ -95,6 +107,7 @@ static double reservoir_total_energy      = 0.0;
 spatial_hash_zoom gas_hash;
 spatial_hash_zoom star_hash;
 spatial_hash_zoom dust_hash;
+spatial_hash_zoom dust_hash_shock;   // new: finer-grained, shock-destruction only
 
 #define FB_PRINT(...) do{ if(All.FeedbackDebugLevel){ \
   printf("[FEEDBACK|T=%d|a=%.6g z=%.3f] ", All.ThisTask, (double)All.Time, 1.0/All.Time-1.0); \
@@ -175,13 +188,18 @@ void rebuild_feedback_spatial_hash(simparticles *Sp, double dust_search_radius, 
   static double total_rebuild_time = 0.0;
   static int    rebuild_count      = 0;
 
+  // Per-hash cumulative timing, parallel to total_rebuild_time/rebuild_count.
+  // Added to answer: which of gas/star/dust dominates the existing combined
+  // [HASH_TIMING] number, before deciding whether a 4th (shock-only, finer)
+  // dust hash is affordable to add on top.
+  static double total_gas_time  = 0.0;
+  static double total_star_time = 0.0;
+  static double total_dust_time = 0.0;
+
   // Rebuild when scale factor has advanced by more than this since last build.
-  // ~0.002 in log-a corresponds to ~100 Myr at z~2, ~50 Myr at z~5.
   static constexpr double REBUILD_EVERY_DLOGA = 0.002;
   static double last_rebuild_a = -1.0;
 
-  // ── Collective rebuild decision ───────────────────────────────────────────
-  // Task 0 decides; all others follow. Prevents MPI hangs from divergence.
   int need_rebuild = 0;
   if(All.ThisTask == 0) {
     if(!gas_hash.is_built || last_rebuild_a < 0.0 ||
@@ -195,59 +213,32 @@ void rebuild_feedback_spatial_hash(simparticles *Sp, double dust_search_radius, 
   double t_start = MPI_Wtime();
 
   // ── Step 1: Gas hash ──────────────────────────────────────────────────────
-  // Use the dust search radius as the cell sizing target — it's the smallest
-  // search radius used by any module, so it's the binding constraint.
-  // This is resolution-independent: at coarser resolution dust_search_radius
-  // will be larger, naturally producing fewer cells; at finer resolution it
-  // will be smaller, naturally requesting more cells (capped by the override).
+  double t_gas_start = MPI_Wtime();
   gas_hash.build(Sp, dust_search_radius, All.SofteningTable[0], comm, 0, 768);
+  double t_gas_end = MPI_Wtime();
 
   // ── Step 2: Star hash ─────────────────────────────────────────────────
-  // Guard: skip if no stars exist yet (e.g. z > 15). Building with zero
-  // particles produces a degenerate 8^3 grid with cell_size=0 which causes
-  // MPI_ERR_TRUNCATE in subsequent collectives on split communicators.
   int n_stars_local = 0;
   for(int i = 0; i < Sp->NumPart; i++)
       if(Sp->P[i].getType() == 4) n_stars_local++;
   int n_stars_global = 0;
   MPI_Allreduce(&n_stars_local, &n_stars_global, 1, MPI_INT, MPI_SUM, comm);
 
+  double t_star_start = MPI_Wtime();
   if(n_stars_global > 0)
       star_hash.build(Sp, dust_search_radius, All.SofteningTable[4], comm, 4, 768);
   else
-      star_hash.is_built = false;  // explicitly mark as not built
+      star_hash.is_built = false;
+  double t_star_end = MPI_Wtime();
 
   // ── Step 3: Dust hash — inherits bbox from gas hash ───────────────────────
-  //
-  // This can be a key place that causes hangs and crashes if not handled carefully, 
-  // note the MPI_Allreduce in here.
-  //
-  // Guard: skip if no dust exists yet. Building with zero particles produces
-  // a degenerate grid (same problem as the star hash guard above) which causes
-  // MPI_ERR_TRUNCATE on split communicators.
-  //
-  // When dust does exist, we force the dust hash to use the gas hash bbox
-  // rather than computing it from dust positions. Radiation-pressure and
-  // SN-kicked grains can scatter across the full box, inflating the bbox to
-  // >> 100% of box volume and producing cell sizes of ~100 kpc. At that
-  // resolution, dust-gas coupling, sputtering, and growth are physically
-  // meaningless (grains couple to gas particles 50+ kpc away).
-  //
-  // Solution: copy the gas hash bbox (which correctly traces the zoom region)
-  // into dust_hash, then build cells only — skip detect_extent_collective.
-  // Dust that has escaped the gas distribution will not find a gas neighbor
-  // via the hash (correct: decoupled grains should return -1).
-  //
-  // zoom_mass_threshold = 1e30: all dust is in the zoom region by construction
-  // (spawned from stars inside the zoom volume), so no mass filter is needed.
-  // build() is called with preset_bbox=true to skip detect_extent_collective.
-
   int n_dust_local = 0;
   for(int i = 0; i < Sp->NumPart; i++)
       if(Sp->P[i].getType() == 6) n_dust_local++;
   int n_dust_global = 0;
   MPI_Allreduce(&n_dust_local, &n_dust_global, 1, MPI_INT, MPI_SUM, comm);
 
+  double t_dust_start = MPI_Wtime();
   if(n_dust_global > 0) {
       for(int d = 0; d < 3; d++) {
           dust_hash.bbox_min[d]  = gas_hash.bbox_min[d];
@@ -260,15 +251,24 @@ void rebuild_feedback_spatial_hash(simparticles *Sp, double dust_search_radius, 
   } else {
       dust_hash.is_built = false;
   }
+  double t_dust_end = MPI_Wtime();
 
   double t_end = MPI_Wtime();
   total_rebuild_time += (t_end - t_start);
+  total_gas_time      += (t_gas_end  - t_gas_start);
+  total_star_time     += (t_star_end - t_star_start);
+  total_dust_time     += (t_dust_end - t_dust_start);
   rebuild_count++;
   last_rebuild_a = All.Time;
 
   if(All.ThisTask == 0) {
     printf("[HASH_TIMING] Rebuild #%d took %.3f sec, avg %.3f sec\n",
            rebuild_count, t_end - t_start, total_rebuild_time / rebuild_count);
+    printf("[HASH_TIMING_DETAIL] gas=%.3f (avg %.3f)  star=%.3f (avg %.3f)  "
+           "dust=%.3f (avg %.3f)  [sec]\n",
+           t_gas_end - t_gas_start,  total_gas_time  / rebuild_count,
+           t_star_end - t_star_start, total_star_time / rebuild_count,
+           t_dust_end - t_dust_start, total_dust_time / rebuild_count);
     gas_hash.print_stats();
   }
 }
@@ -632,9 +632,13 @@ static double deposit_energy_stochastic(simparticles *Sp,
     double w        = cubic_spline_kernel(distances[idx], hsml);
     double fraction = (m_g * w) / total_kernel_weighted_mass;
 
+    // fraction is intentionally computed from the pre-deposit mass m_g —
+    // it's a kernel-weighting fraction splitting E_avail_code/MZ_code across
+    // all selected neighbors, and must stay consistent with
+    // total_kernel_weighted_mass (also built from pre-deposit masses).
+
     // Deposit metals unconditionally — before any skip checks
-    // Add ejected metal mass to the gas particle — this increases both the
-    // total gas mass and the metal mass!
+    double m_g_post_metals = m_g;
     #ifdef METALS
     if(MZ_code > 0) {
       double metal_mass_code = MZ_code * fraction;
@@ -642,11 +646,12 @@ static double deposit_energy_stochastic(simparticles *Sp,
       Sp->P[j].setMass(new_gas_mass);
       Sp->SphP[j].MassMetallicity += metal_mass_code;
       Sp->SphP[j].Metallicity = Sp->SphP[j].MassMetallicity / new_gas_mass;
+      m_g_post_metals = new_gas_mass;
     }
     #endif
 
-    double dE_code  = E_avail_code * fraction;
-    double du_cgs   = (dE_code * All.UnitEnergy_in_cgs) / (m_g * All.UnitMass_in_g);
+double dE_code  = E_avail_code * fraction;
+    double du_cgs   = (dE_code * All.UnitEnergy_in_cgs) / (m_g_post_metals * All.UnitMass_in_g);
     double du_code  = du_cgs / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
 
     double u_old = Sp->get_utherm_from_entropy(j);
@@ -656,8 +661,6 @@ static double deposit_energy_stochastic(simparticles *Sp,
     }
 
     double u_new = u_old + du_code;
-
-
 
     #ifdef FEEDBACK_LIMIT_DULOG
         double du_log10 = log10(u_new) - log10(u_old);
@@ -691,15 +694,37 @@ static double deposit_energy_stochastic(simparticles *Sp,
 #else
     double u_cap_verify = u_max_particle;
 #endif
+
+    // DIAGNOSTIC: Kelvin-scale readout, directly comparable to [BIN_FLOOR]'s
+    // T values (previously this check only had code-unit u values).
+    double T_verify_K = ucode_to_TK(u_verify);
+    double T_cap_K     = ucode_to_TK(u_cap_verify);
+
     if(u_verify > u_cap_verify * 1.1) {
       Sp->set_entropy_from_utherm(u_cap_verify, j);
       set_thermodynamic_variables_safe(Sp, j);
       static int cap_failures = 0;
       if(cap_failures < 10 && All.ThisTask == 0) {
-        printf("[FEEDBACK_CAP_FAIL] Particle %d: entropy roundtrip broke cap "
-               "(u_capped=%.2e -> u_verify=%.2e), re-capped\n", j, u_new, u_verify);
+        printf("[FEEDBACK_CAP_FAIL] Particle %d ID=%lld: entropy roundtrip broke cap "
+               "(u_capped=%.2e -> u_verify=%.2e, T_cap=%.3e K -> T_verify=%.3e K), re-capped\n",
+               j, (long long)Sp->P[j].ID.get(), u_new, u_verify, T_cap_K, T_verify_K);
         cap_failures++;
       }
+    }
+
+    // DIAGNOSTIC: unconditional high-T tripwire, independent of the 1.1x
+    // tolerance above. Fires immediately at the moment of write if this
+    // function ever produces a >1e8 K particle (the [BIN_FLOOR] crash
+    // signature), tagged with the same particle ID so the two logs are
+    // directly joinable rather than only correlated by step number.
+    if(T_verify_K > 1.0e8 && All.ThisTask == 0) {
+      static long long high_t_hits = 0;
+      high_t_hits++;
+      printf("[FEEDBACK_HIGH_T|Step=%d] hit#%lld Particle %d ID=%lld: "
+             "T_verify=%.3e K after deposit_energy_stochastic write "
+             "(u_old=%.3e u_new_intended=%.3e u_verify=%.3e)\n",
+             All.NumCurrentTiStep, high_t_hits, j, (long long)Sp->P[j].ID.get(),
+             T_verify_K, u_old, u_new, u_verify);
     }
 
     heated_this_step.insert(j);
@@ -865,6 +890,16 @@ static void try_release_reservoir(simparticles *Sp, ngbtree *Tree,
                     / (Sp->P[best_j].getMass() * All.UnitMass_in_g);
     double du     = du_cgs / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
 
+    // DIAGNOSTIC: track how many consecutive overflow-vent calls land on the
+    // SAME best_j. If one diffuse particle is repeatedly chosen as "the
+    // largest-h neighbor" across many stars/many calls, it could accumulate
+    // heating across calls even though each individual call is capped.
+    static int  last_best_j = -1;
+    static long long repeat_count = 0;
+    long long this_particle_id = (best_j >= 0) ? (long long)Sp->P[best_j].ID.get() : -1;
+    if(best_j == last_best_j) repeat_count++;
+    else { repeat_count = 1; last_best_j = best_j; }
+
     // Still respect the temperature cap even during forced venting
     #ifdef FEEDBACK_T_CAP
       double u_cap = TK_to_ucode(FEEDBACK_T_CAP_K);
@@ -876,18 +911,41 @@ static void try_release_reservoir(simparticles *Sp, ngbtree *Tree,
     Sp->set_entropy_from_utherm(u_new, best_j);
     set_thermodynamic_variables_safe(Sp, best_j);
 
+    // DIAGNOSTIC: read back what actually landed in the particle after the
+    // entropy round-trip + set_thermodynamic_variables_safe(). This is the
+    // same "did the cap survive" check the main feedback path already does
+    // -- the overflow vent path currently has NO equivalent check, so if
+    // something here is breaking the cap, nothing would ever have caught it.
+    double u_verify    = Sp->get_utherm_from_entropy(best_j);
+    double T_intended  = ucode_to_TK(u_new);
+    double T_actual    = ucode_to_TK(u_verify);
+
     diag_add_EfromRes(vented * All.UnitEnergy_in_cgs);
     diag_add_Edep(vented * All.UnitEnergy_in_cgs);
 
     static long long overflow_vents = 0;
     overflow_vents++;
-    if(overflow_vents % 500 == 0 && All.ThisTask == 0)
-      printf("[RESERVOIR_OVERFLOW|T=%d|Step=%d] %lld overflow vents: "
-             "star=%d E_res=%.2e E_need=%.2e ratio=%.1f "
-             "vented_to=j=%d h=%.3f kpc T_after=%.2e K\n",
-             All.ThisTask, All.NumCurrentTiStep, overflow_vents,
-             star_i, E_code, E_need, E_code / E_need,
-             best_j, best_h, ucode_to_TK(u_new));
+
+    // DIAGNOSTIC: print EVERY overflow vent for now (not just every 500th),
+    // plus an extra unconditional warning if the post-write readback
+    // disagrees with what we intended to set -- that disagreement, if it
+    // ever fires, would be direct evidence this path is where the >1e9 K
+    // particles in [BIN_FLOOR] are coming from.
+    if(All.ThisTask == 0)
+      printf("[RESERVOIR_OVERFLOW|T=%d|Step=%d] vent#%lld star=%d ID=%lld "
+            "best_j=%d ID=%lld repeat=%lld h=%.3f kpc "
+            "u_old=%.3e u_new_intended=%.3e u_verify=%.3e "
+            "T_intended=%.3e K T_actual=%.3e K E_res=%.2e E_need=%.2e ratio=%.1f\n",
+            All.ThisTask, All.NumCurrentTiStep, overflow_vents,
+            star_i, (long long)Sp->P[star_i].ID.get(),
+            best_j, this_particle_id, repeat_count, best_h,
+            u_old, u_new, u_verify, T_intended, T_actual,
+            E_code, E_need, E_code / E_need);
+
+    if(T_actual > T_intended * 1.5 && All.ThisTask == 0)
+      printf("[RESERVOIR_OVERFLOW_CAP_FAIL|Step=%d] best_j=%d ID=%lld: "
+            "intended T=%.3e K but readback shows T=%.3e K -- cap did not survive!\n",
+            All.NumCurrentTiStep, best_j, this_particle_id, T_intended, T_actual);
 
     // Return after venting — don't also attempt a normal release this call.
     // This keeps the logic clean: each call either vents (overflow) or
@@ -1006,6 +1064,10 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
   // ====================================================================
   // 1) Release reservoir energy from stars that have it
   // ====================================================================
+// ====================================================================
+// 1) Release reservoir energy from stars that have it
+// ====================================================================
+if(RESERVOIR_RELEASE_ENABLED) {
   for(int p : star_indices) {
     if(Sp->P[p].EnergyReservoir > 0) {
       stars_with_reservoir++;
@@ -1015,6 +1077,24 @@ void apply_stellar_feedback(double /*current_time*/, simparticles *Sp,
                             MAX_PARTICLES_HEATED_PER_STEP);
     }
   }
+} else {
+  // Still track totals for diagnostics even with release disabled, so the
+  // periodic FB_STATS printout shows reservoir accumulation isn't silently
+  // vanishing -- it's just not being deposited anywhere right now.
+  for(int p : star_indices) {
+    if(Sp->P[p].EnergyReservoir > 0) {
+      stars_with_reservoir++;
+      reservoir_total_energy += Sp->P[p].EnergyReservoir;
+    }
+  }
+  static bool warned = false;
+  if(!warned && All.ThisTask == 0) {
+    printf("[FEEDBACK] WARNING: RESERVOIR_RELEASE_ENABLED=0 -- reservoir energy "
+           "is accumulating but never being deposited. Diagnostic mode only, "
+           "do not use for production runs.\n");
+    warned = true;
+  }
+}
 
   // ====================================================================
   // 2) Trigger new feedback events (SNII and AGB)

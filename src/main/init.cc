@@ -485,8 +485,9 @@ void sim::init(int RestartSnapNum)
     if(Sp.P[i].getType() == 6)
       if(Sp.DustP[i].GrainRadius > 0) valid++;
       else invalid++;
-  mpi_printf("DUST_CHECK [pre-domain-decomp] T=%d: valid=%d invalid=%d\n",
-             ThisTask, valid, invalid);
+
+  // If dust corruption is occurring, print to see where we were last
+  // mpi_printf("DUST_CHECK [pre-domain-decomp] T=%d: valid=%d invalid=%d\n", ThisTask, valid, invalid);
 }
 #endif
 
@@ -500,8 +501,9 @@ Domain.domain_decomposition(STANDARD);  /* do initial domain decomposition (give
     if(Sp.P[i].getType() == 6)
       if(Sp.DustP[i].GrainRadius > 0) valid++;
       else invalid++;
-  mpi_printf("DUST_CHECK [post-domain-decomp] T=%d: valid=%d invalid=%d\n",
-             ThisTask, valid, invalid);
+  
+  // If dust corruption is occurring, print to see where we were last
+  // mpi_printf("DUST_CHECK [post-domain-decomp] T=%d: valid=%d invalid=%d\n", ThisTask, valid, invalid);
 }
 #endif
 

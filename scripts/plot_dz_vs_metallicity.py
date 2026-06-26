@@ -31,7 +31,7 @@ which approximate TOTAL metallicity (gas + dust).
 
 The Milky Way reference point is therefore placed at the GAS-PHASE metallicity:
   Z_gas_MW = Z_total * (1 - D/Z) ≈ 0.0134 * 0.60 = 0.008
-  D/Z_MW   = 0.40  (Jenkins 2009; Draine et al. 2007)
+  D/Z_MW   = 0.40  (Jenkins 2009)
 This is more self-consistent with the simulation x-axis than using Z_solar.
 The observational trend lines are plotted as-is (strong-line ~ total Z) and
 the small systematic offset (~0.4 dex in x) is noted in the caption.
@@ -53,7 +53,6 @@ Observations:
   Rémy-Ruyer+2014 (A&A 563, A31)  — 126 DGS+KINGFISH galaxies, BPL fit
   De Vis+2019 (A&A 623, A5)       — DustPedia+RR14 compilation
   Jenkins 2009 (ApJ 700, 1299)    — MW ISM depletions
-  Draine et al. 2007 (ApJ 663, 866) — MW dust budget
 
 Simulations:
   McKinnon+2017 (MNRAS 468, 1505) — AREPO subgrid ISM
@@ -71,6 +70,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
+from datetime import datetime
+
+from halo_utils import (
+    get_halo569_reference,
+    get_halo569,
+    read_snap_header,
+    glob_snap_chunks,
+)
+plt.style.use('sleek.mplstyle')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Path anchoring — works regardless of cwd
@@ -89,24 +97,24 @@ if _mplstyle.exists():
 # Styling
 # ─────────────────────────────────────────────────────────────────────────────
 RUN_CONFIGS = {
-    "S0":  {"label": "S0: Creation only",           "color": "#888888", "marker": "o", "ms": 80},
-    "S1":  {"label": "S1: + Cooling",               "color": "#1f77b4", "marker": "o", "ms": 80},
-    "S2":  {"label": "S2: + Drag",                  "color": "#ff7f0e", "marker": "o", "ms": 80},
-    "S3":  {"label": "S3: + Astration",             "color": "#2ca02c", "marker": "o", "ms": 80},
-    "S4":  {"label": "S4: + Thermal sputtering",    "color": "#d62728", "marker": "o", "ms": 80},
-    "S5":  {"label": "S5: + Grain growth",          "color": "#9467bd", "marker": "o", "ms": 80},
-    "S6":  {"label": "S6: + Clumping factor",       "color": "#8c564b", "marker": "o", "ms": 80},
-    "S7":  {"label": "S7: + SN shock destruction",  "color": "#e377c2", "marker": "o", "ms": 80},
-    "S8":  {"label": "S8: + Coagulation",           "color": "#17becf", "marker": "o", "ms": 80},
-    "S9":  {"label": "S9: + Shattering",            "color": "#bcbd22", "marker": "o", "ms": 80},
-    "S10": {"label": "S10: + Rad. pressure (full)", "color": "#2a9d8f", "marker": "*", "ms": 320},
+    "S0":  {"label": "S0: Creation only",           "color": "#888888", "marker": "o", "ms": 115},
+    "S1":  {"label": "S1: + Cooling",               "color": "#1f77b4", "marker": "o", "ms": 115},
+    "S2":  {"label": "S2: + Drag",                  "color": "#ff7f0e", "marker": "o", "ms": 115},
+    "S3":  {"label": "S3: + Astration",             "color": "#2ca02c", "marker": "o", "ms": 115},
+    "S4":  {"label": "S4: + Thermal sputtering",    "color": "#d62728", "marker": "o", "ms": 115},
+    "S5":  {"label": "S5: + Grain growth",          "color": "#9467bd", "marker": "o", "ms": 115},
+    "S6":  {"label": "S6: + Clumping factor",       "color": "#8c564b", "marker": "o", "ms": 115},
+    "S7":  {"label": "S7: + SN shock destruction",  "color": "#e377c2", "marker": "o", "ms": 115},
+    "S8":  {"label": "S8: + Coagulation",           "color": "#17becf", "marker": "o", "ms": 115},
+    "S9":  {"label": "S9: + Shattering",            "color": "#bcbd22", "marker": "o", "ms": 115},
+    "S10": {"label": "S10: + Rad. pressure (full)", "color": "#2a9d8f", "marker": "*", "ms": 420},
 }
 
 RES_CONFIGS = {
-    512:  {"label": r"$512^3$",  "color": "#7ec8c0", "marker": "o", "ms": 100},
-    1024: {"label": r"$1024^3$", "color": "#2a9d8f", "marker": "*", "ms": 320},
-    2048: {"label": r"$2048^3$", "color": "#1a6b62", "marker": "D", "ms": 100},
-    4096: {"label": r"$4096^3$", "color": "#0d3d38", "marker": "s", "ms": 100},
+    512:  {"label": r"$512^3$",  "color": "#7ec8c0", "marker": "o", "ms": 130},
+    1024: {"label": r"$1024^3$", "color": "#2a9d8f", "marker": "*", "ms": 420},
+    2048: {"label": r"$2048^3$", "color": "#1a6b62", "marker": "D", "ms": 130},
+    4096: {"label": r"$4096^3$", "color": "#0d3d38", "marker": "s", "ms": 130},
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,7 +126,7 @@ X_H      = 0.76
 M_H_G    = 1.6736e-24  # proton mass [g]
 
 # MW reference: gas-phase Z = Z_total * (1 - D/Z) ≈ 0.0134 * 0.60 = 0.008
-# D/Z from Jenkins 2009 (ISM depletions) + Draine et al. 2007 (dust budget)
+# D/Z from Jenkins 2009 (ISM depletions)
 MW_Z_GAS = 0.0134 * (1.0 - 0.40)   # ≈ 0.008, i.e. ~0.6 Z_sun gas-phase
 MW_DZ    = 0.40
 
@@ -136,6 +144,8 @@ RR14_LOGDG0   = -2.21
 RR14_ALPHA_H  =  1.0
 RR14_ALPHA_L  =  3.15
 RR14_OH_BREAK =  8.0
+
+_ISM_DEPLETED_NH_WARN = None
 
 def rr14_dz(Z_mass_frac):
     Z   = np.atleast_1d(np.asarray(Z_mass_frac, float))
@@ -214,7 +224,7 @@ def find_snap_near_z(snap_bases, target_z):
 
 def read_header(snap_base):
     """Read cosmological header; HubbleParam lives in Parameters, not Header."""
-    defaults = dict(h=0.6774, a=1.0, um_cgs=1.989e43, ul_cm=3.085678e21)
+    defaults = dict(h=0.6774, a=1.0, um_cgs=1.989e43, ul_cm=3.085678e21, box=None)
     for suffix in [".0.hdf5", ".hdf5"]:
         f = snap_base + suffix
         if os.path.exists(f):
@@ -228,6 +238,7 @@ def read_header(snap_base):
                         a      = float(attrs.get("Time",             defaults["a"])),
                         um_cgs = float(attrs.get("UnitMass_in_g",    defaults["um_cgs"])),
                         ul_cm  = float(attrs.get("UnitLength_in_cm", defaults["ul_cm"])),
+                        box    = float(attrs.get("BoxSize", defaults["box"])),
                     )
             except Exception:
                 pass
@@ -243,33 +254,37 @@ def subfiles(snap_base):
     return files
 
 
+_ref_cache = {}
+
 def get_halo_center(run, snap_base, resolution):
-    """Return halo center in comoving kpc/h and R_crit200."""
     m = re.search(r"snapshot_(\d+)$", snap_base)
-    if not m: return None, None
-    snap_num   = m.group(1)
-    groups_dir = output_dir(run, resolution) / f"groups_{snap_num}"
-    cats = sorted(glob.glob(
-        str(groups_dir / f"fof_subhalo_tab_{snap_num}.*.hdf5")))
-    if not cats: return None, None
-    try:
-        with h5py.File(cats[0], "r") as hf:
-            if "Group" not in hf: return None, None
-            grp = hf["Group"]
-            if "GroupPos" not in grp or grp["GroupPos"].shape[0] == 0:
-                return None, None
-            ctr  = grp["GroupPos"][0].astype(float)
-            # Prefer Crit200 over Mean200 for consistency with rest of pipeline
-            if "Group_R_Crit200" in grp:
-                r200 = float(grp["Group_R_Crit200"][0])
-            elif "Group_R_Mean200" in grp:
-                r200 = float(grp["Group_R_Mean200"][0])
-            else:
-                r200 = None
-    except Exception as e:
-        print(f"  [{run}/{resolution}] catalog error: {e}")
+    if not m:
         return None, None
-    return ctr, r200
+
+    snap_num = int(m.group(1))
+    odir = output_dir(run, resolution)
+    groups_dir = odir / f"groups_{snap_num:03d}"
+
+    key = (run, resolution)
+    if key not in _ref_cache:
+        _ref_cache[key] = get_halo569_reference(
+            odir,
+            refine_center=False,
+            verbose=False,
+        )
+
+    halo = get_halo569(
+        groups_dir,
+        snap_num,
+        _ref_cache[key],
+        refine_center=False,
+        verbose=False,
+    )
+
+    if halo is None or halo["r200_ckpch"] <= 0:
+        return None, None
+
+    return halo["center"], halo["r200_ckpch"]
 
 
 def density_to_nH(rho_code, um_cgs, ul_cm, h, a):
@@ -293,7 +308,7 @@ def density_to_nH(rho_code, um_cgs, ul_cm, h, a):
 # Threshold below which we flag a point as having a depleted/evacuated ISM.
 # A run where max nH within the aperture barely reaches this value has no
 # meaningful ISM and its D/Z measurement is unreliable.
-_ISM_DEPLETED_NH_WARN = 1e-3   # cm^-3
+_ISM_DEPLETED_NH_WARN = 0.0   # cm^-3
 
 
 def compute_integrated_dz(snap_base, run, resolution,
@@ -321,6 +336,7 @@ def compute_integrated_dz(snap_base, run, resolution,
     a      = hdr["a"]
     um_cgs = hdr["um_cgs"]
     ul_cm  = hdr["ul_cm"]
+    box    = hdr.get("box", None)
     to_pkpc = a / h
 
     ctr, r200 = get_halo_center(run, snap_base, resolution)
@@ -343,7 +359,12 @@ def compute_integrated_dz(snap_base, run, resolution,
                 if "PartType0" not in hf: continue
                 pt0  = hf["PartType0"]
                 pos  = pt0["Coordinates"][:]
-                r    = np.linalg.norm(pos - ctr, axis=1)
+                if box is not None:
+                    dx = pos - ctr[None, :]
+                    dx -= box * np.round(dx / box)
+                    r = np.sqrt((dx * dx).sum(axis=1))
+                else:
+                    r = np.linalg.norm(pos - ctr, axis=1)
                 mask = r < rmax_com
 
                 if not mask.any(): continue
@@ -381,7 +402,11 @@ def compute_integrated_dz(snap_base, run, resolution,
         except Exception as e:
             print(f"  [{run}/{resolution}] gas read error: {e}")
 
-    ism_depleted = nH_max_seen < _ISM_DEPLETED_NH_WARN
+    ism_depleted = (
+        _ISM_DEPLETED_NH_WARN is not None
+        and _ISM_DEPLETED_NH_WARN > 0
+        and nH_max_seen < _ISM_DEPLETED_NH_WARN
+    )
 
     if gas_mass_total <= 0:
         print(f"  [{run}/{resolution}] WARNING: no gas within aperture "
@@ -395,7 +420,12 @@ def compute_integrated_dz(snap_base, run, resolution,
                 if "PartType6" not in hf: continue
                 pt6  = hf["PartType6"]
                 pos  = pt6["Coordinates"][:]
-                r    = np.linalg.norm(pos - ctr, axis=1)
+                if box is not None:
+                    dx = pos - ctr[None, :]
+                    dx -= box * np.round(dx / box)
+                    r = np.sqrt((dx * dx).sum(axis=1))
+                else:
+                    r = np.linalg.norm(pos - ctr, axis=1)
                 mask = r < rmax_com
                 if not mask.any(): continue
                 dust_mass_total += pt6["Masses"][:][mask].sum()
@@ -435,29 +465,47 @@ def compute_integrated_dz(snap_base, run, resolution,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _draw_reference_data(ax):
-    """Plot observational and simulation reference curves."""
-    # Extend fit slightly past the data to show saturation plateau clearly
+    """Plot observational and simulation reference curves in monochrome."""
+    # Extend fit slightly past the data to show saturation plateau clearly.
     Z_fit = np.logspace(-4.0, np.log10(0.10), 400)
-    ax.plot(Z_fit, rr14_dz(Z_fit), color="black", lw=1.6, ls="--", zorder=5,
-            label="Rémy-Ruyer et al. 2014 (DGS+KINGFISH)")
-    ax.scatter(DEVIS19_Z, DEVIS19_DZ,
-               color="dimgray", marker="o", s=22, zorder=4,
-               edgecolors="none", alpha=0.7,
-               label="De Vis et al. 2019 (DustPedia)")
 
-    # MW reference at GAS-PHASE metallicity (see module docstring).
-    # Z_gas_MW = Z_total * (1 - D/Z) = 0.0134 * 0.60 ≈ 0.008
-    ax.scatter(MW_Z_GAS, MW_DZ,
-               marker="*", s=280, color="gray", zorder=8,
-               label=r"Milky Way (Jenkins 2009; Draine et al. 2007)")
+    # Milky Way reference at GAS-PHASE metallicity (see module docstring).
+    # Use a small triangle so it is comparable to the CosmicGrain markers.
+    ax.scatter(
+        MW_Z_GAS, MW_DZ,
+        marker="^", s=115, color="0.35", zorder=8,
+        edgecolors="white", linewidths=0.6,
+        label="Milky Way (Jenkins 2009)",
+    )
 
-    ax.plot(_mk17_z, _mk17_dz, color="firebrick",  lw=1.6, ls="-.", zorder=3,
-            label="McKinnon et al. 2017 (AREPO)")
-    ax.plot(_ao18_z, _ao18_dz, color="darkorange", lw=1.6, ls=":",  zorder=3,
-            label="Aoyama et al. 2018 (Gadget)")
-    ax.plot(_li19_z, _li19_dz, color="darkorchid", lw=1.6,
-            ls=(0,(4,2,1,2)), zorder=3, label="Li et al. 2019 (SIMBA)")
+    ax.plot(
+        Z_fit, rr14_dz(Z_fit),
+        color="black", lw=1.8, ls="--", zorder=5,
+        label="Rémy-Ruyer et al. 2014 (DGS+KINGFISH)",
+    )
 
+    ax.plot(
+        _mk17_z, _mk17_dz,
+        color="0.25", lw=1.5, ls="-.", zorder=3,
+        label="McKinnon et al. 2017 (AREPO)",
+    )
+    ax.plot(
+        _ao18_z, _ao18_dz,
+        color="0.40", lw=1.5, ls=":", zorder=3,
+        label="Aoyama et al. 2018 (Gadget)",
+    )
+    ax.plot(
+        _li19_z, _li19_dz,
+        color="0.15", lw=1.5, ls=(0, (4, 2, 1, 2)), zorder=3,
+        label="Li et al. 2019 (SIMBA)",
+    )
+
+    ax.scatter(
+        DEVIS19_Z, DEVIS19_DZ,
+        color="0.55", marker="o", s=22, zorder=4,
+        edgecolors="none", alpha=0.75,
+        label="De Vis et al. 2019 (DustPedia)",
+    )
 
 def _scatter_sim_point(ax, Z, DZ, color, marker, ms, label,
                         edge_color="white", alpha=1.0, unphysical=False):
@@ -488,31 +536,38 @@ def _finalize_axes(ax, aperture_pkpc, nh_min, z_weight, title_main):
     ax.set_xscale("log"); ax.set_yscale("log")
 
     # Extend right to 0.13 so the 10^-1 major tick is visible with margin
-    ax.set_xlim(5e-4, 0.13)
-    ax.set_ylim(3e-3, 1.5)
+    ax.set_xlim(1e-3, 1e-1)
+    ax.set_ylim(2e-3, 2.0)
 
-    ax.set_xlabel(r"Gas-phase Metallicity  $Z_{\rm gas}$", fontsize=12)
-    ax.set_ylabel(r"Dust-to-Metal Ratio  $D/Z$",           fontsize=12)
+    ax.set_xlabel(
+        r"Gas-phase Metallicity ($\mathrm{Z}_{\mathrm{gas}}$)", fontsize=12
+    )
+    ax.set_ylabel("Dust-to-Metal Ratio (D/Z)", fontsize=12)
 
-    weight_label = {"mass": r"mass-weighted $Z$",
-                    "sfr":  r"SFR-weighted $Z$",
-                    "both": r"mass- and SFR-weighted $Z$"}[z_weight]
-    nh_label = (f"    |    $n_{{\\rm H}} \\geq {nh_min}\\,{{\\rm cm}}^{{-3}}$"
-                if nh_min is not None else "")
-    # Title without "D/Z at" prefix — that information is on the y-axis label
-    ax.set_title(
-        f"{title_main}"
-        f"    |    $z = 0$    |    $r < {aperture_pkpc:.0f}\\,{{\\rm pkpc}}$"
-        f"{nh_label}    |    {weight_label}",
-        fontsize=9)
+    nh_label = f"  |  nH ≥ {nh_min:g} cm⁻³" if nh_min is not None else ""
+
+    # In-panel title, upper left. Keep z and r as upright text.
+    ax.text(
+        0.025, 0.975,
+        f"{title_main}  |  z = 0  |  r < {aperture_pkpc:.0f} pkpc{nh_label}",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=11,
+        color="black",
+        bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=2.5),
+        zorder=30,
+    )
 
     # Secondary x-axis in Z_sun units — set AFTER xlim is finalised
     ax2 = ax.twiny()
     ax2.grid(False)
     ax2.set_xscale("log")
     ax2.set_xlim(np.array(ax.get_xlim()) / Z_SOLAR)
-    ax2.set_xlabel(r"$Z_{\rm gas} / Z_\odot$", fontsize=10)
-    ax2.tick_params(labelsize=8)
+    ax2.set_xlabel(
+        r"Solar Metallicity ($\mathrm{Z}_{\mathrm{gas}}/\mathrm{Z}_{\odot}$)", fontsize=10
+    )
+    ax2.tick_params(axis="x", which="both", labelsize=12)
 
     # ── Split legend ──────────────────────────────────────────────────────────
     # Separate handles into (1) observational / simulation-comparison references
@@ -521,38 +576,45 @@ def _finalize_axes(ax, aperture_pkpc, nh_min, z_weight, title_main):
     # Reference items are identified by a fixed set of label prefixes.
     # Everything else (S0–S10 rungs, resolution labels) goes into the sim legend.
     REF_PREFIXES = (
-        "Rémy-Ruyer", "De Vis", "Milky Way",
-        "McKinnon",   "Aoyama", "Li et al",
+        "De Vis",       # 2019
+        "Li et al",     # 2019
+        "Aoyama",       # 2018
+        "McKinnon",     # 2017
+        "Rémy-Ruyer",   # 2014
+        "Milky Way",    # Jenkins 2009
     )
 
     handles, labels_leg = ax.get_legend_handles_labels()
     by_label = dict(zip(labels_leg, handles))   # deduplicate by label text
 
     ref_h, ref_l, sim_h, sim_l = [], [], [], []
+    for prefix in REF_PREFIXES:
+        for lbl, hdl in by_label.items():
+            if lbl.startswith(prefix):
+                ref_h.append(hdl); ref_l.append(lbl)
+
     for lbl, hdl in by_label.items():
-        if any(lbl.startswith(p) for p in REF_PREFIXES):
-            ref_h.append(hdl); ref_l.append(lbl)
-        else:
+        if not any(lbl.startswith(p) for p in REF_PREFIXES):
             sim_h.append(hdl); sim_l.append(lbl)
 
-    def _make_leg(handles, labels, loc, title=None):
+    def _make_leg(handles, labels, loc, title=None, framealpha=0.90):
         leg = ax.legend(handles, labels, fontsize=8, loc=loc,
                         ncol=1, handlelength=2.2, borderpad=0.6,
                         title=title, title_fontsize=8)
         leg.get_frame().set_facecolor("white")
-        leg.get_frame().set_alpha(0.7)
+        leg.get_frame().set_alpha(framealpha)
         leg.get_frame().set_edgecolor("0.8")
         leg.set_zorder(20)
         return leg
 
     # Comparison references → lower right (compact, below the sim data cluster)
     if ref_h:
-        leg_ref = _make_leg(ref_h, ref_l, "lower right")
+        leg_ref = _make_leg(ref_h, ref_l, "lower right", framealpha=0.86)
         ax.add_artist(leg_ref)
 
-    # CosmicGrain rungs → lower left (empty triangle below the trend lines)
+    # CosmicGrain rungs → lower left, more opaque so the colored points stand out.
     if sim_h:
-        _make_leg(sim_h, sim_l, "lower left")
+        _make_leg(sim_h, sim_l, "lower left", framealpha=0.96)
 
     ax.grid(True, which="both", ls=":", alpha=0.25, color="gray", zorder=0)
     ax.tick_params(which="both", direction="in", top=False)
@@ -615,7 +677,7 @@ def make_plot_ladder(run_points, resolution, aperture_pkpc, nh_min,
                         arrowprops=dict(arrowstyle="-|>", color=color,
                                         lw=0.8, mutation_scale=7), zorder=8)
 
-    title = f"CosmicGrain ${resolution}^3$"
+    title = f"CosmicGrain {resolution}³"
     _finalize_axes(ax, aperture_pkpc, nh_min, z_weight, title)
     fig.tight_layout()
     fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
@@ -754,9 +816,9 @@ def main():
     elif convergence_mode:
         runs_str = "_".join(runs)
         res_str  = "_".join(str(r) for r in resolutions)
-        out = FIGDIR / f"dz_convergence_{runs_str}_{res_str}_{args.z_weight}.png"
+        out = FIGDIR / f"dz_convergence_{runs_str}_{res_str}_{args.z_weight}.pdf"
     else:
-        out = FIGDIR / f"dz_integrated_{resolutions[0]}_{args.z_weight}.png"
+        out = FIGDIR / f"dz_integrated_{resolutions[0]}_{args.z_weight}.pdf"
 
     nh_str = f"{args.nh_min} cm^-3" if args.nh_min is not None else "none"
     print(f"\nMode:        {'convergence' if convergence_mode else 'physics ladder'}")

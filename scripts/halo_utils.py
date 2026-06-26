@@ -1,346 +1,212 @@
 """
 halo_utils.py
 =============
-Shared utilities for all CosmicGrain analysis scripts.
+Clean shared utilities for CosmicGrain Halo 569 analysis.
 
-=======================================================================
-PRIMARY API  -- use these in all new and updated scripts
-=======================================================================
+Core philosophy
+---------------
+1. Use the FOF/Subfind catalog only to identify the target group and get an
+   initial center.
+2. Compute R200c/M200c directly from particles around that center using a true
+   spherical-overdensity calculation.
+3. Keep units explicit everywhere.
 
-Position-based Halo 569 tracking:
+Unit conventions
+----------------
+Snapshot/catalog positions : comoving kpc/h  (ckpc/h)
+Snapshot/catalog masses    : 1e10 Msun/h     (Gadget code mass units)
+Physical distance          : pkpc = ckpc/h * a / h
+Physical mass              : Msun = code_mass * 1e10 / h
+Returned halo['center']    : ckpc/h
+Returned halo['r200_ckpch']: ckpc/h
+Returned halo['r200_pkpc'] : physical kpc
+Returned halo['m200_code'] : 1e10 Msun/h
+Returned halo['m200_msun'] : Msun
 
-    from halo_utils import get_halo569_reference, get_halo569
-
-    # Once at the top of a multi-snapshot loop:
+Primary API
+-----------
     ref  = get_halo569_reference(output_dir)
-
-    # Per snapshot:
     halo = get_halo569(groups_dir, snap_num, ref)
-    halo['center']      # comoving kpc/h
-    halo['r200_ckpch']  # R_Crit200 comoving kpc/h
-    halo['r200_pkpc']   # R_Crit200 physical kpc
-    halo['m200_code']   # M_Crit200 in 1e10 Msun/h
 
-HALO 569 IDENTIFICATION
-------------------------
-Halo 569 is selected as the FOF group with the highest STELLAR mass
-(argmax GroupMassType[:,4]) across ALL catalog chunks. This correctly
-targets the zoom galaxy rather than potentially more massive but
-star-poor neighbouring dark matter halos.
+Optional particle loader:
+    pdata = load_particles_within_radius(snapdir, halo['center'], halo['r200_ckpch'])
 
-Falls back to argmax(M200) at early epochs before any stars form
-(all GroupMassType[:,4] == 0).
-
-Never uses Group[0] of chunk .0 only, which:
-  a) reads only a fraction of the total groups, and
-  b) ranks by M200 which can select a massive star-poor neighbour.
-
-POSITION-BASED TRACKING
-------------------------
-Once the z=0 stellar-mass-selected centre is established, subsequent
-snapshots find Halo 569 as the CLOSEST group to that reference position
-within 3 Mpc/h. Comoving coordinates are approximately conserved along
-the main progenitor; peculiar drift << search radius.
-
-UNIT CONVENTIONS (enforced throughout)
----------------------------------------
-  GroupPos / R200 / coordinates : comoving kpc/h  (ckpc/h)
-  Masses                        : 1e10 Msun/h     (code units)
-  HubbleParam h                 : from f["Parameters"].attrs["HubbleParam"]
-  Physical kpc = ckpc/h / h * a
-
-=======================================================================
-BACKWARD-COMPATIBLE API  -- existing scripts unchanged
-=======================================================================
-
-All original signatures are preserved exactly.
+Notes
+-----
+This version deliberately does NOT use GroupMass as M200 and does NOT derive
+R200 from GroupMass. FOF mass can include bridges/companions and is not a
+spherical-overdensity mass. Catalog Group_R_Crit200/Group_M_Crit200 are kept
+as diagnostics only.
 """
+
+from __future__ import annotations
 
 import re
 import glob as _glob
-import numpy as np
-import h5py
 from pathlib import Path
+from typing import Dict, Iterable, Optional, Sequence, Tuple
 
-# Search radius for position-based tracking [ckpc/h].
-# 3 Mpc/h spans any plausible progenitor drift while excluding
-# unrelated halos (isolation radius >> 3 Mpc at all epochs).
+import h5py
+import numpy as np
+
+# -----------------------------------------------------------------------------
+# Constants
+# -----------------------------------------------------------------------------
+
+MSUN_PER_CODE = 1.0e10          # Gadget mass unit: 1e10 Msun/h
+MSUN_IN_G     = 1.98847e33
+KPC_IN_CM     = 3.085677581e21
+MPC_IN_CM     = 3.085677581e24
+KM_IN_CM      = 1.0e5
+G_CGS         = 6.67430e-8
+
 HALO569_SEARCH_RADIUS_CKPCH = 3000.0
+DEFAULT_SO_RMAX_CKPCH       = 2000.0
 
+# For loading spatial particle subsets.
 _SPATIAL_FIELDS = {
-    0: ["Coordinates", "Masses", "Density", "Metallicity",
-        "InternalEnergy", "StarFormationRate"],
-    4: ["Coordinates", "Masses"],
-    6: ["Coordinates", "Masses", "GrainRadius", "CarbonFraction",
-        "GrainType", "DustTemperature", "Velocities"],
-}
-
-PARTICLE_TYPE_FIELDS = {
-    0: ["Coordinates", "Masses", "Velocities", "Density", "Metallicity",
-        "InternalEnergy", "StarFormationRate"],
+    0: ["Coordinates", "Masses", "Density", "Metallicity", "InternalEnergy", "StarFormationRate"],
     1: ["Coordinates", "Velocities", "ParticleIDs"],
     2: ["Coordinates", "Velocities", "ParticleIDs"],
-    4: ["Coordinates", "Masses", "Velocities", "Metallicity",
-        "StellarFormationTime", "ParticleIDs"],
+    4: ["Coordinates", "Masses", "Velocities", "Metallicity", "StellarFormationTime", "ParticleIDs"],
     5: ["Coordinates", "Masses", "Velocities", "ParticleIDs"],
-    6: ["Coordinates", "Masses", "GrainRadius", "GrainType",
-        "DustTemperature", "CarbonFraction", "Velocities"],
+    6: ["Coordinates", "Masses", "GrainRadius", "GrainType", "DustTemperature", "CarbonFraction", "Velocities", "ParticleIDs"],
 }
 
-UNIT_MASS     = 1e10
-UNIT_LENGTH   = 1.0
-UNIT_VELOCITY = 1.0
-MSUN_PER_CODE = 1e10   # Gadget default: 1 code unit = 1e10 M_sun/h
+# Per-resolution override for z=0 target selection.
+# These are global FOF group indices across all catalog chunks.
+_HALO569_Z0_OVERRIDES = {
+    "2048": 4,
+}
 
 
-# ==============================================================================
-# Internal I/O helpers
-# ==============================================================================
+# -----------------------------------------------------------------------------
+# File discovery and headers
+# -----------------------------------------------------------------------------
 
-def find_last_snap_num(output_dir):
-    """
-    Return the highest snapshot number in output_dir that has both
-    a snapdir_NNN directory and a groups_NNN catalog directory.
-    Returns None if no complete snapshot is found.
-    """
-    output_dir = Path(output_dir)
-    last = None
-    for snapdir in sorted(output_dir.glob("snapdir_*")):
-        m = re.search(r"snapdir_(\d+)", snapdir.name)
-        if not m:
-            continue
-        snap_num   = int(m.group(1))
-        groups_dir = output_dir / f"groups_{snap_num:03d}"
-        if groups_dir.exists() and list(groups_dir.glob("fof_subhalo_tab_*.hdf5")):
-            last = snap_num
-    return last
-
-def _compute_r200_from_m200_simple(m200_code, h, a, Omega0=0.3158, OmegaL=0.6842):
-    """Compute R200 in ckpc/h from M200 in code units."""
-    G_cgs     = 6.674e-8
-    KM_IN_CM  = 1e5
-    MPC_IN_CM = 3.085678e24
-    um_cgs    = 1.989e43
-    ul_cm     = 3.085678e21
-    H0_cgs    = 100.0 * h * KM_IN_CM / MPC_IN_CM
-    Hz_cgs    = H0_cgs * np.sqrt(Omega0 * a**-3 + OmegaL)
-    rho_crit  = 3.0 * Hz_cgs**2 / (8.0 * np.pi * G_cgs)
-    r200_cm   = (3.0 * m200_code * um_cgs / (4.0 * np.pi * 200.0 * rho_crit))**(1.0/3.0)
-    return r200_cm / ul_cm  # ckpc/h
-
-def glob_snap_chunks(path):
-    """Return sorted HDF5 chunk files for a snapshot directory or base path."""
+def glob_snap_chunks(path: str | Path) -> list[Path]:
+    """Return sorted HDF5 chunk files for a snapdir or snapshot base path."""
     p = Path(path)
     if p.is_dir():
         chunks = sorted(p.glob("*.hdf5"))
     else:
-        stem   = re.sub(r"(\.\d+)?\.hdf5$", "", str(p))
+        stem = re.sub(r"(\.\d+)?\.hdf5$", "", str(p))
         chunks = sorted(Path(stem).parent.glob(Path(stem).name + "*.hdf5"))
     if not chunks:
         raise FileNotFoundError(f"No HDF5 chunks found at: {path}")
     return chunks
 
 
-def glob_catalog_chunks(groups_dir, snap_num):
-    """Return sorted FOF catalog chunks for snap_num inside groups_dir."""
-    chunks = sorted(Path(groups_dir).glob(
-        f"fof_subhalo_tab_{snap_num:03d}*.hdf5"))
+def glob_catalog_chunks(groups_dir: str | Path, snap_num: int) -> list[Path]:
+    """Return sorted FOF/Subfind catalog chunks for a snapshot."""
+    chunks = sorted(Path(groups_dir).glob(f"fof_subhalo_tab_{snap_num:03d}*.hdf5"))
     if not chunks:
-        raise FileNotFoundError(
-            f"No catalog for snap {snap_num:03d} in {groups_dir}")
+        raise FileNotFoundError(f"No catalog for snap {snap_num:03d} in {groups_dir}")
     return chunks
 
 
-def read_snap_header(snap_path):
-    """Read cosmological header. Returns dict: h, a, z, box."""
-    chunks = glob_snap_chunks(snap_path)
-    with h5py.File(chunks[0], "r") as f:
-        h   = float(f["Parameters"].attrs["HubbleParam"])
-        a   = float(f["Header"].attrs["Time"])
-        z   = float(f["Header"].attrs["Redshift"])
-        box = float(f["Header"].attrs["BoxSize"])
-    return dict(h=h, a=a, z=z, box=box)
+def find_last_snap_num(output_dir: str | Path) -> Optional[int]:
+    """Highest snapshot number with both snapdir_NNN and groups_NNN."""
+    output_dir = Path(output_dir)
+    last = None
+    for snapdir in sorted(output_dir.glob("snapdir_*")):
+        m = re.search(r"snapdir_(\d+)", snapdir.name)
+        if not m:
+            continue
+        snap_num = int(m.group(1))
+        groups_dir = output_dir / f"groups_{snap_num:03d}"
+        if groups_dir.exists() and list(groups_dir.glob("fof_subhalo_tab_*.hdf5")):
+            last = snap_num
+    return last
 
 
-def read_fof_catalog(groups_dir, snap_num):
-    """
-    Read ALL FOF group entries from a multi-chunk catalog.
+def find_snapshots(output_dir: str | Path) -> list[tuple[int, Path, Path]]:
+    """Sorted list of (snap_num, snapdir, groups_dir) with both snapshots/catalogs."""
+    output_dir = Path(output_dir)
+    out = []
+    for snapdir in sorted(output_dir.glob("snapdir_*")):
+        m = re.search(r"snapdir_(\d+)", snapdir.name)
+        if not m:
+            continue
+        snap_num = int(m.group(1))
+        groups_dir = output_dir / f"groups_{snap_num:03d}"
+        if groups_dir.exists() and list(groups_dir.glob("fof_subhalo_tab_*.hdf5")):
+            out.append((snap_num, snapdir, groups_dir))
+    return out
 
-    Returns dict {'pos', 'r200', 'm200', 'mstar'} in Gadget native units
-    (ckpc/h, 1e10 Msun/h), or None if no groups exist yet.
 
-    mstar is GroupMassType[:,4] — stellar mass within the FOF group.
-    Used for stellar-mass-based halo identification.
-    """
+def read_snap_header(snap_path: str | Path) -> dict:
+    """Read h, a, z, box, Omega0, OmegaLambda from a snapshot/snapdir."""
+    with h5py.File(glob_snap_chunks(snap_path)[0], "r") as f:
+        h = float(f["Parameters"].attrs.get("HubbleParam", f["Header"].attrs.get("HubbleParam", 1.0)))
+        hdr = f["Header"].attrs
+        return {
+            "h": h,
+            "a": float(hdr["Time"]),
+            "z": float(hdr["Redshift"]),
+            "box": float(hdr["BoxSize"]),
+            "Omega0": float(hdr.get("Omega0", 0.3158)),
+            "OmegaLambda": float(hdr.get("OmegaLambda", 0.6842)),
+        }
+
+
+def _read_catalog_a(groups_dir: str | Path, snap_num: int) -> float:
+    try:
+        with h5py.File(glob_catalog_chunks(groups_dir, snap_num)[0], "r") as f:
+            return float(f["Header"].attrs["Time"])
+    except Exception:
+        return 1.0
+
+
+# -----------------------------------------------------------------------------
+# Catalog reading and target selection
+# -----------------------------------------------------------------------------
+
+def read_fof_catalog(groups_dir: str | Path, snap_num: int) -> Optional[dict]:
+    """Read all FOF groups from all catalog chunks."""
     try:
         chunks = glob_catalog_chunks(groups_dir, snap_num)
     except FileNotFoundError:
         return None
 
-    pos_l   = []
-    r200_l  = []
-    m200_l  = []
-    mstar_l = []
-
+    pos_l, r200_l, m200_l, mstar_l, gmass_l = [], [], [], [], []
     for chunk in chunks:
         with h5py.File(chunk, "r") as f:
-            if "Group" not in f:
+            if "Group" not in f or "GroupPos" not in f["Group"]:
                 continue
-            grp = f["Group"]
-            if "GroupPos" not in grp or len(grp["GroupPos"]) == 0:
+            g = f["Group"]
+            n = len(g["GroupPos"])
+            if n == 0:
                 continue
-            pos_l.append(grp["GroupPos"][:])
-            r200_l.append(grp["Group_R_Crit200"][:])
-            m200_l.append(grp["Group_M_Crit200"][:])
-            if "GroupMassType" in grp:
-                mstar_l.append(grp["GroupMassType"][:, 4])
+            pos_l.append(g["GroupPos"][:])
+            r200_l.append(g["Group_R_Crit200"][:] if "Group_R_Crit200" in g else np.zeros(n))
+            m200_l.append(g["Group_M_Crit200"][:] if "Group_M_Crit200" in g else np.zeros(n))
+            if "GroupMassType" in g:
+                mstar_l.append(g["GroupMassType"][:, 4])
             else:
-                mstar_l.append(np.zeros(len(grp["GroupPos"])))
+                mstar_l.append(np.zeros(n))
+            gmass_l.append(g["GroupMass"][:] if "GroupMass" in g else np.zeros(n))
 
     if not pos_l:
         return None
 
-    return dict(
-        pos   = np.concatenate(pos_l,   axis=0),
-        r200  = np.concatenate(r200_l,  axis=0),
-        m200  = np.concatenate(m200_l,  axis=0),
-        mstar = np.concatenate(mstar_l, axis=0),
-    )
+    return {
+        "pos": np.concatenate(pos_l, axis=0),
+        "r200_catalog": np.concatenate(r200_l),
+        "m200_catalog": np.concatenate(m200_l),
+        "mstar": np.concatenate(mstar_l),
+        "group_mass": np.concatenate(gmass_l),
+    }
 
 
-def get_unit_mass(snap_path):
-    """UnitMass_in_g from snapshot Parameters; falls back to 1e10 Msun."""
-    chunks = glob_snap_chunks(snap_path)
-    with h5py.File(chunks[0], "r") as f:
-        params = f.get("Parameters", {})
-        um = params.attrs.get("UnitMass_in_g", None) if params else None
-    return float(um) if um is not None else 1.989e43
+def _select_primary_halo_idx(cat: dict) -> tuple[int, str]:
+    """Select by stellar mass if present, otherwise by GroupMass."""
+    if np.nanmax(cat["mstar"]) > 0:
+        return int(np.nanargmax(cat["mstar"])), "Mstar"
+    return int(np.nanargmax(cat["group_mass"])), "GroupMass"
 
 
-def find_snapshots(output_dir):
-    """
-    Return sorted list of (snap_num, snapdir_path, groups_dir_path) for all
-    snapshots that have both a snapdir and a groups directory with catalogs.
-    """
-    output_dir = Path(output_dir)
-    entries    = []
-    for snapdir in sorted(output_dir.glob("snapdir_*")):
-        m = re.search(r"snapdir_(\d+)", snapdir.name)
-        if not m:
-            continue
-        snap_num   = int(m.group(1))
-        groups_dir = output_dir / f"groups_{snap_num:03d}"
-        if not groups_dir.exists():
-            continue
-        if not list(groups_dir.glob("fof_subhalo_tab_*.hdf5")):
-            continue
-        entries.append((snap_num, snapdir, groups_dir))
-    return entries
-
-
-# ==============================================================================
-# PRIMARY API -- position-based Halo 569 tracking
-# ==============================================================================
-
-def _select_primary_halo_idx(cat):
-    """
-    Select the primary halo index from a catalog dict.
-
-    Uses stellar mass argmax (GroupMassType[:,4]) — correctly identifies
-    the zoom target galaxy rather than the most massive dark matter halo.
-    Falls back to M200 argmax when no stars have formed yet.
-
-    Parameters
-    ----------
-    cat : dict from read_fof_catalog() with keys pos, r200, m200, mstar
-
-    Returns
-    -------
-    idx : int
-    selection_by : str  ('M*' or 'M200')
-    """
-    if cat["mstar"].max() > 0:
-        return int(np.argmax(cat["mstar"])), "M*"
-    else:
-        return int(np.argmax(cat["m200"])), "M200"
-
-
-# ---------------------------------------------------------------------------
-# Per-resolution z=0 override table for Halo 569
-# ---------------------------------------------------------------------------
-# At some resolutions the stellar mass argmax selects the wrong FOF group
-# (e.g. a massive but star-poor merger companion).  These hardcoded overrides
-# force the correct group index at z=0, derived by cross-matching with the
-# known 1024^3 comoving position and visual inspection of the top candidates.
-#
-# Format: output_dir_substring -> group_idx_at_snap49
-#
-# To add a new resolution:
-#   1. Run the diagnostic in the comments at the bottom of this file
-#   2. Identify the group closest in position to (34312, 34415, 35122) pkpc
-#      with physically reasonable R200 (100-150 pkpc) and logM*~9.7
-#   3. Add its index here
-#
-_HALO569_Z0_OVERRIDES = {
-    # key: substring of output_dir path  →  value: FOF group index at snap 49
-    "2048": 4,    # Idx=4: pos~(34436,34050,34899), R200=110.4 pkpc, logM*=9.63
-                  # Idx=0 (stellar argmax) is a merger-inflated neighbour with
-                  # R200=318.9 pkpc and logM*=11.10 -- wrong object
-}
-
-def find_shrinking_sphere_center(snap_path, initial_center, box,
-                                  start_r=300.0, shrink=0.75,
-                                  n_min=50, n_iter=40, verbose=False):
-    """
-    Density-weighted shrinking sphere center from gas particles.
-    
-    Starting from initial_center (ckpc/h), iteratively shrinks a sphere
-    and recomputes the density-weighted centroid until fewer than n_min
-    particles remain or n_iter is reached.
-    
-    Returns converged center in ckpc/h.
-    """
-    chunks = glob_snap_chunks(snap_path)
-    all_pos, all_rho = [], []
-    for chunk in chunks:
-        with h5py.File(chunk, 'r') as f:
-            if 'PartType0' not in f: continue
-            pos = f['PartType0/Coordinates'][:]
-            rho = f['PartType0/Density'][:]
-            # Pre-filter to 2x start_r to avoid loading entire box
-            dx = pos - initial_center
-            dx -= box * np.round(dx / box)
-            mask = np.sqrt((dx**2).sum(1)) < 2 * start_r
-            if mask.any():
-                all_pos.append(pos[mask])
-                all_rho.append(rho[mask])
-
-    if not all_pos:
-        if verbose:
-            print(f'  [shrinking_sphere] no gas found near {initial_center}')
-        return initial_center.copy()
-
-    pos = np.concatenate(all_pos)
-    rho = np.concatenate(all_rho)
-    ctr = initial_center.copy().astype(float)
-    r   = float(start_r)
-
-    for i in range(n_iter):
-        dx   = pos - ctr
-        dx  -= box * np.round(dx / box)
-        d    = np.sqrt((dx**2).sum(1))
-        mask = d < r
-        if mask.sum() < n_min:
-            break
-        ctr = np.average(pos[mask], weights=rho[mask], axis=0)
-        r  *= shrink
-        if verbose:
-            print(f'    iter {i:2d}: r={r:.1f} N={mask.sum()} ctr={ctr}')
-
-    return ctr
-
-def _get_z0_override(output_dir):
-    """Return hardcoded group index override for output_dir, or None."""
+def _get_z0_override(output_dir: str | Path) -> Optional[int]:
     s = str(output_dir)
     for key, idx in _HALO569_Z0_OVERRIDES.items():
         if key in s:
@@ -348,482 +214,542 @@ def _get_z0_override(output_dir):
     return None
 
 
-def get_halo569_reference(output_dir, snap_num_z0=None):
+def _periodic_delta(pos: np.ndarray, center: np.ndarray, box: float) -> np.ndarray:
+    dx = pos - center
+    dx -= box * np.round(dx / box)
+    return dx
+
+
+# -----------------------------------------------------------------------------
+# Spherical-overdensity calculation
+# -----------------------------------------------------------------------------
+
+def rho_crit_cgs(a: float, h: float, Omega0: float = 0.3158, OmegaLambda: float = 0.6842) -> float:
+    """Critical density at scale factor a in g/cm^3."""
+    H0 = 100.0 * h * KM_IN_CM / MPC_IN_CM
+    Hz = H0 * np.sqrt(Omega0 * a**-3 + OmegaLambda)
+    return 3.0 * Hz**2 / (8.0 * np.pi * G_CGS)
+
+
+def compute_spherical_overdensity(
+    snap_path: str | Path,
+    center_ckpch: np.ndarray,
+    rmax_ckpch: float = DEFAULT_SO_RMAX_CKPCH,
+    Delta: float = 200.0,
+    rho_ref: str = "crit",
+    part_types: Sequence[int] = (0, 1, 2, 4, 5, 6),
+    verbose: bool = False,
+) -> Optional[dict]:
     """
-    Establish Halo 569's z=0 (or last available) comoving position.
-    If snap_num_z0 is None, automatically uses the highest snapshot
-    number with both a snapdir and a catalog.
+    Compute R_Delta and M_Delta directly from particles around center.
+
+    The SO crossing is found by sorting particles by radius and finding where
+    mean enclosed density first drops below Delta*rho_ref. A linear interpolation
+    in log(rho) versus log(r) is used at the crossing.
     """
-    output_dir = Path(output_dir)
-
-    if snap_num_z0 is None:
-        snap_num_z0 = find_last_snap_num(output_dir)
-        if snap_num_z0 is None:
-            raise RuntimeError(
-                f"No complete snapshot (snapdir+catalog) found in {output_dir}")
-
-    groups_dir = output_dir / f"groups_{snap_num_z0:03d}"
-    snapdir    = output_dir / f"snapdir_{snap_num_z0:03d}"
-
-    hdr = read_snap_header(snapdir)
-    cat = read_fof_catalog(groups_dir, snap_num_z0)
-    if cat is None:
-        raise RuntimeError(
-            f"No FOF groups in {groups_dir} -- cannot establish z=0 reference")
-
-    h = hdr["h"]
-    a = hdr["a"]
-
-    override_idx = _get_z0_override(output_dir)
-    if override_idx is not None:
-        idx    = override_idx
-        sel_by = f"hardcoded override (idx={idx})"
-    else:
-        idx, sel_by = _select_primary_halo_idx(cat)
-
-    fof_center = cat["pos"][idx].astype(float)
-    r200       = float(cat["r200"][idx])
-    m200       = float(cat["m200"][idx])
-    mstar      = float(cat["mstar"][idx]) * MSUN_PER_CODE / h
-
-    # Refine center with shrinking sphere on gas density peak
-    refined_center = find_shrinking_sphere_center(
-        snapdir, fof_center, hdr["box"], verbose=True)
-    offset = np.linalg.norm(refined_center - fof_center)
-
-    print(f"[halo_utils] Halo 569 z=0 reference  (selected by {sel_by})")
-    print(f"  FOF group idx   : {idx}  (across {len(cat['pos'])} total groups)")
-    print(f"  FOF centre      : [{fof_center[0]:.1f}, {fof_center[1]:.1f}, "
-          f"{fof_center[2]:.1f}] ckpc/h")
-    print(f"  Refined centre  : [{refined_center[0]:.1f}, {refined_center[1]:.1f}, "
-          f"{refined_center[2]:.1f}] ckpc/h  (offset={offset:.1f} ckpc/h)")
-    print(f"  R_Crit200       : {r200:.1f} ckpc/h  ({r200/h*a:.1f} pkpc)")
-    print(f"  M_Crit200       : {m200:.3e} [1e10 Msun/h]  ({m200*1e10/h:.3e} Msun)")
-    print(f"  M_star          : {mstar:.3e} Msun")
-    print(f"  search radius   : {HALO569_SEARCH_RADIUS_CKPCH:.0f} ckpc/h"
-          f"  ({HALO569_SEARCH_RADIUS_CKPCH/h:.0f} pkpc)")
-
-    return dict(
-        center_ckpch = refined_center,  # shrinking-sphere, not FOF
-        box_ckpch    = hdr["box"],
-        h            = h,
-        a            = a,
-        r200_ckpch   = r200,
-        r200_pkpc    = r200 / h * a,
-        m200_code    = m200,
-        snap_num_z0  = snap_num_z0,
-    )
-
-
-def get_halo569(groups_dir, snap_num, ref,
-                search_radius_ckpch=HALO569_SEARCH_RADIUS_CKPCH,
-                verbose=True):
-    cat = read_fof_catalog(groups_dir, snap_num)
-    if cat is None:
-        return None
-
-    ref_pos = ref["center_ckpch"]
-    box     = ref["box_ckpch"]
-    h       = ref["h"]
-    a       = _read_catalog_a(groups_dir, snap_num)
-
-    dx   = cat["pos"] - ref_pos[None, :]
-    dx  -= box * np.round(dx / box)
-    dist = np.sqrt((dx**2).sum(axis=1))
-
-    within   = dist <= search_radius_ckpch
-    n_within = int(within.sum())
-    fallback = False
-
-    if n_within == 0:
-        idx, sel_by = _select_primary_halo_idx(cat)
-        fallback    = True
-        if verbose:
-            print(f"  [halo569] snap {snap_num:03d}: no group within "
-                  f"{search_radius_ckpch:.0f} ckpc/h. "
-                  f"Falling back to {sel_by} argmax (idx={idx}).")
-    else:
-        # Among groups within search radius, prefer those with substantial M200
-        # Minimum threshold: 1.0 code unit = 1.5e10 Msun (excludes satellites)
-        M200_MIN = 1.0
-        valid = within & (cat["m200"] >= M200_MIN) & (cat["r200"] > 0)
-        if valid.any():
-            dist_valid = np.where(valid, dist, np.inf)
-            idx = int(np.argmin(dist_valid))
-            if verbose:
-                print(f"  [halo569] snap {snap_num:03d}: selected group {idx} "
-                      f"with M200={cat['m200'][idx]:.2f}, "
-                      f"dist={dist[idx]:.0f} ckpc/h")
-        else:
-            # Fall back to stellar mass argmax
-            idx, sel_by = _select_primary_halo_idx(cat)
-            fallback = True
-            if verbose:
-                print(f"  [halo569] snap {snap_num:03d}: no group with "
-                      f"M200>{M200_MIN} within search radius, "
-                      f"falling back to {sel_by} argmax (idx={idx})")
-
-    fof_center = cat["pos"][idx].astype(float)
-    r200 = float(cat["r200"][idx])
-    m200 = float(cat["m200"][idx])
-    
-    # R200 can be zero during merger fragmentation — compute from M200
-    if r200 <= 0 and m200 > 0:
-        r200 = _compute_r200_from_m200_simple(m200, h, a)
-        if verbose:
-            print(f"  [halo569] snap {snap_num:03d}: R200=0 in catalog, "
-                      f"computed from M200={m200:.3f}: R200={r200:.1f} ckpc/h")
-
-    # Refine center with shrinking sphere on gas density peak
-    groups_path = Path(groups_dir)
-    output_dir  = groups_path.parent
-    snapdir     = output_dir / f"snapdir_{snap_num:03d}"
-
-    if snapdir.exists():
-        refined_center = find_shrinking_sphere_center(
-            snapdir, fof_center, box, verbose=False)
-        if verbose:
-            offset = np.linalg.norm(refined_center - fof_center)
-            print(f"  [halo569] snap {snap_num:03d}: FOF={fof_center}, "
-                  f"refined={refined_center}, offset={offset:.1f} ckpc/h")
-        center = refined_center
-    else:
-        if verbose:
-            print(f"  [halo569] snap {snap_num:03d}: no snapdir found, "
-                  f"using FOF center")
-        center = fof_center
-
-    return dict(
-        center       = center,
-        r200_ckpch   = r200,
-        r200_pkpc    = r200 / h * a,
-        m200_code    = m200,
-        dist_ckpch   = float(dist[idx]),
-        n_within     = n_within,
-        used_fallback= fallback,
-    )
-
-
-def _read_catalog_a(groups_dir, snap_num):
-    """Scale factor from catalog header; falls back to 1.0."""
-    try:
-        chunks = glob_catalog_chunks(groups_dir, snap_num)
-        with h5py.File(chunks[0], "r") as f:
-            return float(f["Header"].attrs["Time"])
-    except Exception:
-        return 1.0
-
-
-def load_particles_within_r200(snap_path, halo, part_types=(4, 6)):
-    """
-    Spatially load particles within R_Crit200 of Halo 569.
-
-    Parameters
-    ----------
-    snap_path  : str or Path (snapdir or snapshot base)
-    halo       : dict from get_halo569()
-    part_types : tuple of ints
-
-    Returns
-    -------
-    dict {ptype: {field: array, ...}}
-    """
-    center = halo["center"]
-    r200   = halo["r200_ckpch"]
     chunks = glob_snap_chunks(snap_path)
-    box    = None
+    hdr = read_snap_header(snap_path)
+    h, a, box = hdr["h"], hdr["a"], hdr["box"]
+    Om, OL = hdr["Omega0"], hdr["OmegaLambda"]
 
-    buffers = {pt: {f: [] for f in _SPATIAL_FIELDS.get(
-                    pt, ["Coordinates", "Masses"])}
-               for pt in part_types}
+    radii_l, masses_l = [], []
+    center = np.asarray(center_ckpch, dtype=float)
 
     for chunk in chunks:
         with h5py.File(chunk, "r") as f:
-            if box is None:
-                box = float(f["Header"].attrs["BoxSize"])
-            for pt in part_types:
-                key = f"PartType{pt}"
-                if key not in f:
+            mass_table = f["Header"].attrs.get("MassTable", np.zeros(7))
+            for ptype in part_types:
+                key = f"PartType{ptype}"
+                if key not in f or "Coordinates" not in f[key]:
                     continue
-                grp    = f[key]
-                coords = grp["Coordinates"][:]
-                dx     = coords - center[None, :]
-                dx    -= box * np.round(dx / box)
-                mask   = np.sqrt((dx**2).sum(axis=1)) <= r200
+                coords = f[key]["Coordinates"][:]
+                dx = _periodic_delta(coords, center, box)
+                r = np.sqrt((dx * dx).sum(axis=1))
+                mask = r <= rmax_ckpch
                 if not mask.any():
                     continue
-                for field in _SPATIAL_FIELDS.get(pt, ["Coordinates","Masses"]):
-                    if field in grp:
-                        arr = grp[field][:]
-                        buffers[pt][field].append(
-                            arr[mask] if arr.ndim == 1 else arr[mask])
 
-    result = {}
-    for pt in part_types:
-        result[pt] = {}
-        for field, bufs in buffers[pt].items():
-            if bufs:
-                result[pt][field] = (np.concatenate(bufs)
-                                     if bufs[0].ndim == 1
-                                     else np.vstack(bufs))
-    return result
+                if "Masses" in f[key]:
+                    m = f[key]["Masses"][:][mask]
+                elif len(mass_table) > ptype and mass_table[ptype] > 0:
+                    m = np.full(mask.sum(), float(mass_table[ptype]))
+                else:
+                    continue
 
+                radii_l.append(r[mask])
+                masses_l.append(m.astype(float))
 
-# ==============================================================================
-# BACKWARD-COMPATIBLE API
-# ==============================================================================
+    if not radii_l:
+        return None
 
-def load_target_halo(catalog_file, snapshot_base, particle_types='all',
-                     output_file=None, verbose=True, ref=None):
-    """
-    Extract target halo particles using Subhalo offset/length tables.
-    Original signature fully preserved.
-    Optional `ref` from get_halo569_reference() improves centre/R200.
-    """
-    cat_path   = Path(catalog_file)
-    stem_base  = re.sub(r"\.\d+$", "", cat_path.stem)
-    cat_chunks = sorted(cat_path.parent.glob(f"{stem_base}*.hdf5"))
-    if not cat_chunks:
-        cat_chunks = [cat_path]
+    r_ckpch = np.concatenate(radii_l)
+    m_code = np.concatenate(masses_l)
+    ok = (r_ckpch > 0) & np.isfinite(r_ckpch) & np.isfinite(m_code) & (m_code > 0)
+    if ok.sum() < 10:
+        return None
 
-    subhalo_data = None
-    for chunk in cat_chunks:
-        with h5py.File(chunk, "r") as f:
-            if "Subhalo" in f and "SubhaloMass" in f["Subhalo"]:
-                subhalo_data = {
-                    "mass"    : f["Subhalo"]["SubhaloMass"][:],
-                    "pos"     : f["Subhalo"]["SubhaloPos"][:],
-                    "vel"     : f["Subhalo"]["SubhaloVel"][:],
-                    "halfmass": f["Subhalo"]["SubhaloHalfmassRad"][:],
-                    "vmax"    : f["Subhalo"]["SubhaloVmax"][:],
-                    "spin"    : f["Subhalo"]["SubhaloSpin"][:],
-                    "offset"  : f["Subhalo"]["SubhaloOffsetType"][:],
-                    "length"  : f["Subhalo"]["SubhaloLenType"][:],
-                }
-                break
+    r_ckpch = r_ckpch[ok]
+    m_code = m_code[ok]
+    order = np.argsort(r_ckpch)
+    r_ckpch = r_ckpch[order]
+    m_code = m_code[order]
+    m_enc_code = np.cumsum(m_code)
 
-    if subhalo_data is None:
-        raise RuntimeError(
-            f"No Subhalo table found in {catalog_file}. "
-            "Use get_halo569() + load_particles_within_r200() instead.")
+    r_pkpc = r_ckpch * a / h
+    r_cm = r_pkpc * KPC_IN_CM
+    m_enc_g = m_enc_code * MSUN_PER_CODE * MSUN_IN_G / h
+    rho_enc = m_enc_g / ((4.0 / 3.0) * np.pi * r_cm**3)
 
-    target_id = int(np.argmax(subhalo_data["mass"]))
-
-    if ref is not None:
-        m = re.search(r"fof_subhalo_tab_(\d+)", cat_path.name)
-        snap_num     = int(m.group(1)) if m else 49
-        halo_result  = get_halo569(cat_path.parent, snap_num, ref,
-                                   verbose=verbose)
-        if halo_result is not None:
-            position = halo_result["center"]
-            r200     = halo_result["r200_ckpch"]
-            r200_pk  = halo_result["r200_pkpc"]
-            m200     = halo_result["m200_code"]
-        else:
-            position = subhalo_data["pos"][target_id]
-            r200 = r200_pk = m200 = None
+    rhoc = rho_crit_cgs(a, h, Om, OL)
+    if rho_ref == "crit":
+        target = Delta * rhoc
+    elif rho_ref == "mean":
+        # rho_m(z) = Omega_m(z) rho_crit(z)
+        Omz = (Om * a**-3) / (Om * a**-3 + OL)
+        target = Delta * Omz * rhoc
     else:
-        position = subhalo_data["pos"][target_id]
-        r200 = r200_pk = m200 = None
-        for chunk in cat_chunks:
-            with h5py.File(chunk, "r") as f:
-                if "Group" in f and "Group_R_Crit200" in f["Group"]:
-                    r200 = float(f["Group"]["Group_R_Crit200"][0])
-                    m200 = float(f["Group"]["Group_M_Crit200"][0])
-                    snap_chunks = sorted(
-                        Path(snapshot_base).parent.glob(
-                            Path(snapshot_base).name + "*.hdf5"))
-                    if snap_chunks:
-                        with h5py.File(snap_chunks[0], "r") as sf:
-                            h  = float(sf["Parameters"].attrs["HubbleParam"])
-                            a  = float(sf["Header"].attrs["Time"])
-                        r200_pk = r200 / h * a
-                    break
+        raise ValueError("rho_ref must be 'crit' or 'mean'")
 
-    halo_info = {
-        "id"          : target_id,
-        "mass"        : float(subhalo_data["mass"][target_id]),
-        "position"    : position,
-        "velocity"    : subhalo_data["vel"][target_id],
-        "halfmass_rad": float(subhalo_data["halfmass"][target_id]),
-        "vmax"        : float(subhalo_data["vmax"][target_id]),
-        "spin"        : subhalo_data["spin"][target_id],
-        "r200"        : r200,
-        "r200_pkpc"   : r200_pk,
-        "m200"        : m200,
+    above = rho_enc >= target
+    if not np.any(above):
+        if verbose:
+            print("  [SO] enclosed density is already below threshold at innermost particle")
+        return None
+    if above[-1]:
+        if verbose:
+            print(f"  [SO] WARNING: still above threshold at rmax={rmax_ckpch:.1f} ckpc/h; increase rmax")
+        # Return outermost as lower limit rather than silently failing.
+        i = len(r_ckpch) - 1
+        return {
+            "r_delta_ckpch": float(r_ckpch[i]),
+            "r_delta_pkpc": float(r_pkpc[i]),
+            "m_delta_code": float(m_enc_code[i]),
+            "m_delta_msun": float(m_enc_code[i] * MSUN_PER_CODE / h),
+            "rho_enc_cgs": float(rho_enc[i]),
+            "target_rho_cgs": float(target),
+            "is_lower_limit": True,
+            "n_particles": int(len(r_ckpch)),
+        }
+
+    # Crossing between i1 above and i2 below.
+    i2 = int(np.argmax(~above))
+    i1 = i2 - 1
+    if i1 < 0:
+        return None
+
+    # Interpolate log rho versus log r to the target density.
+    x1, x2 = np.log(r_ckpch[i1]), np.log(r_ckpch[i2])
+    y1, y2 = np.log(rho_enc[i1]), np.log(rho_enc[i2])
+    yt = np.log(target)
+    if y2 == y1:
+        xt = x1
+    else:
+        xt = x1 + (yt - y1) * (x2 - x1) / (y2 - y1)
+    r_delta_ckpch = float(np.exp(xt))
+
+    # Use exact SO mass implied by radius and target density, converted to code units.
+    r_delta_pkpc = r_delta_ckpch * a / h
+    r_delta_cm = r_delta_pkpc * KPC_IN_CM
+    m_delta_g = (4.0 / 3.0) * np.pi * r_delta_cm**3 * target
+    m_delta_code = m_delta_g / (MSUN_PER_CODE * MSUN_IN_G / h)
+
+    return {
+        "r_delta_ckpch": r_delta_ckpch,
+        "r_delta_pkpc": float(r_delta_pkpc),
+        "m_delta_code": float(m_delta_code),
+        "m_delta_msun": float(m_delta_code * MSUN_PER_CODE / h),
+        "rho_enc_cgs": float(target),
+        "target_rho_cgs": float(target),
+        "is_lower_limit": False,
+        "n_particles": int(len(r_ckpch)),
     }
 
-    if verbose:
-        print(f"Target subhalo {target_id}")
-        print(f"  Mass      : {halo_info['mass']:.2e} [1e10 Msun/h]")
-        print(f"  Position  : {halo_info['position']}")
-        if r200 is not None:
-            print(f"  R_Crit200 : {r200:.2f} ckpc/h  ({r200_pk:.1f} pkpc)")
 
-    result = {"halo_info": halo_info}
+# -----------------------------------------------------------------------------
+# Center refinement
+# -----------------------------------------------------------------------------
 
-    if particle_types == "all":
-        particle_types = range(7)
+def find_shrinking_sphere_center(
+    snap_path: str | Path,
+    initial_center: np.ndarray,
+    box: float,
+    start_r: float = 300.0,
+    shrink: float = 0.75,
+    n_min: int = 50,
+    n_iter: int = 40,
+    r_min_ckpch: float = 5.0,
+    max_offset_ckpch: Optional[float] = 300.0,
+    verbose: bool = False,
+) -> np.ndarray:
+    """Density-weighted shrinking-sphere center using gas particles."""
+    chunks = glob_snap_chunks(snap_path)
+    initial_center = np.asarray(initial_center, dtype=float)
+    all_pos, all_w = [], []
 
-    ptype_names = {0:"gas", 1:"dm", 2:"dm2", 4:"stars", 5:"bh", 6:"dust"}
-    dm_masses   = _get_dm_particle_masses(snapshot_base)
+    for chunk in chunks:
+        with h5py.File(chunk, "r") as f:
+            if "PartType0" not in f or "Coordinates" not in f["PartType0"]:
+                continue
+            pos = f["PartType0/Coordinates"][:]
+            dx = _periodic_delta(pos, initial_center, box)
+            r = np.sqrt((dx * dx).sum(axis=1))
+            mask = r < 2.0 * start_r
+            if not mask.any():
+                continue
+            all_pos.append(pos[mask])
+            if "Density" in f["PartType0"]:
+                all_w.append(f["PartType0/Density"][:][mask])
+            elif "Masses" in f["PartType0"]:
+                all_w.append(f["PartType0/Masses"][:][mask])
+            else:
+                all_w.append(np.ones(mask.sum()))
 
-    for ptype in particle_types:
-        offset = int(subhalo_data["offset"][target_id, ptype])
-        length = int(subhalo_data["length"][target_id, ptype])
-        if length == 0:
-            continue
-        pname  = ptype_names.get(ptype, f"parttype{ptype}")
-        fields = PARTICLE_TYPE_FIELDS.get(ptype, ["Coordinates","Velocities"])
-        fields = _check_available_fields(snapshot_base, ptype, fields)
+    if not all_pos:
+        return initial_center.copy()
+
+    pos = np.concatenate(all_pos)
+    w = np.concatenate(all_w).astype(float)
+    ctr = initial_center.copy()
+    rad = float(start_r)
+
+    for i in range(n_iter):
+        if rad < r_min_ckpch:
+            break
+        dx = _periodic_delta(pos, ctr, box)
+        d = np.sqrt((dx * dx).sum(axis=1))
+        mask = d < rad
+        if mask.sum() < n_min:
+            break
+        ctr = np.average(pos[mask], weights=w[mask], axis=0)
+        rad *= shrink
         if verbose:
-            print(f"Extracting {length} {pname} particles...")
-        result[pname] = _extract_particles(
-            snapshot_base, ptype, offset, length, fields)
-        if ptype in [1, 2] and dm_masses[ptype] > 0:
-            result[pname]["Masses"] = np.full(length, dm_masses[ptype])
+            print(f"    [shrink] iter={i:02d} r={rad:.2f} N={mask.sum()} ctr={ctr}")
 
-    if output_file:
-        _save_to_hdf5(result, output_file)
+    if max_offset_ckpch is not None:
+        dx = _periodic_delta(ctr[None, :], initial_center, box)[0]
+        offset = float(np.sqrt((dx * dx).sum()))
+        if offset > max_offset_ckpch:
+            print(f"  [shrink] WARNING: rejected refined center; offset={offset:.1f} ckpc/h > {max_offset_ckpch:.1f}")
+            return initial_center.copy()
 
-    return result
+    return ctr
 
 
-def extract_dust_spatially(snapshot_base, halo_center, radius_kpc=None,
-                           verbose=True):
+# -----------------------------------------------------------------------------
+# Primary API
+# -----------------------------------------------------------------------------
+
+def _build_halo_result(
+    snapdir: Path,
+    fof_center: np.ndarray,
+    hdr: dict,
+    group_idx: int,
+    cat: dict,
+    refine_center: bool = True,
+    verbose: bool = True,
+) -> dict:
+    """Refine center if requested, compute SO R200c/M200c, return standard halo dict."""
+    center0 = np.asarray(fof_center, dtype=float)
+    center = center0.copy()
+
+    if refine_center and snapdir.exists():
+        center = find_shrinking_sphere_center(
+            snapdir,
+            center0,
+            hdr["box"],
+            start_r=300.0,
+            max_offset_ckpch=300.0,
+            verbose=False,
+        )
+
+    so = compute_spherical_overdensity(
+        snapdir,
+        center,
+        rmax_ckpch=DEFAULT_SO_RMAX_CKPCH,
+        Delta=200.0,
+        rho_ref="crit",
+        verbose=verbose,
+    )
+    if so is None:
+        rcat = float(cat["r200_catalog"][group_idx])
+        mcat = float(cat["m200_catalog"][group_idx])
+
+        if rcat <= 0 or mcat <= 0:
+            raise RuntimeError(
+                "Could not compute spherical-overdensity radius from particles "
+                "and catalog Group_R_Crit200/Group_M_Crit200 are invalid"
+            )
+
+        if verbose:
+            print(
+                "  [halo_utils] WARNING: particle SO failed; "
+                "using catalog Group_R_Crit200/Group_M_Crit200 fallback"
+            )
+
+        so = {
+            "r_delta_ckpch": rcat,
+            "r_delta_pkpc": rcat * hdr["a"] / hdr["h"],
+            "m_delta_code": mcat,
+            "m_delta_msun": mcat * MSUN_PER_CODE / hdr["h"],
+            "is_lower_limit": False,
+            "n_particles": 0,
+            "used_catalog_fallback": True,
+        }
+    else:
+        so["used_catalog_fallback"] = False
+
+    return {
+        "center": center,
+        "center_fof": center0,
+        "r200_ckpch": so["r_delta_ckpch"],
+        "r200_pkpc": so["r_delta_pkpc"],
+        "m200_code": so["m_delta_code"],
+        "m200_msun": so["m_delta_msun"],
+        "group_idx": int(group_idx),
+        "group_mass_code": float(cat["group_mass"][group_idx]),
+        "group_mass_msun": float(cat["group_mass"][group_idx] * MSUN_PER_CODE / hdr["h"]),
+        "mstar_code": float(cat["mstar"][group_idx]),
+        "mstar_msun": float(cat["mstar"][group_idx] * MSUN_PER_CODE / hdr["h"]),
+        "catalog_r200_ckpch": float(cat["r200_catalog"][group_idx]),
+        "catalog_r200_pkpc": float(cat["r200_catalog"][group_idx] * hdr["a"] / hdr["h"]),
+        "catalog_m200_code": float(cat["m200_catalog"][group_idx]),
+        "catalog_m200_msun": float(cat["m200_catalog"][group_idx] * MSUN_PER_CODE / hdr["h"]),
+        "so_is_lower_limit": bool(so.get("is_lower_limit", False)),
+        "so_n_particles": int(so.get("n_particles", 0)),
+        "used_catalog_fallback": bool(so.get("used_catalog_fallback", False)),
+        "h": hdr["h"],
+        "a": hdr["a"],
+    }
+
+
+def get_halo569_reference(
+    output_dir: str | Path,
+    snap_num_z0: Optional[int] = None,
+    verbose: bool = True,
+    refine_center: bool = True,
+) -> dict:
+    """Establish the z=0/last-snapshot reference for Halo 569.
+
+    Parameters
+    ----------
+    refine_center : bool, default True
+        If True, refine the catalog/FOF center with the gas-density shrinking
+        sphere. If False, freeze the center definition to the catalog/FOF
+        center. This is useful for comparing several runs with an identical
+        centering convention.
     """
-    Spatially extract PartType6 dust particles near a halo centre.
-    Original signature preserved. Units: ckpc/h throughout.
+    output_dir = Path(output_dir)
+    if snap_num_z0 is None:
+        snap_num_z0 = find_last_snap_num(output_dir)
+        if snap_num_z0 is None:
+            raise RuntimeError(f"No complete snapshot found in {output_dir}")
+
+    snapdir = output_dir / f"snapdir_{snap_num_z0:03d}"
+    groups_dir = output_dir / f"groups_{snap_num_z0:03d}"
+    hdr = read_snap_header(snapdir)
+    cat = read_fof_catalog(groups_dir, snap_num_z0)
+    if cat is None:
+        raise RuntimeError(f"No FOF groups in {groups_dir}")
+
+    override_idx = _get_z0_override(output_dir)
+    if override_idx is not None:
+        idx, sel_by = int(override_idx), f"override idx={override_idx}"
+    else:
+        idx, sel_by = _select_primary_halo_idx(cat)
+
+    halo = _build_halo_result(
+        snapdir,
+        cat["pos"][idx],
+        hdr,
+        idx,
+        cat,
+        refine_center=refine_center,
+        verbose=verbose,
+    )
+    halo.update({
+        "center_ckpch": halo["center"],      # backward-compatible alias
+        "box_ckpch": hdr["box"],
+        "snap_num_z0": int(snap_num_z0),
+        "selection": sel_by,
+        "refine_center": bool(refine_center),
+    })
+
+    if verbose:
+        off = np.linalg.norm(_periodic_delta(halo["center"][None, :], halo["center_fof"], hdr["box"])[0])
+        center_label = "refined center" if refine_center else "FOF center (frozen)"
+        print(f"[halo_utils] Halo 569 reference, snap {snap_num_z0:03d}, selected by {sel_by}")
+        print(f"  group idx        : {idx} / {len(cat['pos'])}")
+        print(f"  FOF center       : {halo['center_fof']}")
+        print(f"  {center_label:16s}: {halo['center']}  offset={off:.1f} ckpc/h")
+        print(f"  R200c SO         : {halo['r200_ckpch']:.1f} ckpc/h  ({halo['r200_pkpc']:.1f} pkpc)")
+        print(f"  M200c SO         : {halo['m200_msun']:.3e} Msun")
+        print(f"  GroupMass diag   : {halo['group_mass_msun']:.3e} Msun")
+        print(f"  Catalog R/M diag : {halo['catalog_r200_pkpc']:.1f} pkpc, {halo['catalog_m200_msun']:.3e} Msun")
+        if halo["so_is_lower_limit"]:
+            print("  WARNING: SO radius is a lower limit; increase DEFAULT_SO_RMAX_CKPCH")
+        if halo.get("used_catalog_fallback", False):
+            print("  WARNING: used catalog Group_R_Crit200/Group_M_Crit200 fallback")
+
+    return halo
+
+
+def get_halo569(
+    groups_dir: str | Path,
+    snap_num: int,
+    ref: dict,
+    search_radius_ckpch: float = HALO569_SEARCH_RADIUS_CKPCH,
+    verbose: bool = True,
+    refine_center: bool = True,
+) -> Optional[dict]:
+    """Find Halo 569 near the reference position and compute particle SO R200c.
+
+    Set refine_center=False to freeze the center definition to the catalog/FOF
+    center for this snapshot.
     """
+    groups_dir = Path(groups_dir)
+    output_dir = groups_dir.parent
+    snapdir = output_dir / f"snapdir_{snap_num:03d}"
+    cat = read_fof_catalog(groups_dir, snap_num)
+    if cat is None:
+        return None
+    hdr = read_snap_header(snapdir)
+    hdr["box"] = ref.get("box_ckpch", hdr["box"])
+
+    ref_pos = np.asarray(ref["center_ckpch"] if "center_ckpch" in ref else ref["center"], dtype=float)
+    dx = _periodic_delta(cat["pos"], ref_pos, hdr["box"])
+    dist = np.sqrt((dx * dx).sum(axis=1))
+    within = dist <= search_radius_ckpch
+
+    if within.any():
+        # Choose nearest non-tiny group. This avoids selecting small satellites near the reference.
+        valid = within & (cat["group_mass"] > 1.0)
+        if valid.any():
+            idx = int(np.argmin(np.where(valid, dist, np.inf)))
+            sel_by = "nearest to reference"
+        else:
+            idx, sel_by = _select_primary_halo_idx(cat)
+    else:
+        idx, sel_by = _select_primary_halo_idx(cat)
+
+    halo = _build_halo_result(
+        snapdir,
+        cat["pos"][idx],
+        hdr,
+        idx,
+        cat,
+        refine_center=refine_center,
+        verbose=False,
+    )
+    halo.update({
+        "dist_ckpch": float(dist[idx]),
+        "n_within": int(within.sum()),
+        "used_fallback": not bool(within.any()),
+        "selection": sel_by,
+        "refine_center": bool(refine_center),
+    })
+
+    if verbose:
+        center_mode = "refined" if refine_center else "FOF/frozen"
+        print(f"  [halo569] snap {snap_num:03d}: group {idx}, {sel_by}, dist={dist[idx]:.0f} ckpc/h, center={center_mode}")
+        print(f"  [halo569] R200c={halo['r200_pkpc']:.1f} pkpc, M200c={halo['m200_msun']:.3e} Msun")
+        print(f"  [halo569] diagnostics: GroupMass={halo['group_mass_msun']:.3e} Msun, catalog R200c={halo['catalog_r200_pkpc']:.1f} pkpc")
+
+    return halo
+
+
+# -----------------------------------------------------------------------------
+# Particle loading helpers
+# -----------------------------------------------------------------------------
+
+def load_particles_within_radius(
+    snap_path: str | Path,
+    center_ckpch: np.ndarray,
+    radius_ckpch: float,
+    part_types: Iterable[int] = (0, 4, 6),
+    fields_by_type: Optional[dict[int, list[str]]] = None,
+) -> dict:
+    """Load selected particle fields within a ckpc/h aperture."""
+    chunks = glob_snap_chunks(snap_path)
+    hdr = read_snap_header(snap_path)
+    center = np.asarray(center_ckpch, dtype=float)
+    if fields_by_type is None:
+        fields_by_type = _SPATIAL_FIELDS
+
+    buffers = {pt: {field: [] for field in fields_by_type.get(pt, ["Coordinates", "Masses"])} for pt in part_types}
+
+    for chunk in chunks:
+        with h5py.File(chunk, "r") as f:
+            box = float(f["Header"].attrs["BoxSize"])
+            mass_table = f["Header"].attrs.get("MassTable", np.zeros(7))
+            for pt in part_types:
+                key = f"PartType{pt}"
+                if key not in f or "Coordinates" not in f[key]:
+                    continue
+                grp = f[key]
+                coords = grp["Coordinates"][:]
+                dx = _periodic_delta(coords, center, box)
+                r = np.sqrt((dx * dx).sum(axis=1))
+                mask = r <= radius_ckpch
+                if not mask.any():
+                    continue
+                for field in fields_by_type.get(pt, ["Coordinates", "Masses"]):
+                    if field in grp:
+                        arr = grp[field][:]
+                        buffers[pt][field].append(arr[mask] if arr.ndim == 1 else arr[mask])
+                    elif field == "Masses" and len(mass_table) > pt and mass_table[pt] > 0:
+                        buffers[pt][field].append(np.full(mask.sum(), float(mass_table[pt])))
+
+    out = {}
+    for pt, fieldbufs in buffers.items():
+        out[pt] = {}
+        for field, bufs in fieldbufs.items():
+            if bufs:
+                out[pt][field] = np.concatenate(bufs) if bufs[0].ndim == 1 else np.vstack(bufs)
+    return out
+
+
+def load_particles_within_r200(snap_path: str | Path, halo: dict, part_types: Iterable[int] = (4, 6)) -> dict:
+    """Backward-compatible wrapper around load_particles_within_radius."""
+    return load_particles_within_radius(snap_path, halo["center"], halo["r200_ckpch"], part_types=part_types)
+
+
+# -----------------------------------------------------------------------------
+# Backward-compatible legacy-ish helpers
+# -----------------------------------------------------------------------------
+
+def compute_radial_distance(coords: np.ndarray, center: np.ndarray, box: Optional[float] = None) -> np.ndarray:
+    """Distance from center, optionally periodic if box is supplied."""
+    dx = np.asarray(coords) - np.asarray(center)[None, :]
+    if box is not None:
+        dx -= box * np.round(dx / box)
+    return np.sqrt((dx * dx).sum(axis=1))
+
+
+def compute_radial_profile(coords: np.ndarray, masses: np.ndarray, center: np.ndarray, rbins: np.ndarray, box: Optional[float] = None):
+    r = compute_radial_distance(coords, center, box=box)
+    prof, _ = np.histogram(r, bins=rbins, weights=masses)
+    return 0.5 * (rbins[1:] + rbins[:-1]), prof
+
+
+def convert_code_mass_to_msun(m_code: np.ndarray | float, h: float) -> np.ndarray | float:
+    return np.asarray(m_code) * MSUN_PER_CODE / h
+
+
+def convert_ckpch_to_pkpc(r_ckpch: np.ndarray | float, a: float, h: float) -> np.ndarray | float:
+    return np.asarray(r_ckpch) * a / h
+
+
+def extract_dust_spatially(snapshot_base, halo_center, radius_kpc=None, verbose=True):
+    """Legacy wrapper. radius_kpc is interpreted as ckpc/h for compatibility."""
     files = sorted(_glob.glob(f"{snapshot_base}.*.hdf5"))
     if not files:
         files = sorted(_glob.glob(f"{snapshot_base}/*.hdf5"))
     if not files:
         raise FileNotFoundError(f"No snapshot chunks for: {snapshot_base}")
-
-    buffers    = {}
-    total_dust = 0
-
-    for fname in files:
-        with h5py.File(fname, "r") as f:
-            if "PartType6" not in f:
-                continue
-            dust  = f["PartType6"]
-            npart = len(dust["Coordinates"])
-            total_dust += npart
-            coords = dust["Coordinates"][:]
-            r      = np.sqrt(np.sum((coords - halo_center)**2, axis=1))
-            mask   = (r < radius_kpc) if radius_kpc is not None \
-                     else np.ones(npart, dtype=bool)
-            if not mask.any():
-                continue
-            for field in dust.keys():
-                arr = dust[field][:]
-                sel = arr[mask] if arr.ndim == 1 else arr[mask]
-                buffers.setdefault(field, []).append(sel)
-
-    if not buffers:
-        return None
-
-    result = {k: (np.concatenate(v) if v[0].ndim == 1 else np.vstack(v))
-              for k, v in buffers.items()}
-
-    if verbose:
-        r_all = np.sqrt(np.sum(
-            (result["Coordinates"] - halo_center)**2, axis=1))
-        label = f"within {radius_kpc:.1f} ckpc/h" if radius_kpc else "total"
-        print(f"  Extracted {len(r_all):,} dust particles ({label})")
-        print(f"  Radial range : {r_all.min():.2f} - {r_all.max():.2f} ckpc/h")
-        print(f"  Total mass   : {result['Masses'].sum():.2e} [1e10 Msun/h]")
-
-    return result
-
-
-def compute_radial_distance(coords, center):
-    """Euclidean distance of each row in coords from center."""
-    return np.sqrt(np.sum((coords - np.asarray(center)[None, :])**2, axis=1))
-
-
-def compute_radial_profile(coords, masses, center, rbins):
-    """Radial mass profile. Returns (r_centers, mass_profile)."""
-    r             = compute_radial_distance(coords, center)
-    mass_profile, _ = np.histogram(r, bins=rbins, weights=masses)
-    r_centers     = 0.5 * (rbins[1:] + rbins[:-1])
-    return r_centers, mass_profile
-
-
-def convert_to_physical_units(data, mass_in_msun=True):
-    """Convert Gadget code masses to solar masses in-place."""
-    if "Masses" in data and mass_in_msun:
-        data["Masses"] = data["Masses"] * UNIT_MASS
-    return data
-
-
-# ==============================================================================
-# Private helpers (unchanged)
-# ==============================================================================
-
-def _get_dm_particle_masses(snapshot_base):
-    files = sorted(_glob.glob(f"{snapshot_base}.*.hdf5"))
-    with h5py.File(files[0], "r") as f:
-        return f["Header"].attrs["MassTable"]
-
-
-def _check_available_fields(snapshot_base, parttype, requested_fields):
-    files = sorted(_glob.glob(f"{snapshot_base}.*.hdf5"))
-    if not files:
-        return requested_fields
-    with h5py.File(files[0], "r") as f:
-        key = f"PartType{parttype}"
-        if key not in f:
-            return []
-        available = list(f[key].keys())
-    return [field for field in requested_fields if field in available]
-
-
-def _extract_particles(snapshot_base, parttype, global_offset, length, fields):
-    files = sorted(_glob.glob(f"{snapshot_base}.*.hdf5"))
-    cumulative = [0]
-    for fname in files:
-        with h5py.File(fname, "r") as f:
-            cumulative.append(
-                cumulative[-1] +
-                int(f["Header"].attrs["NumPart_ThisFile"][parttype]))
-
-    global_end = global_offset + length
-    all_data   = {field: [] for field in fields}
-
-    for i, fname in enumerate(files):
-        fs, fe = cumulative[i], cumulative[i + 1]
-        if fe <= global_offset or fs >= global_end:
-            continue
-        ls = max(0, global_offset - fs)
-        le = min(fe - fs, global_end - fs)
-        with h5py.File(fname, "r") as f:
-            grp = f[f"PartType{parttype}"]
-            for field in fields:
-                all_data[field].append(grp[field][ls:le])
-
-    result = {}
-    for field in fields:
-        bufs = all_data[field]
-        if not bufs:
-            continue
-        result[field] = (np.concatenate(bufs)
-                         if bufs[0].ndim == 1 else np.vstack(bufs))
-    return result
-
-
-def _save_to_hdf5(data, filename):
-    ptype_map = {"gas":0, "dm":1, "dm2":2, "stars":4, "bh":5, "dust":6}
-    with h5py.File(filename, "w") as f:
-        for key, val in data["halo_info"].items():
-            try:
-                f.attrs[key] = val
-            except Exception:
-                pass
-        for name, ptype_num in ptype_map.items():
-            if name in data:
-                grp = f.create_group(f"PartType{ptype_num}")
-                for key, val in data[name].items():
-                    grp.create_dataset(key, data=val)
+    snap_path = Path(files[0]).parent if Path(files[0]).parent.exists() else snapshot_base
+    radius = float(radius_kpc) if radius_kpc is not None else np.inf
+    data = load_particles_within_radius(snap_path, np.asarray(halo_center), radius, part_types=(6,))
+    result = data.get(6, {})
+    if verbose and result and "Coordinates" in result:
+        print(f"  Extracted {len(result['Coordinates']):,} dust particles")
+    return result if result else None

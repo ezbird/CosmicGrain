@@ -34,13 +34,154 @@ from pathlib import Path
 from halo_utils import (
     get_halo569_reference,
     get_halo569,
-    find_snapshots,
-    get_unit_mass,
-    load_particles_within_r200,
     read_snap_header,
+    read_fof_catalog,
 )
+plt.style.use('sleek.mplstyle')
 
 SOLAR_MASS = 1.989e33
+
+# ==============================================================================
+# Local snapshot / particle helpers
+# ==============================================================================
+
+MSUN_PER_CODE = 1e10
+HALO569_SEARCH_RADIUS_CKPCH = 5000.0
+
+
+def _snapnum_from_name(path, prefix):
+    m = re.search(rf"{prefix}_(\d+)", Path(path).name)
+    return int(m.group(1)) if m else None
+
+
+def find_snapshots_local(output_dir):
+    """
+    Return sorted (snap_num, snapdir, groups_dir) tuples.
+
+    This replaces the older halo_utils.find_snapshots dependency so this script
+    remains compatible with the newer leaner halo_utils.py.
+    """
+    output_dir = Path(output_dir)
+    out = []
+    for snapdir in sorted(output_dir.glob("snapdir_*")):
+        snap_num = _snapnum_from_name(snapdir, "snapdir")
+        if snap_num is None:
+            continue
+        groups_dir = output_dir / f"groups_{snap_num:03d}"
+        if not groups_dir.exists():
+            continue
+        if not list(snapdir.glob("snapshot_*.hdf5")) and not list(snapdir.glob("snap_*.hdf5")):
+            continue
+        if not list(groups_dir.glob("fof_subhalo_tab_*.hdf5")):
+            continue
+        out.append((snap_num, snapdir, groups_dir))
+    return out
+
+
+def snapshot_chunks(snapdir):
+    """Return all snapshot chunks in a snapdir."""
+    snapdir = Path(snapdir)
+    chunks = sorted(snapdir.glob("snapshot_*.hdf5"))
+    if not chunks:
+        chunks = sorted(snapdir.glob("snap_*.hdf5"))
+    return chunks
+
+
+def _header_h_a_box(snapdir):
+    chunks = snapshot_chunks(snapdir)
+    if not chunks:
+        raise FileNotFoundError(f"No snapshot chunks in {snapdir}")
+    with h5py.File(str(chunks[0]), "r") as f:
+        h = float(f["Parameters"].attrs["HubbleParam"])
+        a = float(f["Header"].attrs["Time"])
+        z = float(f["Header"].attrs.get("Redshift", 1.0 / a - 1.0))
+        box = float(f["Header"].attrs["BoxSize"])
+    return h, a, z, box
+
+
+def _periodic_radius_ckpch(pos, center, box):
+    dx = np.asarray(pos, dtype=float) - np.asarray(center, dtype=float)[None, :]
+    dx -= box * np.round(dx / box)
+    return np.sqrt((dx * dx).sum(axis=1))
+
+
+def load_particles_within_halo(snapdir, halo, part_types=(4, 6)):
+    """
+    Load selected particle types inside halo['r200_ckpch'].
+
+    Returns dict keyed by particle type, with Masses already converted to Msun.
+    Coordinates remain in ckpc/h.
+    """
+    h, a, z, box = _header_h_a_box(snapdir)
+    center = np.asarray(halo["center"], dtype=float)
+    rmax = float(halo["r200_ckpch"])
+
+    results = {
+        pt: {"Coordinates": np.empty((0, 3)), "Masses": np.array([])}
+        for pt in part_types
+    }
+
+    for chunk in snapshot_chunks(snapdir):
+        with h5py.File(str(chunk), "r") as f:
+            for pt in part_types:
+                gname = f"PartType{pt}"
+                if gname not in f:
+                    continue
+                grp = f[gname]
+                if "Coordinates" not in grp:
+                    continue
+                pos = grp["Coordinates"][:]
+                r = _periodic_radius_ckpch(pos, center, box)
+                mask = r <= rmax
+                if not np.any(mask):
+                    continue
+
+                if "Masses" in grp:
+                    mass = grp["Masses"][:][mask] * MSUN_PER_CODE / h
+                else:
+                    # Fallback for constant-mass particle types, if ever needed.
+                    mass_table = f["Header"].attrs.get("MassTable", None)
+                    if mass_table is None or mass_table[pt] <= 0:
+                        mass = np.zeros(mask.sum())
+                    else:
+                        mass = np.full(mask.sum(), mass_table[pt] * MSUN_PER_CODE / h)
+
+                results[pt]["Coordinates"] = np.vstack([
+                    results[pt]["Coordinates"],
+                    pos[mask],
+                ])
+                results[pt]["Masses"] = np.concatenate([
+                    results[pt]["Masses"],
+                    mass,
+                ])
+
+    return results
+
+
+def _cat_value(cat, names, default=None):
+    for name in names:
+        if name in cat:
+            return cat[name]
+    return default
+
+
+def _cat_r200_array(cat):
+    arr = _cat_value(cat, ["r200_catalog", "r200_ckpch", "r200", "Group_R_Crit200"])
+    return arr
+
+
+def _cat_m200_array(cat):
+    arr = _cat_value(cat, ["m200_catalog", "m200_code", "m200", "Group_M_Crit200", "group_mass"])
+    return arr
+
+
+def _refine_false_reference(output_dir):
+    return get_halo569_reference(
+        output_dir,
+        refine_center=False,
+        verbose=False,
+    )
+
 
 # ==============================================================================
 # SIMBA caesar catalog support
@@ -226,28 +367,38 @@ def load_obs_data(npz_path):
 # ==============================================================================
 
 def find_satellite_halos_z0(output_dir, ref, min_log_mstar=7.5):
-    from halo_utils import (read_fof_catalog, load_particles_within_r200,
-                            get_unit_mass, HALO569_SEARCH_RADIUS_CKPCH)
-
-    snap_num   = ref.get("snap_num_z0", 49)
+    """
+    Find z=0 nearby FOF groups and measure star/dust mass inside their catalog R200.
+    Compatible with the updated halo_utils read_fof_catalog dictionary.
+    """
+    snap_num = ref.get("snap_num_z0", ref.get("snap_num", None))
     output_dir = Path(output_dir)
-    groups_dir = output_dir / f"groups_{snap_num:03d}"
-    snapdir    = output_dir / f"snapdir_{snap_num:03d}"
+    if snap_num is None:
+        snap_num = max(
+            int(re.search(r"groups_(\d+)", p.name).group(1))
+            for p in output_dir.glob("groups_*")
+            if re.search(r"groups_(\d+)", p.name)
+        )
 
-    unit_mass_g  = get_unit_mass(snapdir)
-    code_to_msun = unit_mass_g / SOLAR_MASS
+    groups_dir = output_dir / f"groups_{snap_num:03d}"
+    snapdir = output_dir / f"snapdir_{snap_num:03d}"
 
     cat = read_fof_catalog(groups_dir, snap_num)
     if cat is None:
         print("WARNING: no z=0 catalog found -- skipping satellite halos")
         return []
 
-    ref_pos = ref["center_ckpch"]
-    box     = ref["box_ckpch"]
+    r200_arr = _cat_r200_array(cat)
+    if r200_arr is None:
+        print("WARNING: catalog has no R200 field -- skipping satellite halos")
+        return []
 
-    dx     = cat["pos"] - ref_pos[None, :]
-    dx    -= box * np.round(dx / box)
-    dist   = np.sqrt((dx**2).sum(axis=1))
+    ref_pos = np.asarray(ref.get("center_ckpch", ref.get("center")), dtype=float)
+    box = float(ref.get("box_ckpch", _header_h_a_box(snapdir)[3]))
+
+    dx = cat["pos"] - ref_pos[None, :]
+    dx -= box * np.round(dx / box)
+    dist = np.sqrt((dx * dx).sum(axis=1))
     within = dist <= HALO569_SEARCH_RADIUS_CKPCH
 
     print(f"\nSatellite halos: {int(within.sum())} FOF groups within "
@@ -255,75 +406,107 @@ def find_satellite_halos_z0(output_dir, ref, min_log_mstar=7.5):
 
     results = []
     for idx in np.where(within)[0]:
-        r200 = float(cat["r200"][idx])
-        if r200 <= 0:
+        r200 = float(r200_arr[idx])
+        if not np.isfinite(r200) or r200 <= 0:
             continue
-        halo_dict = {"center": cat["pos"][idx].astype(float),
-                     "r200_ckpch": r200}
-        parts  = load_particles_within_r200(snapdir, halo_dict, part_types=(4, 6))
-        m_star = parts[4].get("Masses", np.array([])).sum() * code_to_msun
-        m_dust = parts[6].get("Masses", np.array([])).sum() * code_to_msun
+
+        halo_dict = {
+            "center": cat["pos"][idx].astype(float),
+            "r200_ckpch": r200,
+        }
+        parts = load_particles_within_halo(snapdir, halo_dict, part_types=(4, 6))
+        m_star = parts[4].get("Masses", np.array([])).sum()
+        m_dust = parts[6].get("Masses", np.array([])).sum()
+
         if m_star <= 0:
             continue
         log_ms = np.log10(m_star)
         if log_ms < min_log_mstar:
             continue
-        log_md     = np.log10(m_dust) if m_dust > 0 else None
+
+        log_md = np.log10(m_dust) if m_dust > 0 else None
         is_primary = dist[idx] < 10.0
         results.append(dict(log_mstar=log_ms, log_mdust=log_md,
                             is_primary=is_primary))
 
     n_prim = sum(1 for r in results if r["is_primary"])
-    n_sat  = len(results) - n_prim
+    n_sat = len(results) - n_prim
     print(f"  Found {n_prim} primary + {n_sat} satellite halos "
           f"with log(M*) >= {min_log_mstar}")
     return results
-
 
 # ==============================================================================
 # Simulation track
 # ==============================================================================
 
 def run_simulation(output_dir, label, color, skip_every=1):
-    snapshots = find_snapshots(output_dir)
+    """
+    Track Halo 569 through snapshots using the updated halo_utils API.
+
+    Masses are measured within R200 using a frozen FOF/catalog center
+    (refine_center=False) and halo_utils' catalog fallback when particle-SO
+    fails.
+    """
+    output_dir = Path(output_dir)
+    snapshots = find_snapshots_local(output_dir)
     if not snapshots:
         raise RuntimeError(f"No snapshots with catalogs found in {output_dir}")
 
     print(f"\n[{label}]  {len(snapshots)} snapshots with catalogs")
-    ref          = get_halo569_reference(output_dir)
-    unit_mass_g  = get_unit_mass(snapshots[-1][1])
-    code_to_msun = unit_mass_g / SOLAR_MASS
+    ref = get_halo569_reference(
+        output_dir,
+        refine_center=False,
+        verbose=False,
+    )
 
     results = []
     for i, (snap_num, snapdir, groups_dir) in enumerate(snapshots):
         if i % skip_every != 0:
             continue
-        hdr  = read_snap_header(snapdir)
-        halo = get_halo569(groups_dir, snap_num, ref, verbose=False)
-        if halo is None or halo["r200_ckpch"] <= 0:
+
+        hdr = read_snap_header(snapdir)
+
+        try:
+            halo = get_halo569(
+                groups_dir,
+                snap_num,
+                ref,
+                refine_center=False,
+                verbose=False,
+            )
+        except Exception as e:
+            print(f"  snap {snap_num:03d}: halo lookup failed: {e}")
             continue
-        particles = load_particles_within_r200(snapdir, halo, part_types=(4, 6))
-        m_star = particles[4].get("Masses", np.array([])).sum() * code_to_msun
-        m_dust = particles[6].get("Masses", np.array([])).sum() * code_to_msun
+
+        if halo is None or halo.get("r200_ckpch", 0.0) <= 0:
+            continue
+
+        particles = load_particles_within_halo(snapdir, halo, part_types=(4, 6))
+        m_star = particles[4].get("Masses", np.array([])).sum()
+        m_dust = particles[6].get("Masses", np.array([])).sum()
+
         if m_star <= 0 or m_dust <= 0:
             continue
-        fallback = " [fallback]" if halo["used_fallback"] else ""
+
+        fallback = " [catalog fallback]" if halo.get("used_catalog_fallback", False) else ""
+        dist = halo.get("dist_ckpch", np.nan)
+
         print(f"  snap {snap_num:03d}  z={hdr['z']:.3f}  "
               f"log(M*/Msun)={np.log10(m_star):.2f}  "
               f"log(Md/Msun)={np.log10(m_dust):.2f}  "
               f"R200={halo['r200_pkpc']:.1f} pkpc"
-              f"  d={halo['dist_ckpch']:.0f} ckpc/h{fallback}")
+              f"  d={dist:.0f} ckpc/h{fallback}")
+
         results.append((hdr["z"], np.log10(m_star), np.log10(m_dust)))
 
     if not results:
         raise RuntimeError(f"No valid snapshots processed for {label}")
 
-    results   = sorted(results, key=lambda x: -x[0])
-    z_arr     = np.array([r[0] for r in results])
+    results = sorted(results, key=lambda x: -x[0])
+    z_arr = np.array([r[0] for r in results])
     mstar_arr = np.array([r[1] for r in results])
     mdust_arr = np.array([r[2] for r in results])
     return z_arr, mstar_arr, mdust_arr, ref
-
 
 # ==============================================================================
 # Figure
@@ -410,7 +593,7 @@ def make_plot(sim_tracks, output_path, obs, simba_tracks=None,
         ax.scatter(mstar_arr[idx_z0], mdust_arr[idx_z0],
                    s=480, marker="*", color=track_color,
                    edgecolors="k", linewidths=0.7, zorder=10,
-                   label=f"CosmicGrain Halo 569 {label} (z=0)")
+                   label=f"CosmicGrain Halo 569 (z=0, S10, $1024^3$)")
 
     # ── Axes ──────────────────────────────────────────────────────────────────
     ax.set_xlabel(r"$\log\,M_\star\;(\mathrm{M}_\odot)$")

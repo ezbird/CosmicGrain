@@ -24,17 +24,28 @@ Builds two families of plots:
     chosen resolution.  Columns: M*/Mhalo, <a> nm, f_surv, D/G, D/Z,
     Mdust/Mstar, f_carb.
 
-Spatial scoping
----------------
-ALL snapshot-based measurements and the LaTeX table use EXACTLY R200 as the
-aperture radius, derived in this priority order:
-  1. Group_R_Mean200 from the SubFind/FOF group catalog (most direct).
-  2. First-principles calculation from Group_M_Crit200 + cosmological header.
-  3. Hard fallback: 300 comoving kpc/h (logged as a warning).
+============================================================================
+SPATIAL SCOPING -- IMPORTANT, READ THIS
+============================================================================
+All snapshot-based measurements and the LaTeX table use the current Halo 569
+tracking workflow implemented in halo_utils.py.  The halo center is the frozen
+FOF/catalog center of the tracked Halo 569 object (refine_center=False), rather
+than a shrinking-sphere gas-density center.  The virial aperture is R200c:
+whenever possible halo_utils recomputes R200c from the particle distribution
+using the spherical-overdensity definition, and when that reconstruction fails
+it falls back to the halo finder catalog values Group_R_Crit200 and
+Group_M_Crit200.
 
-Radii from the catalog are in comoving kpc/h (Gadget-4 code length units),
-which is the same frame as particle Coordinates — so all distance cuts are
-applied consistently in that frame.  Physical kpc = R_code * a / h.
+This is intentionally different from older versions of this script, which used
+a halo_utils R200c and a shrinking-sphere center.  Those choices produced
+inconsistent apertures for several figures after the Halo 569 tracking logic was
+updated.  This version is meant to match the newer paper figures that use the
+stable frozen-center/catalog-fallback halo definition.
+
+Particle Coordinates are stored in comoving kpc/h.  All R200 aperture cuts are
+performed in that same coordinate frame.  Physical kpc = R_code * a / h.  All
+radial distances use minimum-image periodic wrapping.
+============================================================================
 
 Usage:
     python compare_grid_dust.py                          # all runs, 512^3, both parts
@@ -51,6 +62,8 @@ Assumptions:
     - Snapshots:  ./{run}_output_{RESOLUTION}/snapdir_NNN/snapshot_NNN.*.hdf5
     - Gadget-4 HDF5 snapshot format with PartType0 (gas), PartType4 (stars),
       PartType6 (dust)
+    - halo_utils.py with get_halo569_reference/get_halo569 importable
+      from the same directory or PYTHONPATH.
 """
 
 import re
@@ -65,7 +78,13 @@ import matplotlib.ticker
 import matplotlib.colors as mcolors
 from collections import defaultdict
 from scipy.spatial import cKDTree
-from halo_utils import get_halo569_reference, get_halo569
+from pathlib import Path
+
+from halo_utils import (
+    get_halo569_reference,
+    get_halo569,
+    read_fof_catalog,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -100,19 +119,25 @@ OBS_DGR_SIGMA      = 0.005
 OBS_DUST_MASS_MSUN = 4.3e7
 SNAP_REDSHIFTS     = [2.0, 1.0, 0.5, 0.0]
 
-from pathlib import Path
 BASE_DIR = str(Path(__file__).resolve().parent.parent)  # gadget4/ directory
 
 FIGDIR = os.path.join(BASE_DIR, 'scripts', 'dust_figures')
 os.makedirs(FIGDIR, exist_ok=True)
 
 RESOLUTION = 512   # updated by --res argument
+
+# Per-run cache of get_halo569_reference() results, so a multi-redshift
+# loop over one run only builds the (relatively expensive) shrinking-
+# sphere z=0 reference once, not once per snapshot/plot call.
+_HALO_REF_CACHE = {}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # R200 / halo utilities
 # ─────────────────────────────────────────────────────────────────────────────
 
 def find_catalog(run, snap_base):
-    """Return path to FOF/SubFind group catalog matching snap_base, or None."""
+    """Return path to FOF group catalog matching snap_base, or None."""
     m = re.search(r'snapshot_(\d+)$', snap_base)
     if not m:
         return None
@@ -144,6 +169,7 @@ def _read_header(snap_base):
                     a      = float(hdr_attrs.get('Time',            defaults['a'])),
                     um_cgs = float(param_attrs.get('UnitMass_in_g',    defaults['um_cgs'])),
                     ul_cm  = float(param_attrs.get('UnitLength_in_cm', defaults['ul_cm'])),
+                    box    = float(hdr_attrs.get('BoxSize', np.nan)),
                 )
         except Exception:
             pass
@@ -154,170 +180,157 @@ def compute_local_dgr(gas, dust):
     """
     Assign dust to nearest gas particle and compute local DGR per gas particle
     """
-
     gas_pos  = gas['pos']
     gas_mass = gas['mass']
 
     dust_pos  = dust['pos']
     dust_mass = dust['mass']
 
-    # Build KD-tree on gas
     tree = cKDTree(gas_pos)
-
-    # Find nearest gas index for each dust particle
     _, idx = tree.query(dust_pos, k=1)
 
-    # Accumulate dust mass onto gas particles
     dust_on_gas = np.zeros(len(gas_mass))
     np.add.at(dust_on_gas, idx, dust_mass)
 
-    # Local DGR
     dgr_local = np.zeros_like(gas_mass)
     mask = gas_mass > 0
     dgr_local[mask] = dust_on_gas[mask] / gas_mass[mask]
 
     return dgr_local
 
-def _compute_r200_from_m200(m200_code, snap_base):
+
+def periodic_delta(pos, center, box):
+    """Minimum-image displacement for positions in comoving kpc/h."""
+    pos = np.asarray(pos, dtype=float)
+    center = np.asarray(center, dtype=float)
+    dx = pos - center[None, :]
+    if np.isfinite(box) and box > 0:
+        dx -= box * np.round(dx / box)
+    return dx
+
+
+def periodic_radius(pos, center, box):
+    """Minimum-image radius for positions in comoving kpc/h."""
+    dx = periodic_delta(pos, center, box)
+    return np.sqrt((dx * dx).sum(axis=1))
+
+
+def snap_num_from_base(snap_base):
+    m = re.search(r'snapshot_(\d+)$', snap_base)
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def find_last_snap_num_for_run(run):
+    """Find the highest snapshot number with both a snapdir and a catalog."""
+    output_dir = os.path.join(BASE_DIR, f'{run}_output_{RESOLUTION}')
+    last = None
+    for snapdir in sorted(glob.glob(os.path.join(output_dir, 'snapdir_*'))):
+        m = re.search(r'snapdir_(\d+)', os.path.basename(snapdir))
+        if not m:
+            continue
+        snap_num   = int(m.group(1))
+        groups_dir = os.path.join(output_dir, f'groups_{snap_num:03d}')
+        if os.path.isdir(groups_dir) and glob.glob(
+                os.path.join(groups_dir, 'fof_subhalo_tab_*.hdf5')):
+            last = snap_num
+    return last
+
+
+def get_halo_ref(run):
     """
-    Compute R200 in comoving kpc/h from M200 (code units) and snapshot header.
-    Uses flat ΛCDM:  R200 = ( 3 M200 / (4π × 200 × ρ_crit(z)) )^(1/3)
-    Returns R200 in comoving kpc/h (same frame as Gadget-4 Coordinates).
+    Return (and cache) the get_halo569_reference() dict for this run, built
+    from its last available (z=0) snapshot. Cached per-run so repeated
+    calls across many redshifts/plots don't rebuild the frozen-center
+    reference each time.
     """
-    G_cgs      = 6.674e-8
-    KM_IN_CM   = 1e5
-    MPC_IN_CM  = 3.085678e24
+    if run in _HALO_REF_CACHE:
+        return _HALO_REF_CACHE[run]
 
-    hdr = _read_header(snap_base)
-    h, Omega0, OmegaL = hdr['h'], hdr['Omega0'], hdr['OmegaL']
-    a, um_cgs, ul_cm  = hdr['a'], hdr['um_cgs'], hdr['ul_cm']
+    output_dir = os.path.join(BASE_DIR, f'{run}_output_{RESOLUTION}')
+    snap_num_z0 = find_last_snap_num_for_run(run)
+    if snap_num_z0 is None:
+        _HALO_REF_CACHE[run] = None
+        return None
 
-    H0_cgs      = 100.0 * h * KM_IN_CM / MPC_IN_CM
-    Ez2         = Omega0 * a**-3 + OmegaL
-    Hz_cgs      = H0_cgs * np.sqrt(Ez2)
-    rho_crit    = 3.0 * Hz_cgs**2 / (8.0 * np.pi * G_cgs)
+    try:
+        ref = get_halo569_reference(
+            output_dir,
+            snap_num_z0=snap_num_z0,
+            refine_center=False,
+            verbose=False,
+        )
+    except Exception as e:
+        print(f'    [{run}] get_halo569_reference() failed: {e}')
+        ref = None
 
-    m200_g      = m200_code * um_cgs
-    r200_cm     = (3.0 * m200_g / (4.0 * np.pi * 200.0 * rho_crit)) ** (1.0 / 3.0)
-    r200_code   = r200_cm / ul_cm          # comoving kpc/h
-    r200_phys   = r200_code * a / h        # physical kpc
-    print(f'      [R200 computed]  M200={m200_code:.3f} code  '
-          f'R200={r200_code:.1f} ckpc/h  ({r200_phys:.1f} pkpc, z={1/a-1:.3f})')
-    return r200_code
+    _HALO_REF_CACHE[run] = ref
+    return ref
+
+
+def get_halo_for_snap(run, snap_base, verbose=True, catalog_only=False):
+    """
+    Return the Halo 569 dictionary for one snapshot using the current halo_utils
+    workflow: frozen FOF/catalog center (refine_center=False) plus particle-SO
+    R200c with catalog fallback when needed.
+
+    Returns None when the halo cannot be identified or has an invalid R200.
+    """
+    snap_num = snap_num_from_base(snap_base)
+    if snap_num is None:
+        if verbose:
+            print(f'    [{run}] cannot parse snapshot number from {snap_base}')
+        return None
+
+    groups_dir = os.path.join(BASE_DIR, f'{run}_output_{RESOLUTION}',
+                              f'groups_{snap_num:03d}')
+    if not os.path.isdir(groups_dir):
+        if verbose and not catalog_only:
+            print(f'    [{run}] missing groups dir for snap {snap_num:03d}')
+        return None
+
+    ref = get_halo_ref(run)
+    if ref is None:
+        if verbose and not catalog_only:
+            print(f'    [{run}] WARNING: no halo reference available for snap {snap_num:03d}')
+        return None
+
+    try:
+        halo = get_halo569(
+            groups_dir,
+            snap_num,
+            ref,
+            refine_center=False,
+            verbose=verbose,
+        )
+    except Exception as e:
+        if verbose or not catalog_only:
+            print(f'    [{run}] get_halo569() failed for snap {snap_num:03d}: {e}')
+        return None
+
+    if halo is None:
+        if verbose and not catalog_only:
+            print(f'    [{run}] WARNING: get_halo569() returned None for snap {snap_num:03d}')
+        return None
+
+    r200 = float(halo.get('r200_ckpch', 0.0))
+    if not np.isfinite(r200) or r200 <= 0:
+        if verbose and not catalog_only:
+            print(f'    [{run}] WARNING: invalid R200 for snap {snap_num:03d}: {r200}')
+        return None
+
+    return halo
 
 
 def get_r200_and_center(run, snap_base, verbose=True, catalog_only=False):
-    """
-    Return (halo_center, R200_code) where both are in comoving kpc/h.
-
-    Priority for R200:
-      1. Group_R_Mean200 from SubFind catalog
-      2. Derived from Group_M_Crit200 via _compute_r200_from_m200
-      3. Hard fallback: 300 comoving kpc/h (warning printed)
-         — suppressed when catalog_only=True (returns (None,None) instead)
-
-    Priority for center:
-      1. Group_Pos[0] from SubFind catalog
-      2. Density-weighted centroid of all gas in the box
-         — suppressed when catalog_only=True (returns (None,None) instead)
-
-    catalog_only : bool
-        If True, return (None, None) whenever the catalog is absent, has no
-        Group key, has zero groups, or cannot provide R200.  Used by
-        load_gas_mass_vs_z to avoid junk centroids from the full box.
-    """
-    import h5py
-
-    catalog = find_catalog(run, snap_base)
-    ctr     = None
-    r200    = None
-
-    # ── Try SubFind catalog ───────────────────────────────────────────────────
-    if catalog is not None:
-        try:
-            with h5py.File(catalog, 'r') as hf:
-                if 'Group' not in hf:
-                    if verbose:
-                        print(f'    [{run}] catalog has no "Group" key '
-                              f'(top-level keys: {list(hf.keys())})')
-                    if catalog_only:
-                        return None, None
-                else:
-                    grp    = hf['Group']
-                    n_grps = 0
-                    if 'GroupPos' in grp:
-                        n_grps = grp['GroupPos'].shape[0]
-                    elif 'Group_M_Crit200' in grp:
-                        n_grps = grp['Group_M_Crit200'].shape[0]
-
-                    if n_grps == 0:
-                        if verbose:
-                            print(f'    [{run}] catalog has 0 groups — skipping snap')
-                        return None, None   # always skip; no centroid for empty catalogs
-
-                    if 'GroupPos' in grp:
-                        ctr = grp['GroupPos'][0].astype(float)
-                        if verbose:
-                            print(f'    [{run}] center from GroupPos: {ctr}')
-
-                    if 'Group_R_Crit200' in grp:
-                        r200 = float(grp['Group_R_Crit200'][0])
-                    elif 'Group_R_Mean200' in grp:          # fallback if Crit200 absent
-                        r200 = float(grp['Group_R_Mean200'][0])
-                        if verbose:
-                            hdr = _read_header(snap_base)
-                            r200_phys = r200 * hdr['a'] / hdr['h']
-                            print(f'    [{run}] R200 from catalog: '
-                                  f'{r200:.1f} ckpc/h ({r200_phys:.1f} pkpc)')
-
-                    if r200 is None and 'Group_M_Crit200' in grp:
-                        m200 = float(grp['Group_M_Crit200'][0])
-                        r200 = _compute_r200_from_m200(m200, snap_base)
-
-                    if r200 is None:
-                        if verbose:
-                            print(f'    [{run}] could not get R200 from catalog. '
-                                  f'Group keys: {list(grp.keys())}')
-                        if catalog_only:
-                            return None, None
-        except Exception as e:
-            print(f'    [{run}] catalog read error: {e}')
-            if catalog_only:
-                return None, None
-    elif catalog_only:
-        # No catalog file at all
+    """Return (halo_center, R200_code), both in comoving kpc/h."""
+    halo = get_halo_for_snap(run, snap_base, verbose=verbose,
+                             catalog_only=catalog_only)
+    if halo is None:
         return None, None
-
-    # ── Fallback center: density-weighted centroid ────────────────────────────
-    # NOTE: only reached when catalog_only=False (interactive plot functions).
-    if ctr is None:
-        subfiles = sorted(glob.glob(snap_base + '.*.hdf5'))
-        if not subfiles:
-            single = snap_base + '.hdf5'
-            subfiles = [single] if os.path.exists(single) else []
-        all_pos, all_rho = [], []
-        for fname in subfiles:
-            try:
-                with h5py.File(fname, 'r') as hf:
-                    if 'PartType0' in hf:
-                        all_pos.append(hf['PartType0']['Coordinates'][:])
-                        all_rho.append(hf['PartType0']['Density'][:])
-            except Exception:
-                pass
-        if all_pos:
-            pos = np.concatenate(all_pos)
-            rho = np.concatenate(all_rho)
-            ctr = np.average(pos, weights=rho, axis=0)
-            print(f'    [{run}] center fallback (density centroid): {ctr}')
-        else:
-            print(f'    [{run}] ERROR: cannot determine halo center')
-            return None, None
-
-    # ── Fallback R200 ─────────────────────────────────────────────────────────
-    if r200 is None:
-        r200 = 300.0
-        print(f'    [{run}] WARNING: R200 fallback = {r200:.1f} ckpc/h')
-
+    ctr = np.asarray(halo['center'], dtype=float)
+    r200 = float(halo['r200_ckpch'])
     return ctr, r200
 
 
@@ -377,17 +390,12 @@ def find_snap_near_z(snap_bases, target_z):
 
 def find_snap_near_z_with_catalog(run, snap_bases, target_z, dz_tol=0.3):
     """
-    Like find_snap_near_z, but prefers snapshots that have a valid SubFind
-    catalog with at least one group.  Falls back to any closest snapshot if
+    Like find_snap_near_z, but prefers snapshots that have a valid FOF
+    catalog with at least one group. Falls back to any closest snapshot if
     no catalogued snapshot is within dz_tol.
-
-    This prevents plot functions from landing on one of the many non-standard
-    output snapshots (which lack catalogs) when a standard output snapshot
-    with a catalog exists at nearly the same redshift.
     """
     import h5py
 
-    # Collect (dz, snap_base, has_catalog) for all snaps within tolerance
     candidates = []
     for sb in snap_bases:
         z = snap_redshift(sb)
@@ -396,7 +404,6 @@ def find_snap_near_z_with_catalog(run, snap_bases, target_z, dz_tol=0.3):
         dz = abs(z - target_z)
         if dz > dz_tol:
             continue
-        # Check for a usable catalog (exists + has Group with >0 entries)
         cat = find_catalog(run, sb)
         has_cat = False
         if cat is not None:
@@ -413,7 +420,6 @@ def find_snap_near_z_with_catalog(run, snap_bases, target_z, dz_tol=0.3):
     if not candidates:
         return None, 1e30
 
-    # Sort: catalog snapshots first, then by dz
     candidates.sort(key=lambda x: (not x[2], x[0]))
     best = candidates[0]
     return best[1], best[0]
@@ -434,6 +440,8 @@ def _subfiles(snap_base):
 def load_dust_for_snap(snap_base, halo_center, rmax):
     """Load PartType6 within rmax (comoving kpc/h) of halo_center."""
     import h5py
+    hdr = _read_header(snap_base)
+    box = hdr.get('box', np.nan)
     pos_list, mass_list, radius_list, cfrac_list, temp_list = [], [], [], [], []
     for fname in _subfiles(snap_base):
         try:
@@ -442,7 +450,7 @@ def load_dust_for_snap(snap_base, halo_center, rmax):
                     continue
                 pt  = hf['PartType6']
                 pos = pt['Coordinates'][:]
-                r   = np.linalg.norm(pos - halo_center, axis=1)
+                r   = periodic_radius(pos, halo_center, box)
                 mask = r < rmax
                 if mask.sum() == 0:
                     continue
@@ -467,6 +475,8 @@ def load_dust_for_snap(snap_base, halo_center, rmax):
 def load_gas_for_snap(snap_base, halo_center, rmax):
     """Load PartType0 within rmax (comoving kpc/h) of halo_center."""
     import h5py
+    hdr = _read_header(snap_base)
+    box = hdr.get('box', np.nan)
     pos_list, mass_list, dens_list, metal_list, ue_list = [], [], [], [], []
     has_metallicity = None
     for fname in _subfiles(snap_base):
@@ -476,7 +486,7 @@ def load_gas_for_snap(snap_base, halo_center, rmax):
                     continue
                 pt   = hf['PartType0']
                 pos  = pt['Coordinates'][:]
-                r    = np.linalg.norm(pos - halo_center, axis=1)
+                r    = periodic_radius(pos, halo_center, box)
                 mask = r < rmax
                 if mask.sum() == 0:
                     continue
@@ -505,6 +515,8 @@ def load_gas_for_snap(snap_base, halo_center, rmax):
 def load_stars_for_snap(snap_base, halo_center, rmax):
     """Load PartType4 within rmax (comoving kpc/h) of halo_center."""
     import h5py
+    hdr = _read_header(snap_base)
+    box = hdr.get('box', np.nan)
     pos_list, mass_list = [], []
     for fname in _subfiles(snap_base):
         try:
@@ -513,7 +525,7 @@ def load_stars_for_snap(snap_base, halo_center, rmax):
                     continue
                 pt   = hf['PartType4']
                 pos  = pt['Coordinates'][:]
-                r    = np.linalg.norm(pos - halo_center, axis=1)
+                r    = periodic_radius(pos, halo_center, box)
                 mask = r < rmax
                 if mask.sum() == 0:
                     continue
@@ -536,12 +548,12 @@ def load_stars_for_snap(snap_base, halo_center, rmax):
 def load_gas_mass_vs_z(run, z_max=10.0):
     """
     Return (z_arr, gas_mass_arr) in code units by reading snapshots that have
-    a valid SubFind group catalog (catalog_only=True), computing R200 and the
-    halo center from that catalog, and summing total gas mass within R200.
+    a valid FOF group catalog (catalog_only=True), computing R200 and the
+    halo center from that catalog (halo_utils R200c, see module docstring),
+    and summing total gas mass within R200.
 
     Snapshots without a catalog, with an empty Group table, or above z_max
-    are silently skipped — the density-centroid fallback over a 50 Mpc box
-    is unreliable and produces junk gas masses at high redshift.
+    are silently skipped.
 
     Returns two numpy arrays sorted by descending redshift (high-z first),
     or (None, None) if no valid snapshots are found.
@@ -555,7 +567,6 @@ def load_gas_mass_vs_z(run, z_max=10.0):
     n_no_catalog = 0
     n_high_z     = 0
     for snap_base in snaps:
-        # Skip snapshots before halo formation
         z = snap_redshift(snap_base)
         if z is None:
             continue
@@ -563,7 +574,6 @@ def load_gas_mass_vs_z(run, z_max=10.0):
             n_high_z += 1
             continue
 
-        # Require a valid catalog — no centroid fallback here
         ctr, r200 = get_r200_and_center(run, snap_base,
                                          verbose=False, catalog_only=True)
         if ctr is None:
@@ -712,7 +722,6 @@ def parse_log(logfile):
     for key in arr_keys:
         data[key] = np.array(data[key], dtype=float)
 
-    # Sort descending in redshift (high-z first, z~0 last)
     idx = np.argsort(data['z'])[::-1]
     for key in arr_keys:
         data[key] = data[key][idx]
@@ -771,67 +780,44 @@ def savefig(fig, name):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def plot_dgr_vs_metallicity_local(runs, target_z=0.0):
-
     Z_sun = 0.0134
-
     fig, ax = plt.subplots(figsize=(7, 5))
 
     for run in runs:
-
         snaps = find_snapshots(run)
         if not snaps:
             continue
-
         snap_base, dz = find_snap_near_z_with_catalog(run, snaps, target_z)
         if dz > 0.2:
             continue
-
         ctr, r200 = get_r200_and_center(run, snap_base, verbose=False)
         if ctr is None:
             continue
 
         gas  = load_gas_for_snap(snap_base, ctr, r200)
         dust = load_dust_for_snap(snap_base, ctr, r200)
-
         if gas is None or dust is None:
             continue
-
         if gas['metallicity'] is None:
-                    continue
+            continue
 
         Z_gas = gas['metallicity']
         if Z_gas.ndim == 2:
             Z_gas = Z_gas[:, 0]
 
-        # --- compute local DGR ---
-        # Z_gas is the gas-phase metallicity, depleted by grain growth.
-        # Observations trace TOTAL metallicity (gas + dust), so we add
-        # the local dust fraction back before plotting. Without this,
-        # grain-growth-active cells appear shifted left on the x-axis
-        # while having high D/Z, producing an artificially inverted slope.
         dgr_local = compute_local_dgr(gas, dust)
-        Z = Z_gas + dgr_local   # total metallicity = gas-phase + dust
+        Z = Z_gas + dgr_local
 
-        # --- compute nH ---
         nH = gas['density'] * UnitDensity_in_cgs * HYDROGEN_MASSFRAC / PROTON_MASS_CGS
+        sf_mask = nH > 1.0
 
-        # --- STAR-FORMING CUT ---
-        sf_mask = nH > 1.0   # tweakable
-
-        # apply mask
         Z_sf   = Z[sf_mask]
         dgr_sf = dgr_local[sf_mask]
-
-        # remove zeros / bad values
         good = (Z_sf > 0) & (dgr_sf > 0)
 
         logZ   = np.log10(Z_sf[good] / Z_sun)
         logDGR = np.log10(dgr_sf[good])
 
-        #ax.scatter(logZ, logDGR,                   s=2, alpha=0.3,                   color=RUN_CONFIGS.get(run, {}).get('color', 'black'),                   label=run)
-        #ax.plot(med_x, med_y, lw=2)
-
-        # optional: median trend
         bins = np.linspace(-3, 0.5, 25)
         digitized = np.digitize(logZ, bins)
 
@@ -843,11 +829,8 @@ def plot_dgr_vs_metallicity_local(runs, target_z=0.0):
             med_x.append(np.median(logZ[m]))
             med_y.append(np.median(logDGR[m]))
 
-        #ax.plot(med_x, med_y, lw=2, color=RUN_CONFIGS.get(run, {}).get('color', 'black'))
-
         ax.plot(med_x, med_y, lw=2, label=run)
 
-    # --- SIMBA relation ---
     x = np.linspace(-3, 0.5, 200)
     y = 2.445 * x - 2.029
     ax.plot(x, y, 'k--', lw=2, label='SIMBA (Li+2019)')
@@ -855,11 +838,10 @@ def plot_dgr_vs_metallicity_local(runs, target_z=0.0):
     ax.set_xlabel(r'$\log_{10}(Z/Z_\odot)$')
     ax.set_ylabel(r'$\log_{10}(\mathrm{DGR})$')
     ax.set_title(f'Local DGR vs Metallicity (Star-forming gas, z~{target_z})')
-
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
-
     savefig(fig, f'dgr_vs_metallicity_local_z{target_z:.1f}.png')
+
 
 def plot_dust_mass(log_data):
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -883,8 +865,6 @@ def plot_dtg(log_data, gas_mass_curves=None):
     """
     Standalone dust-to-gas ratio vs redshift plot.
     gas_mass_curves : dict  run -> (z_arr, gas_mass_arr)  from get_gas_mass_curves()
-    Each run's dust mass is divided by its own interpolated gas mass at each
-    redshift — identical logic to the summary panel D/G row.
     """
     fig, ax = plt.subplots(figsize=(8, 5))
     for run, d in log_data.items():
@@ -896,7 +876,6 @@ def plot_dtg(log_data, gas_mass_curves=None):
             dtg  = np.where(good, d['mass'] / m_gas_interp, np.nan)
             ax.plot(d['z'], dtg, **style(run))
         else:
-            # No gas curve for this run — skip rather than show misleading data
             pass
     handles, labels = legend_handles(log_data)
     if gas_mass_curves:
@@ -1038,10 +1017,6 @@ def plot_summary_panel(log_data, gas_mass_curves=None):
       4. Mean Grain Radius (nm)
       5. Mean Dust Temperature (K)
       6. Hash Success Rate (%)
-
-    gas_mass_curves : dict  run -> (z_arr, gas_mass_arr)
-        Built by get_gas_mass_curves().  If None or empty the D/G panel
-        shows a "not available" annotation instead of duplicating mass.
     """
     fig, axes = plt.subplots(6, 1, figsize=(6, 13), sharex=True,
                               gridspec_kw=dict(hspace=0.08))
@@ -1057,22 +1032,18 @@ def plot_summary_panel(log_data, gas_mass_curves=None):
         ax_temp.plot(z, d['avg_temp'],     **s)
         ax_hash.plot(z, d['hash_success'], **s)
 
-        # D/G: interpolate this run's gas mass curve onto the log redshift grid
         if gas_mass_curves and run in gas_mass_curves:
             z_gas, m_gas = gas_mass_curves[run]
-            # np.interp needs x increasing; arrays are z-descending → flip
             m_gas_interp = np.interp(z, z_gas[::-1], m_gas[::-1])
             good = m_gas_interp > 0
             dtg  = np.where(good, d['mass'] / m_gas_interp, np.nan)
             ax_dtg.plot(z, dtg, **s)
 
-    # CMB reference on temperature panel
     z_arr = np.linspace(0, 5, 300)
     ax_temp.plot(z_arr, 2.73 * (1 + z_arr), 'k--', lw=1.2, zorder=0)
     ax_temp.text(4.3, 2.73 * 5.3, '$T_{\\rm CMB}$', fontsize=7,
                  ha='left', va='bottom')
 
-    # Annotate D/G panel if no curves available
     if not gas_mass_curves:
         ax_dtg.text(0.5, 0.5,
                     'Gas mass unavailable\n(run without snapshot access)',
@@ -1112,20 +1083,15 @@ def plot_summary_panel(log_data, gas_mass_curves=None):
     fig.subplots_adjust(top=0.84)
     fig.suptitle(f'Dust Grid Comparison ({RESOLUTION}$^3$)', fontsize=10, y=0.987)
     fig.legend(handles, labels,
-               fontsize=8,          # ← increased from 6
-               ncol=2,
-               loc='upper center',
-               bbox_to_anchor=(0.5, 0.962),
-               framealpha=0.9,
-               borderpad=0.4,
-               handlelength=1.5,
-               columnspacing=0.8,
-               borderaxespad=0.0)
+               fontsize=8, ncol=2, loc='upper center',
+               bbox_to_anchor=(0.5, 0.962), framealpha=0.9,
+               borderpad=0.4, handlelength=1.5,
+               columnspacing=0.8, borderaxespad=0.0)
     savefig(fig, 'summary_panel.png')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PART 2 plots — snapshot-based (all apertures = R200 from SubFind)
+# PART 2 plots — snapshot-based (all apertures = halo_utils R200c)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def plot_grain_size_distribution(runs, target_redshifts=None):
@@ -1197,15 +1163,17 @@ def plot_grain_size_distribution(runs, target_redshifts=None):
     savefig(fig, 'grain_size_dist_allz.png')
 
 
-def compute_ism_dust_mass(gas, dust, hdr, center_ckpc_h, n_thresh_cgs=0.01):
+def compute_ism_dust_mass(gas, dust, hdr, center_ckpc_h, n_thresh_cgs=0.1):
     """
     Compute ISM-restricted dust mass, gas mass, metal mass, and mass-weighted
     mean grain radius.
- 
-    ISM aperture: r < R_ISM_PKPC (20 pkpc) AND n_H > n_thresh_cgs (0.01 cm^-3).
-    Dust particles are assigned to the ISM via their nearest gas neighbour
-    (KDTree), with an additional direct radial cut on dust positions.
- 
+
+    ISM aperture: r < R_ISM_PKPC (20 pkpc) AND n_H > n_thresh_cgs (0.1 cm^-3
+    by default, matching the ISM aperture documented elsewhere in this
+    project: r<20 pkpc AND nH>0.1 cm^-3). Dust particles are assigned to the
+    ISM via their nearest gas neighbour (KDTree), with an additional direct
+    radial cut on dust positions.
+
     Returns
     -------
     M_dust_ISM   : float   [code units]
@@ -1215,50 +1183,25 @@ def compute_ism_dust_mass(gas, dust, hdr, center_ckpc_h, n_thresh_cgs=0.01):
     """
     a, h    = hdr['a'], hdr['h']
     to_pkpc = a / h
- 
+
     nH     = gas['density'] * UnitDensity_in_cgs * HYDROGEN_MASSFRAC / PROTON_MASS_CGS
-    r_pkpc = np.linalg.norm(gas['pos'] - center_ckpc_h, axis=1) * to_pkpc
- 
-    ism_mask = (nH > n_thresh_cgs) & (r_pkpc < R_ISM_PKPC)
+    r_pkpc = periodic_radius(gas['pos'], center_ckpc_h, hdr.get('box', np.nan)) * to_pkpc
 
-    print(f"      DEBUG nH: min={nH.min():.3e}  max={nH.max():.3e}  "
-          f"n_pass_density={(nH > n_thresh_cgs).sum()}")
-    print(f"      DEBUG r_pkpc: min={r_pkpc.min():.2f}  max={r_pkpc.max():.2f}  "
-          f"n_pass_radius={(r_pkpc < R_ISM_PKPC).sum()}")
-    print(f"      DEBUG ism_mask total: {ism_mask.sum()} / {len(ism_mask)}")
-    print(f"      DEBUG to_pkpc={to_pkpc:.4f}  a={a}  h={h}")
-
-    dense_mask = nH > n_thresh_cgs
-    if dense_mask.any():
-            print(f"      Dense gas r_pkpc: {np.sort(r_pkpc[dense_mask])[:10]} ... max={r_pkpc[dense_mask].max():.1f}")
-    else:
-            print(f"      Dense gas r_pkpc: (none above threshold)")
-
-    ism_hi = nH > 0.1
-    if ism_hi.any():
-        print(f"      Dense gas radii (nH>0.1): {np.sort(r_pkpc[ism_hi])}")
-    else:
-        print(f"      Dense gas radii (nH>0.1): (none)")
-    
-    inner = r_pkpc < 20
-    if inner.any():
-        print(f"      Main halo SFR proxy — gas within 20 pkpc: {inner.sum()} particles, "
-              f"max nH={nH[inner].max():.3e} cm^-3")
-    else:
-        print(f"      Main halo SFR proxy — gas within 20 pkpc: (none)")
+    #ism_mask = (nH > n_thresh_cgs) & (r_pkpc < R_ISM_PKPC)
+    ism_mask = (r_pkpc < R_ISM_PKPC)
 
     if not np.any(ism_mask):
         return 0.0, 0.0, 0.0, None
- 
+
     tree    = cKDTree(gas['pos'])
     _, idx  = tree.query(dust['pos'], k=1)
- 
-    dust_r_pkpc = np.linalg.norm(dust['pos'] - center_ckpc_h, axis=1) * to_pkpc
+
+    dust_r_pkpc = periodic_radius(dust['pos'], center_ckpc_h, hdr.get('box', np.nan)) * to_pkpc
     dust_ism    = ism_mask[idx] & (dust_r_pkpc < R_ISM_PKPC)
- 
+
     M_dust_ISM = float(dust['mass'][dust_ism].sum())
     M_gas_ISM  = float(gas['mass'][ism_mask].sum())
- 
+
     if gas['metallicity'] is not None:
         Z = gas['metallicity']
         if Z.ndim == 2:
@@ -1266,16 +1209,16 @@ def compute_ism_dust_mass(gas, dust, hdr, center_ckpc_h, n_thresh_cgs=0.01):
         M_metal_ISM = float((gas['mass'][ism_mask] * Z[ism_mask]).sum()) + M_dust_ISM
     else:
         M_metal_ISM = 0.0
- 
-    # ISM mass-weighted mean grain radius
+
     ism_dust_mass = dust['mass'][dust_ism]
     if ism_dust_mass.sum() > 0 and 'grain_radius' in dust:
         mean_a_ism = float(np.average(dust['grain_radius'][dust_ism],
                                       weights=ism_dust_mass))
     else:
         mean_a_ism = None
- 
+
     return M_dust_ISM, M_gas_ISM, M_metal_ISM, mean_a_ism
+
 
 def plot_carbon_fraction_pdf(runs, target_z=0.0):
     """Carbon fraction PDF at target_z; aperture = R200."""
@@ -1309,8 +1252,7 @@ def plot_radial_dgr(runs, target_z=0.0):
     """
     Radial D/G and D/Z profiles in physical kpc.
     Particle coordinates (comoving kpc/h) are converted to physical kpc via
-    r_phys = r_code * a / h before binning, so the x-axis is directly
-    comparable to observational references like Mattsson+2012.
+    r_phys = r_code * a / h before binning.
     """
     fig, (ax_dgr, ax_dtm) = plt.subplots(2, 1, figsize=(9, 8), sharex=True,
                                           gridspec_kw=dict(hspace=0.06))
@@ -1322,22 +1264,20 @@ def plot_radial_dgr(runs, target_z=0.0):
         ctr, r200 = get_r200_and_center(run, snap_base, verbose=False)
         if ctr is None: continue
 
-        # Conversion factor: comoving kpc/h → physical kpc
         hdr   = _read_header(snap_base)
         to_pkpc = hdr['a'] / hdr['h']
 
         r200_pkpc    = r200 * to_pkpc
         r_max_plot   = min(r200_pkpc, 50.0)
-        r_bins       = np.arange(0, r_max_plot + 5, 5)        # physical kpc
-        r_centers    = 0.5 * (r_bins[:-1] + r_bins[1:])       # physical kpc
+        r_bins       = np.arange(0, r_max_plot + 5, 5)
+        r_centers    = 0.5 * (r_bins[:-1] + r_bins[1:])
 
         dust = load_dust_for_snap(snap_base, ctr, r200)
         gas  = load_gas_for_snap(snap_base,  ctr, r200)
         if dust is None or gas is None: continue
 
-        # Convert particle radii to physical kpc for binning
-        r_gas  = np.linalg.norm(gas['pos']  - ctr, axis=1) * to_pkpc
-        r_dust = np.linalg.norm(dust['pos'] - ctr, axis=1) * to_pkpc
+        r_gas  = periodic_radius(gas['pos'],  ctr, hdr.get('box', np.nan)) * to_pkpc
+        r_dust = periodic_radius(dust['pos'], ctr, hdr.get('box', np.nan)) * to_pkpc
 
         gas_mass_r,  _ = np.histogram(r_gas,  bins=r_bins, weights=gas['mass'])
         dust_mass_r, _ = np.histogram(r_dust, bins=r_bins, weights=dust['mass'])
@@ -1361,20 +1301,11 @@ def plot_radial_dgr(runs, target_z=0.0):
         ax_dgr.plot(r_centers, dgr, marker='o', ms=4, **s, alpha=0.9)
         ax_dtm.plot(r_centers, dtm, marker='o', ms=4, **s, alpha=0.9)
 
-    # D/G reference: simple exponential disk approximation for MW
-    # D/G(R) ~ D/G_0 * exp(-(R-R_sun)/h) with h~5 kpc, normalized to
-    # local value 0.01 at R_sun=8 kpc (consistent with Draine et al. 2007,
-    # Mattsson & Andersen 2012 SINGS profiles)
     r_ref = np.linspace(0.5, 50, 300)
     ax_dgr.plot(r_ref, OBS_DGR_Z0 * np.exp(-(r_ref - 8.0) / 5.0), 'k--', lw=2.0,
                 label='MW exponential disk (Draine+2007 approx.)')
 
-    # D/Z reference: Galactic solar-neighbourhood value ζ_G ≈ 0.5
-    # with ±0.3 dex scatter (Mattsson & Andersen 2012, MNRAS 423, 38;
-    # Zafar & Watson 2013, A&A 560, A26).
-    # Negative D/Z slope = ISM grain growth dominates;
-    # positive slope = SN destruction dominates (Mattsson et al. 2012 Paper I).
-    zeta_G      = 0.5    # Galactic dust-to-metals ratio (solar neighbourhood)
+    zeta_G      = 0.5
     zeta_lo     = zeta_G * 10**(-0.3)
     zeta_hi     = zeta_G * 10**(+0.3)
     ax_dtm.axhspan(zeta_lo, zeta_hi, alpha=0.12, color='gray', zorder=0)
@@ -1479,8 +1410,11 @@ def plot_dust_map(runs, target_z=0.0, size_kpc=50.0, npix=256):
         if ctr is None: continue
         dust = load_dust_for_snap(snap_base, ctr, r200)
         if dust is None: continue
-        dx   = dust['pos'][:, 0] - ctr[0]
-        dy   = dust['pos'][:, 1] - ctr[1]
+        hdr = _read_header(snap_base)
+        to_pkpc = hdr['a'] / hdr['h']
+        dx_all = periodic_delta(dust['pos'], ctr, hdr.get('box', np.nan)) * to_pkpc
+        dx   = dx_all[:, 0]
+        dy   = dx_all[:, 1]
         half = size_kpc / 2.0
         bins = np.linspace(-half, half, npix + 1)
         img, _, _ = np.histogram2d(dx, dy, bins=[bins, bins], weights=dust['mass'])
@@ -1516,98 +1450,92 @@ def plot_dust_map(runs, target_z=0.0, size_kpc=50.0, npix=256):
 def compute_table_stats(runs, log_data):
     """
     Compute per-run z~0 statistics for the LaTeX table.
- 
-    Aperture for halo-wide quantities: R200 from SubFind.
-    Aperture for ISM quantities: r < 20 pkpc AND n_H > 0.1 cm^-3.
- 
+
+    Aperture for halo-wide quantities: halo_utils R200c, centered on
+    the frozen Halo 569 FOF/catalog center (refine_center=False).  R200c is
+    recomputed from particles when possible, with catalog fallback when needed.
+    Aperture for ISM quantities: r < 20 pkpc AND n_H > 0.1 cm^-3, using the
+    SAME center as the halo-wide quantities (no separate ism_ctr lookup --
+    an earlier version of this function used two different centers for
+    the same table row, which was a real bug).
+
     Returns dict  run -> {
-        Mstar_over_Mhalo,
-        Mdust_over_Mstar,
-        f_surv,
-        mean_a_ism,       # ISM mass-weighted mean grain radius (nm)
-        mean_a_nm,        # R200 mass-weighted mean grain radius (nm)
-        DtoG_ISM,
-        DtoG,
-        DtoZ_ISM,
-        DtoZ,
-        f_carb,           # halo mass-weighted mean carbon fraction
-        z_snap,
+        Mstar_over_Mhalo, Mdust_over_Mstar, f_surv,
+        mean_a_ism, mean_a_nm,
+        DtoG_ISM, DtoG, DtoZ_ISM, DtoZ,
+        f_carb, z_snap,
     }
     """
     table = {}
- 
+
     for run in runs:
         print(f'\n  [{run}] computing table stats...')
         ts = {}
- 
+
         snaps = find_snapshots(run)
         if not snaps:
             print(f'    no snapshots found')
             table[run] = ts
             continue
- 
+
         snap_base, dz = find_snap_near_z_with_catalog(run, snaps, 0.0)
         if dz > 0.5:
             print(f'    WARNING: closest snapshot is dz={dz:.2f} from z=0')
- 
-        ts['z_snap'] = snap_redshift(snap_base) or 0.0
-        hdr          = _read_header(snap_base)
+
+        ts['z_snap']  = snap_redshift(snap_base) or 0.0
+        hdr           = _read_header(snap_base)
         msun_per_code = hdr['um_cgs'] / 1.989e33
- 
-        # Halo center and R200
-        ctr, r200 = get_r200_and_center(run, snap_base, verbose=True)
-        if ctr is None:
-            print(f'    cannot determine halo center — skipping')
+
+        # ── SINGLE center + R200 for this entire table row ──────────────────
+        # Use the current halo_utils workflow: frozen FOF/catalog center
+        # plus particle-SO R200c with catalog fallback. Both R200-wide and
+        # ISM quantities below use this SAME (ctr, r200).
+        halo = get_halo_for_snap(run, snap_base, verbose=True)
+        if halo is None:
+            print(f'    cannot determine halo center/R200 — skipping')
             table[run] = ts
             continue
- 
+
+        ctr = np.asarray(halo['center'], dtype=float)
+        r200 = float(halo['r200_ckpch'])
+        m200_code = float(halo.get('m200_code', np.nan))
+        if not np.isfinite(m200_code) or m200_code <= 0:
+            # Some halo_utils versions only expose physical Msun.
+            m200_msun = float(halo.get('m200_msun', np.nan))
+            m200_code = m200_msun / msun_per_code if np.isfinite(m200_msun) else None
+
+        fallback = ' [catalog fallback]' if halo.get('used_catalog_fallback', halo.get('used_fallback', False)) else ''
         print(f'    aperture = R200 = {r200:.1f} ckpc/h '
-              f'({r200 * hdr["a"] / hdr["h"]:.1f} pkpc)')
- 
-        # M200 from catalog
-        catalog   = find_catalog(run, snap_base)
-        m200_code = None
-        if catalog is not None:
-            try:
-                import h5py
-                with h5py.File(catalog, 'r') as hf:
-                    if 'Group' in hf and 'Group_M_Crit200' in hf['Group']:
-                        m200_code = float(hf['Group']['Group_M_Crit200'][0])
-            except Exception:
-                pass
- 
-        # ── Stellar mass ──────────────────────────────────────────────────────
+              f'({r200 * hdr["a"] / hdr["h"]:.1f} pkpc), '
+              f'center = {np.round(ctr, 2)}{fallback}')
+
+        # ── Stellar mass (R200, same center) ─────────────────────────────────
         stars       = load_stars_for_snap(snap_base, ctr, r200)
         M_star_code = float(stars['mass'].sum()) \
                       if (stars and len(stars['mass']) > 0) else 0.0
         ts['M_star_msun']      = M_star_code * msun_per_code
         ts['Mstar_over_Mhalo'] = (M_star_code / m200_code) \
                                   if (m200_code and m200_code > 0) else None
- 
-        # ── Dust (R200) ───────────────────────────────────────────────────────
+
+        # ── Dust (R200, same center) ─────────────────────────────────────────
         dust = load_dust_for_snap(snap_base, ctr, r200)
         if dust and len(dust.get('mass', [])) > 0:
             M_dust_code = float(dust['mass'].sum())
- 
-            # R200 mass-weighted mean grain radius  (corrected from previous
-            # version which labelled this as ISM-restricted in the caption)
             ts['mean_a_nm'] = float(np.average(dust['grain_radius'],
                                                weights=dust['mass'])) \
                               if 'grain_radius' in dust else None
- 
-            # R200 mass-weighted carbon fraction
             ts['f_carb'] = float(np.average(dust['carbon_frac'],
                                             weights=dust['mass'])) \
                            if 'carbon_frac' in dust else None
         else:
-            M_dust_code   = 0.0
+            M_dust_code     = 0.0
             ts['mean_a_nm'] = None
             ts['f_carb']    = None
- 
+
         ts['Mdust_over_Mstar'] = (M_dust_code / M_star_code) \
                                   if M_star_code > 0 else None
- 
-        # ── Gas — halo-wide (R200) ────────────────────────────────────────────
+
+        # ── Gas — halo-wide (R200, same center) ──────────────────────────────
         gas = load_gas_for_snap(snap_base, ctr, r200)
         if gas and len(gas['mass']) > 0:
             M_gas_halo = float(gas['mass'].sum())
@@ -1623,30 +1551,16 @@ def compute_table_stats(runs, log_data):
         else:
             ts['DtoG'] = 0.0
             ts['DtoZ'] = 0.0
- 
 
-        # In compute_table_stats, replace the ISM_CENTERS block with:
-        # Find last snapshot number for this run
-        last_snap_num = int(re.search(r'snapshot_(\d+)$', snap_base).group(1))
-        ref = get_halo569_reference(
-            os.path.join(BASE_DIR, f'{run}_output_{RESOLUTION}'),
-            snap_num_z0=last_snap_num)
-
-        snap_m = re.search(r'snapshot_(\d+)$', snap_base)
-        snap_num = int(snap_m.group(1))
-        groups_dir = os.path.join(
-            BASE_DIR, f'{run}_output_{RESOLUTION}', f'groups_{snap_num:03d}')
-        halo = get_halo569(groups_dir, snap_num, ref, verbose=True)
-        ism_ctr = halo['center']  # already shrinking-sphere refined
-
-        ISM_LOAD_RADIUS = 100.0  # ckpc/h — generous to capture 20 pkpc ISM aperture
-        gas_ism  = load_gas_for_snap(snap_base,  ism_ctr, ISM_LOAD_RADIUS)
-        dust_ism = load_dust_for_snap(snap_base, ism_ctr, ISM_LOAD_RADIUS)
+        # ── ISM block — SAME center, tighter radius/density cut ─────────────
+        ISM_LOAD_RADIUS = 100.0  # ckpc/h, generous to capture 20 pkpc ISM cut
+        gas_ism  = load_gas_for_snap(snap_base,  ctr, ISM_LOAD_RADIUS)
+        dust_ism = load_dust_for_snap(snap_base, ctr, ISM_LOAD_RADIUS)
         if dust_ism and len(dust_ism.get('mass', [])) > 0 and \
            gas_ism  and len(gas_ism.get('mass',  [])) > 0:
             hdr_local = _read_header(snap_base)
             M_dust_ISM, M_gas_ISM, M_metal_ISM, mean_a_ism = compute_ism_dust_mass(
-                gas_ism, dust_ism, hdr_local, ism_ctr)
+                gas_ism, dust_ism, hdr_local, ctr)
             ts['DtoG_ISM']   = M_dust_ISM / M_gas_ISM   if M_gas_ISM   > 0 else 0.0
             ts['DtoZ_ISM']   = M_dust_ISM / M_metal_ISM if M_metal_ISM > 0 else 0.0
             ts['mean_a_ism'] = mean_a_ism
@@ -1654,32 +1568,31 @@ def compute_table_stats(runs, log_data):
             ts['DtoG_ISM']   = 0.0
             ts['DtoZ_ISM']   = 0.0
             ts['mean_a_ism'] = None
- 
+
         print(f'    <a>_ISM={ts.get("mean_a_ism")} nm  '
               f'<a>_R200={ts.get("mean_a_nm")} nm')
         print(f'    D/G_ISM={ts.get("DtoG_ISM"):.3e}  '
               f'D/Z_ISM={ts.get("DtoZ_ISM"):.3f}  '
               f'D/G={ts.get("DtoG"):.3e}  '
               f'D/Z={ts.get("DtoZ"):.3f}')
- 
-        # ── f_surv from log ───────────────────────────────────────────────────
+
+        # ── f_surv from log (unchanged — no center dependence) ───────────────
         if run in log_data and len(log_data[run]['z']) > 0:
             d       = log_data[run]
             n_alive = d['n_part'][-1]
             n_dest  = d['n_thermal'][-1] + d['n_shock'][-1] + d['n_astrat'][-1]
             n_total = n_alive + n_dest
             ts['f_surv'] = float(n_alive / n_total) if n_total > 0 else np.nan
-            # log fallback for mean_a_nm only if snapshot gave nothing
             if ts['mean_a_nm'] is None and not np.isnan(d['avg_size'][-1]):
                 ts['mean_a_nm'] = float(d['avg_size'][-1])
         else:
             ts['f_surv'] = np.nan
- 
+
         print(f'    z={ts["z_snap"]:.3f}  '
               f'M*/Mh={ts.get("Mstar_over_Mhalo")}  '
               f'f_surv={ts.get("f_surv")}')
         table[run] = ts
- 
+
     return table
 
 
@@ -1715,13 +1628,14 @@ def write_latex_table(runs, table_stats, resolution, out_path):
         'S9':  r'$+$ Shattering',
         'S10': r'$+$ Radiation pressure',
     }
- 
+
     lines = []
     A = lines.append
- 
+
     A(r'% Auto-generated by compare_grid_dust.py  (--latex-out)')
     A(r'% Column order: Sim | Desc | M*/Mhalo | Mdust/M* | f_surv |')
     A(r'%   <a>_ISM | <a>_R200 | D/G|ISM | D/G | D/Z|ISM | D/Z | f_C')
+    A(r'% R200/M200 use halo_utils particle-SO/catalog-fallback workflow.')
     A('')
     A(r'\begin{deluxetable*}{llrrrrrrrrrr}')
     A(r'\tablecaption{%')
@@ -1745,7 +1659,7 @@ def write_latex_table(runs, table_stats, resolution, out_path):
     A(r'  \colhead{$\bar{f}_{\rm C}$}')
     A(r'}')
     A(r'\startdata')
- 
+
     for run in runs:
         ts   = table_stats.get(run, {})
         desc = DESCRIPTIONS.get(run, run)
@@ -1764,9 +1678,7 @@ def write_latex_table(runs, table_stats, resolution, out_path):
             f'{_lxf(ts.get("f_carb"),             ".2f")} \\\\'
         )
         A(row)
- 
-    # MW reference row — D/G|ISM = D/G and D/Z|ISM = D/Z because Jenkins+2009
-    # measures ISM sightlines exclusively; <a> values not available.
+
     A(r'  \hline')
     A(r'  MW & Observed & $\sim0.04$ & $5\times10^{-4}$ & \nodata &'
       r' \nodata & \nodata &'
@@ -1777,7 +1689,8 @@ def write_latex_table(runs, table_stats, resolution, out_path):
     A(r'  Each rung adds one physics process to the previous configuration.')
     A(f'  All runs use ${resolution}^3$ resolution and identical initial')
     A(r'  conditions (50~Mpc comoving box, halo~569,')
-    A(r'  $M_{200}\approx2\times10^{12}\,h^{-1}\,M_\odot$).')
+    A(r'  Halo~569 R200 apertures from the frozen-center spherical-overdensity workflow;')
+    A(r'  see methods text for the catalog-fallback cases).')
     A(r'  Physics channel flags are in Table~\ref{tab:sim_grid}.')
     A(r'  $M_\star/M_{\rm halo}$: stellar-to-halo mass ratio within $R_{200}$.')
     A(r'  $M_{\rm dust}/M_\star$: dust-to-stellar mass ratio within $R_{200}$.')
@@ -1797,7 +1710,7 @@ def write_latex_table(runs, table_stats, resolution, out_path):
     A(r'}')
     A(r'\end{deluxetable*}')
     A('')
- 
+
     with open(out_path, 'w') as fh:
         fh.write('\n'.join(lines))
     print(f'\nLaTeX table written -> {out_path}')
@@ -1838,7 +1751,9 @@ def main():
     print(f'\nAnalyzing runs: {runs}')
     print(f'Resolution:     {RESOLUTION}^3')
     print(f'Output dir:     {FIGDIR}/\n')
-    print('NOTE: All spatial measurements use aperture = R200 from SubFind catalog.\n')
+    print('NOTE: All spatial measurements use a halo_utils R200c '
+          '(see module docstring) -- NOT the raw catalog Group_M_Crit200, '
+          'which was found unreliable for this halo.\n')
 
     if args.table_only and args.latex_out is None:
         args.latex_out = f'dust_sim_ladder_{args.res}.tex'

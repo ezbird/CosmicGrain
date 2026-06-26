@@ -73,7 +73,7 @@ GravityConstantInternal  0
 %---- SPH --------------------------------------------------
 DesNumNgb                       32
 MaxNumNgbDeviation              8
-DesLinkNgb                      32
+DesLinkNgb                      32      % this needed to be commented out if not using SUBFIND
 ArtBulkViscConst                1.0
 MinGasHsml                      1.0
 MaxGasHsml                      1000
