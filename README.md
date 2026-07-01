@@ -1,6 +1,6 @@
 # CosmicGrain
 
-A live dust physics extension for GADGET-4, implementing explicit N-body dust superparticles (PartType6) in cosmological simulations.
+A live dust physics extension for GADGET-4, implementing explicit on-the-fly dust in cosmological simulations. Notably, the dust superparticles (PartType6) have individual masses, grain sizes, compositions, positions, and velocities.
 
 CosmicGrain follows the creation, evolution, transport, growth, and destruction of dust grains self-consistently alongside gas, stars, and dark matter. The project is designed to study the origin and evolution of cosmic dust from high redshift to the present day, with particular emphasis on dusty galaxies observed by JWST and ALMA.
 
@@ -13,17 +13,15 @@ For more information, visit: https://cosmicgrain.space
 CosmicGrain models the full dust lifecycle through:
 
 * **Dust creation** from SNII and AGB stars
-* **Gas-dust drag** (Epstein regime)
+* **Astration** during star formation
+* **Gas-dust drag**
 * **Thermal sputtering** in hot gas
 * **SN shock destruction**
-* **ISM grain growth**
+* **Grain growth**
 * **Subgrid clumping enhancement**
 * **Coagulation**
 * **Shattering**
 * **Radiation pressure**
-* **Astration** during star formation
-
-Dust is represented by live superparticles with individual masses, grain sizes, compositions, positions, and velocities.
 
 ---
 
@@ -76,7 +74,7 @@ Makefile.systype
 For example:
 
 ```text
-SYSTYPE="Generic-gcc"
+SYSTYPE="stampede"
 ```
 
 Then compile:
@@ -105,7 +103,7 @@ ICs/
 Included datasets:
 
 * 50 Mpc parent volume
-* Halo 569 zoom-in initial conditions (512-resolution)
+* Halo 569 zoom-in initial conditions (512^3-resolution)
 
 Higher-resolution zoom initial conditions are omitted from the repository because of file size limitations.
 
