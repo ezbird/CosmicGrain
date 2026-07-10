@@ -45,6 +45,19 @@ stable frozen-center/catalog-fallback halo definition.
 Particle Coordinates are stored in comoving kpc/h.  All R200 aperture cuts are
 performed in that same coordinate frame.  Physical kpc = R_code * a / h.  All
 radial distances use minimum-image periodic wrapping.
+
+------------------------------------------------------------------------------
+CATALOG NAMING -- FOF-only vs SUBFIND runs
+------------------------------------------------------------------------------
+Gadget-4 writes "fof_subhalo_tab_*.hdf5" catalogs when SUBFIND is enabled, and
+plain "fof_tab_*.hdf5" catalogs when SUBFIND is disabled (FOF group-finding
+only).  SUBFIND was disabled for the 2048^3 production runs to avoid hangs in
+subfind_excursionset.cc, while FOF was kept on -- which is all halo_utils.py
+actually needs (it reads only the "Group" table: GroupPos, GroupMassType,
+Group_M_Crit200, Group_R_Crit200, GroupMass; it never reads "Subhalo" fields).
+find_catalog() below checks for "fof_subhalo_tab_*" first, then falls back to
+"fof_tab_*", so this script works against either naming convention without
+needing to know in advance which one a given run used.
 ============================================================================
 
 Usage:
@@ -137,16 +150,24 @@ _HALO_REF_CACHE = {}
 # ─────────────────────────────────────────────────────────────────────────────
 
 def find_catalog(run, snap_base):
-    """Return path to FOF group catalog matching snap_base, or None."""
+    """Return path to FOF group catalog matching snap_base, or None.
+
+    Tries "fof_subhalo_tab_*" first (written when SUBFIND is enabled), then
+    falls back to "fof_tab_*" (written in FOF-only mode, e.g. when SUBFIND
+    is disabled to avoid hangs at high resolution -- see module docstring).
+    Both filename conventions carry the same "Group" table fields that this
+    script and halo_utils.py actually use.
+    """
     m = re.search(r'snapshot_(\d+)$', snap_base)
     if not m:
         return None
     snap_num   = m.group(1)
     groups_dir = os.path.join(BASE_DIR, f'{run}_output_{RESOLUTION}', f'groups_{snap_num}')
-    candidates = sorted(glob.glob(
-        os.path.join(groups_dir, f'fof_subhalo_tab_{snap_num}.*.hdf5')))
-    if candidates:
-        return candidates[0]
+    for prefix in ('fof_subhalo_tab', 'fof_tab'):
+        candidates = sorted(glob.glob(
+            os.path.join(groups_dir, f'{prefix}_{snap_num}.*.hdf5')))
+        if candidates:
+            return candidates[0]
     return None
 
 
@@ -232,8 +253,11 @@ def find_last_snap_num_for_run(run):
             continue
         snap_num   = int(m.group(1))
         groups_dir = os.path.join(output_dir, f'groups_{snap_num:03d}')
-        if os.path.isdir(groups_dir) and glob.glob(
-                os.path.join(groups_dir, 'fof_subhalo_tab_*.hdf5')):
+        has_catalog = os.path.isdir(groups_dir) and (
+            glob.glob(os.path.join(groups_dir, 'fof_subhalo_tab_*.hdf5')) or
+            glob.glob(os.path.join(groups_dir, 'fof_tab_*.hdf5'))
+        )
+        if has_catalog:
             last = snap_num
     return last
 

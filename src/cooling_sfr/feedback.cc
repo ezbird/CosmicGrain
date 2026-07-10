@@ -1151,7 +1151,7 @@ if(RESERVOIR_RELEASE_ENABLED) {
 
     #ifdef DUST
     create_dust_particles_from_feedback(Sp, p, MZ_code, 1);
-    destroy_dust_from_sn_shocks(Sp, p, E_code, MZ_code, comm);
+    erode_dust_from_sn_shocks(Sp, p, E_code, comm);
     #endif
 
     Sp->P[p].FeedbackFlag |= 1;

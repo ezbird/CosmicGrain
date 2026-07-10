@@ -40,7 +40,7 @@ from halo_utils import (
     read_snap_header,
     glob_snap_chunks,
 )
-plt.style.use('sleek.mplstyle')
+plt.style.use('cosmicgrain.mplstyle')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Run styling
@@ -61,6 +61,9 @@ RUN_CONFIGS = {
 
 FIGDIR        = "dust_figures"
 RESOLUTION    = 512
+SIMS_ROOT     = ".."  # parent dir containing {run}_output_{RESOLUTION}/ folders;
+                       # override with --sims-root if runs live in a subfolder
+                       # (e.g. a consolidated "simulation_runs_used_for_paper/")
 R_MAX_DEFAULT = 50.0   # physical kpc
 BIN_WIDTH     = 5.0    # physical kpc
 
@@ -95,7 +98,7 @@ def remy_ruyer_dtz(r_kpc, r0=8.0, dtz0=0.5, grad=-0.04, alpha=1.5):
 
 def find_snapshots(run):
     """Return sorted list of snapshot base paths for this run/resolution."""
-    output_dir = f"../{run}_output_{RESOLUTION}"
+    output_dir = f"{SIMS_ROOT}/{run}_output_{RESOLUTION}"
     if not os.path.isdir(output_dir):
         return []
     seen, bases = set(), []
@@ -157,7 +160,7 @@ def get_halo_center_r200(run, snap_base):
         print(f"  [get_halo_center_r200] cannot parse snap_num from {snap_base}")
         return None, None
     snap_num   = int(m.group(1))
-    output_dir = f"../{run}_output_{RESOLUTION}"
+    output_dir = f"{SIMS_ROOT}/{run}_output_{RESOLUTION}"
     groups_dir = os.path.join(output_dir, f"groups_{snap_num:03d}")
 
     # Establish z=0 reference once (cached per run via module-level dict)
@@ -535,12 +538,19 @@ def main():
                         default=["S0","S1","S2","S3","S4","S5",
                                  "S6","S7","S8","S9","S10"])
     parser.add_argument("--res",    type=int,   default=512)
+    parser.add_argument("--sims-root", default="..",
+                        help="Parent directory containing {run}_output_{res}/ "
+                             "folders (default: .. -- direct siblings of "
+                             "scripts/). Point this at a consolidated "
+                             "directory if your runs live in a subfolder, "
+                             "e.g. ../simulation_runs_used_for_paper")
     parser.add_argument("--r-max",  type=float, default=None)
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
-    global RESOLUTION
+    global RESOLUTION, SIMS_ROOT
     RESOLUTION = args.res
+    SIMS_ROOT  = args.sims_root
 
     print(f"\nRuns:       {args.runs}")
     print(f"Resolution: {RESOLUTION}^3")

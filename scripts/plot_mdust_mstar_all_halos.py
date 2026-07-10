@@ -37,7 +37,7 @@ from halo_utils import (
     read_snap_header,
     read_fof_catalog,
 )
-plt.style.use('sleek.mplstyle')
+plt.style.use('cosmicgrain.mplstyle')
 
 SOLAR_MASS = 1.989e33
 

@@ -8,6 +8,27 @@ snapdir_*/
 CosmicGrain
 Gadget4
 
+# Runtime logs
+*.log
+
+# Local documentation deployment script
+saveDocsToServer.sh
+
+# Generated/runtime output
+output*
+resume*.log
+restart_*.txt
+temp/
+site/
+
+# Generated figures
+dust_figures/
+stellar_profile_*.png
+
+# Python cache
+__pycache__/
+*.py[cod]
+
 # Python
 *.pyc
 .venv/
@@ -25,16 +46,6 @@ ICs/IC_zoom_4096*.hdf5
 
 # Old/scratch scripts
 *_old.py
-*_old2.py
-scripts/test*.py
-scripts/datetime
-scripts/figs/
-scripts/frames*/
-scripts/dust_figures/
-scripts/halo569_centers_*.json
-testnow
-check_halo.py
-compare_grid_dust_old*.py
 
 # Large data files
 *.hdf5
@@ -49,6 +60,13 @@ compare_grid_dust_old*.py
 *.tgz
 *.hdf5
 *.dat
+
+# Keep curated observational/comparison data
+!data/obs_data/
+!data/obs_data/**
+#!data/simba/     file too large
+#!data/simba/**
+data/simba/*.hdf5
 
 !buildsystem/git_version.sh
 !ICs/matterpower.dat

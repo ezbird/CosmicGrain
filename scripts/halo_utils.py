@@ -37,6 +37,18 @@ This version deliberately does NOT use GroupMass as M200 and does NOT derive
 R200 from GroupMass. FOF mass can include bridges/companions and is not a
 spherical-overdensity mass. Catalog Group_R_Crit200/Group_M_Crit200 are kept
 as diagnostics only.
+
+Catalog naming -- FOF-only vs SUBFIND runs
+-------------------------------------------
+Gadget-4 writes "fof_subhalo_tab_*.hdf5" catalogs when SUBFIND is enabled, and
+plain "fof_tab_*.hdf5" catalogs when SUBFIND is disabled (FOF group-finding
+only, e.g. to avoid SUBFIND hangs at high resolution). Every catalog read in
+this module goes through glob_catalog_chunks(), find_last_snap_num(), or
+find_snapshots(), all three of which check for "fof_subhalo_tab_*" first and
+fall back to "fof_tab_*". Nothing here reads "Subhalo" fields -- only the
+"Group" table (GroupPos, GroupMassType, Group_M_Crit200, Group_R_Crit200,
+GroupMass) -- so FOF-only catalogs are fully sufficient for this module's
+purposes, regardless of which naming convention a given run produced.
 """
 
 from __future__ import annotations
@@ -79,6 +91,24 @@ _HALO569_Z0_OVERRIDES = {
     "2048": 4,
 }
 
+# Catalog filename prefixes to try, in priority order. "fof_subhalo_tab" is
+# written when SUBFIND is enabled; "fof_tab" is written in FOF-only mode
+# (SUBFIND disabled). Both expose the same "Group" table fields this module
+# relies on -- see module docstring.
+_CATALOG_PREFIXES = ("fof_subhalo_tab", "fof_tab")
+
+
+def _catalog_glob_patterns(snap_num: int, suffix: str = "*.hdf5") -> list[str]:
+    """Filename glob patterns to try for a given snapshot's catalog,
+    in priority order (fof_subhalo_tab_* first, fof_tab_* fallback)."""
+    return [f"{prefix}_{snap_num:03d}{suffix}" for prefix in _CATALOG_PREFIXES]
+
+
+def _has_any_catalog(groups_dir: Path) -> bool:
+    """True if groups_dir contains catalog chunks under either naming
+    convention (no snap_num filtering -- used for directory-level checks)."""
+    return any(list(groups_dir.glob(f"{prefix}_*.hdf5")) for prefix in _CATALOG_PREFIXES)
+
 
 # -----------------------------------------------------------------------------
 # File discovery and headers
@@ -98,11 +128,17 @@ def glob_snap_chunks(path: str | Path) -> list[Path]:
 
 
 def glob_catalog_chunks(groups_dir: str | Path, snap_num: int) -> list[Path]:
-    """Return sorted FOF/Subfind catalog chunks for a snapshot."""
-    chunks = sorted(Path(groups_dir).glob(f"fof_subhalo_tab_{snap_num:03d}*.hdf5"))
-    if not chunks:
-        raise FileNotFoundError(f"No catalog for snap {snap_num:03d} in {groups_dir}")
-    return chunks
+    """Return sorted FOF/Subfind catalog chunks for a snapshot.
+
+    Tries "fof_subhalo_tab_{snap_num}*.hdf5" first (SUBFIND enabled), then
+    falls back to "fof_tab_{snap_num}*.hdf5" (FOF-only mode).
+    """
+    groups_dir = Path(groups_dir)
+    for pattern in _catalog_glob_patterns(snap_num):
+        chunks = sorted(groups_dir.glob(pattern))
+        if chunks:
+            return chunks
+    raise FileNotFoundError(f"No catalog for snap {snap_num:03d} in {groups_dir}")
 
 
 def find_last_snap_num(output_dir: str | Path) -> Optional[int]:
@@ -115,7 +151,7 @@ def find_last_snap_num(output_dir: str | Path) -> Optional[int]:
             continue
         snap_num = int(m.group(1))
         groups_dir = output_dir / f"groups_{snap_num:03d}"
-        if groups_dir.exists() and list(groups_dir.glob("fof_subhalo_tab_*.hdf5")):
+        if groups_dir.exists() and _has_any_catalog(groups_dir):
             last = snap_num
     return last
 
@@ -130,7 +166,7 @@ def find_snapshots(output_dir: str | Path) -> list[tuple[int, Path, Path]]:
             continue
         snap_num = int(m.group(1))
         groups_dir = output_dir / f"groups_{snap_num:03d}"
-        if groups_dir.exists() and list(groups_dir.glob("fof_subhalo_tab_*.hdf5")):
+        if groups_dir.exists() and _has_any_catalog(groups_dir):
             out.append((snap_num, snapdir, groups_dir))
     return out
 
@@ -331,10 +367,27 @@ def compute_spherical_overdensity(
             "n_particles": int(len(r_ckpch)),
         }
 
-    # Crossing between i1 above and i2 below.
-    i2 = int(np.argmax(~above))
-    i1 = i2 - 1
-    if i1 < 0:
+    # Crossing between i1 (above target) and i2 (below target), i2 = i1 + 1.
+    #
+    # We deliberately take i1 as the LAST (largest-radius) index where
+    # rho_enc is still above target, rather than i2 = first index where
+    # rho_enc drops below target. With few particles very close to the
+    # center, the enclosed density computed from only a handful of
+    # particles is noisy and can dip below target right at the innermost
+    # radius before climbing back above it as more particles are enclosed,
+    # then falling below target again further out at the genuine halo
+    # edge. Taking the first below-threshold index would latch onto that
+    # spurious inner dip (i2=0, i1=-1) and return None even though a
+    # perfectly good outer SO crossing exists. Taking the last
+    # above-threshold index instead finds the true, physically meaningful
+    # edge of the halo, regardless of what the density profile does deep
+    # inside it.
+    above_idx = np.where(above)[0]
+    i1 = int(above_idx[-1])
+    i2 = i1 + 1
+    if i2 >= len(r_ckpch):
+        # above[-1] was already handled above, so this shouldn't happen,
+        # but guard anyway in case of edge effects at the boundary.
         return None
 
     # Interpolate log rho versus log r to the target density.

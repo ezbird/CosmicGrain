@@ -184,6 +184,67 @@ def _find_last_snap_num(output_dir):
     return last
 
 
+def _output_dir_for_rung(group_pattern, rung):
+    """
+    Derive a rung's output_dir (the parent of its groups_NNN/ and
+    snapdir_NNN/ folders) directly from --group-pattern, by substituting
+    {rung} and cutting the path off right before the groups_{num} segment.
+    Relies on the same "groups_NNN" naming convention already assumed
+    throughout this script's halo-tracking code
+    (_infer_output_dir_from_group_file, _find_last_snap_num).
+    """
+    placeholder = "SNAPNUMPLACEHOLDER"
+    filled = group_pattern.format(rung=rung, num=placeholder)
+    p = Path(filled)
+    for i, part in enumerate(p.parts):
+        if part.startswith(f"groups_{placeholder}"):
+            return Path(*p.parts[:i])
+    raise RuntimeError(
+        f"Could not derive output_dir for rung={rung!r} from --group-pattern "
+        f"(expected a 'groups_{{num}}' path segment): {group_pattern}"
+    )
+
+
+def _find_common_max_snap_num(group_pattern, rungs, verbose=True):
+    """
+    Find the highest snapshot number available for EVERY requested rung
+    (i.e. min of each rung's own latest snapshot), so the ladder figure
+    compares all rungs at the same redshift rather than each rung's own
+    most-recent (and possibly different) epoch.
+    """
+    per_rung_last = {}
+    for rung in rungs:
+        try:
+            out_dir = _output_dir_for_rung(group_pattern, rung)
+            last = _find_last_snap_num(out_dir)
+        except Exception as e:
+            last = None
+            if verbose:
+                print(f'  [{rung}] WARNING: could not scan for snapshots ({e})')
+        per_rung_last[rung] = last
+        if verbose:
+            status = f'{last:03d}' if last is not None else 'NOT FOUND'
+            print(f'  [{rung}] latest available snap: {status}')
+
+    valid = {r: v for r, v in per_rung_last.items() if v is not None}
+    if not valid:
+        raise RuntimeError(
+            'Could not find any available snapshot for any requested rung '
+            '-- check --snap-pattern / --group-pattern.'
+        )
+
+    common_max = min(valid.values())
+    bottleneck = [r for r, v in valid.items() if v == common_max]
+    missing = [r for r in rungs if r not in valid]
+    if verbose:
+        print(f'  --> auto-selected snap {common_max:03d} '
+              f'(latest common to all rungs; bottleneck: {", ".join(bottleneck)})')
+        if missing:
+            print(f'  WARNING: no snapshots found at all for: {", ".join(missing)} '
+                  f'-- these rungs will be skipped entirely')
+    return common_max
+
+
 def _get_halo569_from_paths(group_file, verbose=False):
     output_dir = _infer_output_dir_from_group_file(group_file)
     snap_num = _infer_snap_num_from_group_file(group_file)
@@ -975,7 +1036,12 @@ def parse_args():
         help='Same for group catalog, e.g. '
              '"../{rung}_output_1024/groups_{num}/fof_subhalo_tab_{num}.0.hdf5"')
     p.add_argument('--snap-num', required=True,
-        help='Snapshot number string as in filenames, e.g. "049"')
+        help='Snapshot number string as in filenames, e.g. "049". '
+             'Pass "auto" to automatically use the latest snapshot number '
+             'available for ALL requested --rungs (the minimum of each '
+             "rung's own latest snapshot), so every panel stays at the "
+             'same redshift even if some rungs are further along than '
+             'others.')
     p.add_argument('--rungs', nargs='+',
         default=['S0','S1','S2','S3','S4','S5','S6','S7','S8','S9','S10'],
         help='Rung labels in order (default S0 … S10)')
@@ -1047,6 +1113,15 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Resolve "auto" once, up front, so every downstream args.snap_num usage
+    # (snap_pattern/group_pattern .format() calls) automatically picks up the
+    # resolved value without needing to touch each call site individually.
+    if str(args.snap_num).strip().lower() == 'auto':
+        print('--snap-num auto: scanning each rung for its latest available snapshot...')
+        common_max = _find_common_max_snap_num(args.group_pattern, args.rungs, verbose=True)
+        args.snap_num = f'{common_max:03d}'
+        print(f'Using snap-num = {args.snap_num} for all rungs\n')
 
     descriptions = {} if args.no_descriptions else RUNG_DESCRIPTIONS
 

@@ -10,6 +10,9 @@ python plot_dust_histograms_agecoded.py --catalog ../groups_049/fof_subhalo_tab_
 """
 
 import argparse
+import re
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -18,7 +21,7 @@ import h5py
 import glob
 
 try:
-    from halo_utils import load_target_halo, extract_dust_spatially
+    from halo_utils import get_halo569_reference, get_halo569, load_particles_within_radius, convert_code_mass_to_msun
 except ImportError:
     print("ERROR: This script requires halo_utils.py in the same directory")
     exit(1)
@@ -33,6 +36,14 @@ AGE_BINS = [
 ]
 AGE_BIN_ALPHA = 0.55
 
+# Fields to load for PartType6 (dust). load_particles_within_radius's own
+# default field list (halo_utils._SPATIAL_FIELDS[6]) does NOT include
+# DustFormationTime, which this script needs for the age panel, so it's
+# requested explicitly here rather than relying on the default.
+DUST_FIELDS = ["Coordinates", "Masses", "Velocities", "GrainRadius",
+               "GrainType", "CarbonFraction", "DustTemperature",
+               "DustFormationTime", "ParticleIDs"]
+
 
 def get_snapshot_info(snapshot_base):
     files = sorted(glob.glob(f'{snapshot_base}.*.hdf5'))
@@ -41,9 +52,13 @@ def get_snapshot_info(snapshot_base):
     with h5py.File(files[0], 'r') as f:
         header = f['Header'].attrs
         info = {}
-        for key in ['Time', 'Redshift', 'HubbleParam', 'Omega0', 'OmegaLambda']:
+        for key in ['Time', 'Redshift', 'Omega0', 'OmegaLambda']:
             if key in header:
                 info[key] = float(header[key])
+        # HubbleParam lives under Parameters, not Header -- see halo_utils
+        # module docstring / project convention.
+        if 'Parameters' in f and 'HubbleParam' in f['Parameters'].attrs:
+            info['HubbleParam'] = float(f['Parameters'].attrs['HubbleParam'])
         if 'PartType6' in f:
             info['dust_fields'] = list(f['PartType6'].keys())
     return info
@@ -147,12 +162,15 @@ def main():
     parser = argparse.ArgumentParser(
         description='Plot age-coded dust histograms for target halo')
     parser.add_argument('--catalog',  required=True,
-                        help='Path to Subfind catalog (fof_subhalo_tab_*.hdf5)')
+                        help='Path to Subfind catalog (fof_subhalo_tab_*.hdf5) -- kept for '
+                             'backward-compatible invocation; the actual catalog directory '
+                             'used is derived from --snapshot\'s snapdir_NNN parent.')
     parser.add_argument('--snapshot', required=True,
-                        help='Base path to snapshot (e.g., snapshot_049)')
+                        help='Base path to snapshot (e.g., .../snapdir_049/snapshot_049)')
     parser.add_argument('--out',      default='dust_histograms_agecoded.png')
     parser.add_argument('--rmax',     type=float, default=None,
-                        help='Max radius for dust extraction (kpc)')
+                        help='Max radius for dust extraction, in ckpc/h (matching Coordinates '
+                             'convention). Default: R200c (spherical-overdensity, from halo_utils).')
     parser.add_argument('--bins',     type=int,   default=50)
     parser.add_argument('--dpi',      type=int,   default=150)
     parser.add_argument('--figsize',  type=float, nargs=2, default=[16, 10])
@@ -170,29 +188,56 @@ def main():
     if 'dust_fields' in snap_info:
         print(f"PartType6 fields: {snap_info['dust_fields']}")
 
-    # ── Load halo ────────────────────────────────────────────────────────────
+    # ── Locate the halo via halo_utils (shrinking-sphere center + true SO R200) ─
+    # args.snapshot is normally ".../snapdir_NNN/snapshot_NNN"; derive
+    # output_dir (parent of snapdir_NNN/ and groups_NNN/) and snap_num from it,
+    # so --catalog no longer needs to be parsed directly.
     print("\nLoading halo info...")
-    halo      = load_target_halo(args.catalog, args.snapshot,
-                                  particle_types=[], verbose=True)
-    halo_info     = halo['halo_info']
-    halo_pos      = halo_info['position']
-    halo_mass     = halo_info['mass']
-    halo_halfmass = halo_info['halfmass_rad']
+    snapdir_path = Path(args.snapshot).parent
+    m = re.search(r'snapdir_(\d+)', snapdir_path.name)
+    if not m:
+        print(f"ERROR: could not parse a snapshot number from snapdir name "
+              f"'{snapdir_path.name}' (expected e.g. 'snapdir_049')")
+        return
+    snap_num = int(m.group(1))
+    output_dir = snapdir_path.parent
+    groups_dir = output_dir / f"groups_{snap_num:03d}"
 
-    rmax = args.rmax if args.rmax is not None else halo_halfmass * 2.0
-    print(f"\nExtracting dust within {rmax:.2f} kpc...")
+    ref = get_halo569_reference(output_dir, verbose=True)
+    halo = get_halo569(groups_dir, snap_num, ref, verbose=True)
+    if halo is None:
+        print(f"ERROR: could not identify the target halo at snap {snap_num:03d}")
+        return
 
-    dust_data = extract_dust_spatially(args.snapshot, halo_pos,
-                                       radius_kpc=rmax, verbose=True)
+    halo_pos  = halo["center"]          # ckpc/h
+    halo_mass = halo["m200_msun"]       # already fully converted to Msun
 
-    if dust_data is None or len(dust_data['Coordinates']) == 0:
+    # R200c (ckpc/h) is the new default aperture -- the old default was
+    # 2x the Subfind half-mass radius, which is no longer available from
+    # halo_utils (which deliberately avoids Subhalo fields; see its module
+    # docstring). R200c is the standard aperture used consistently by every
+    # other CosmicGrain analysis script.
+    rmax = args.rmax if args.rmax is not None else halo["r200_ckpch"]
+    print(f"\nExtracting dust within {rmax:.2f} ckpc/h...")
+
+    dust_data = load_particles_within_radius(
+        snapdir_path, halo_pos, rmax, part_types=(6,), fields_by_type={6: DUST_FIELDS}
+    ).get(6, {})
+
+    if not dust_data or len(dust_data.get('Coordinates', [])) == 0:
         print("ERROR: No dust particles found!")
         return
 
     # ── Extract fields ───────────────────────────────────────────────────────
     grain_radius = dust_data['GrainRadius']
     carbon_frac  = dust_data['CarbonFraction']
-    masses       = dust_data['Masses'] * 1e10
+    # FIX: the previous version did `dust_data['Masses'] * 1e10`, converting
+    # code mass units to Msun but omitting the /h factor -- every mass value
+    # (including the M200 shown in the figure subtitle) was off by a factor
+    # of 1/h (~1.48x for h~0.6732). convert_code_mass_to_msun() applies the
+    # full, correct conversion (* 1e10 / h), consistent with every other
+    # script in this pipeline.
+    masses       = convert_code_mass_to_msun(dust_data['Masses'], halo["h"])
     velocities   = dust_data['Velocities']
     dust_temp    = dust_data['DustTemperature']
     vel_mag      = compute_velocity_magnitude(velocities)
@@ -207,10 +252,6 @@ def main():
         dust_formation     = dust_data['DustFormationTime']
         has_formation_time = True
         print("✓ DustFormationTime")
-    elif 'StellarFormationTime' in dust_data:
-        dust_formation     = dust_data['StellarFormationTime']
-        has_formation_time = True
-        print("✓ StellarFormationTime (fallback)")
     else:
         dust_formation = np.zeros(len(grain_radius))
         print("✗ No formation time — all ages set to 0")
@@ -218,9 +259,9 @@ def main():
     if has_formation_time and current_time is not None and np.any(dust_formation > 0):
         try:
             from scipy.integrate import quad  # noqa
-            h  = snap_info.get('HubbleParam', 0.7)
-            Om = snap_info.get('Omega0',      0.3)
-            OL = snap_info.get('OmegaLambda', 0.7)
+            h  = snap_info.get('HubbleParam', halo["h"])
+            Om = snap_info.get('Omega0',      0.3158)
+            OL = snap_info.get('OmegaLambda', 0.6842)
             print(f"Cosmology: h={h}, Ωm={Om}, ΩΛ={OL}")
 
             current_age = scale_factor_to_age(current_time, h, Om, OL)
@@ -295,13 +336,13 @@ def main():
                bbox_to_anchor=(0.5, 0.905))
 
     # ── Supra-figure titles ───────────────────────────────────────────────────
-    halo_mass *= 1e10
+    rmax_pkpc = rmax * halo["a"] / halo["h"]
     fig.text(0.5, 0.985, 'Dust Properties',
              fontsize=16, fontweight='bold', ha='center', va='top')
     fig.text(0.5, 0.958,
-             (f'Halo 569  $\\cdot$  $1024^3$  $\\cdot$  '
+             (f'Halo 569  $\\cdot$  '
               f'M$_{{200}}$={halo_mass:.2e} M$_\\odot$  $\\cdot$  '
-              f'R$<${rmax:.0f} kpc  $\\cdot$  z={redshift:.2f}'),
+              f'R$<${rmax_pkpc:.0f} pkpc  $\\cdot$  z={redshift:.2f}'),
              fontsize=10, ha='center', va='top')
 
     plt.savefig(args.out, dpi=args.dpi, bbox_inches='tight')
@@ -318,8 +359,6 @@ def main():
     print(f"Velocity (km/s):       min={vel_mag.min():.1f}   max={vel_mag.max():.1f}   median={np.median(vel_mag):.1f}")
     print(f"Temperature (K):       min={dust_temp.min():.1f}   max={dust_temp.max():.1f}   median={np.median(dust_temp):.1f}")
     print(f"Age (Gyr):             min={dust_age_gyr.min():.3f}  max={dust_age_gyr.max():.3f}  median={np.median(dust_age_gyr):.3f}")
-
-    plt.show()
 
 
 if __name__ == "__main__":

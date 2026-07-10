@@ -1438,45 +1438,4 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
     }
 }
 
-/**
-#ifdef DUST
-
- * Process dust grain growth for all gas particles
- * Called periodically (not just on active particles)
- * This ensures dense gas on slow timebins can still grow dust
- 
-void coolsfr::process_dust_growth_all_gas(simparticles *Sp)
-{
-  extern long long GlobalDustCount;
-  if(GlobalDustCount == 0) return;
-  
-  if(All.NumCurrentTiStep % 10 != 0) return;
-  
-  double dt_code = All.TimeStep;
-  
-  int sf_gas_count = 0;
-  
-  // Only process gas that is star-forming or dense
-  for(int i = 0; i < Sp->NumGas; i++) {
-    if(Sp->P[i].getMass() > 0.0 && Sp->P[i].ID.get() != 0) {
-      
-      // Check if gas is dense enough to care about growth
-      double density_cgs = Sp->SphP[i].Density * All.UnitDensity_in_cgs;
-      double n_H = density_cgs / PROTONMASS;
-      
-      if(n_H > 0.01 || Sp->SphP[i].Sfr > 0.0) {  // Dense or star-forming
-        dust_grain_growth_subgrid(Sp, i, dt_code);
-        sf_gas_count++;
-      }
-    }
-  }
-  
-  if(ThisTask == 0 && All.NumCurrentTiStep % 100 == 0) {
-    mpi_printf("[DUST_GROWTH_SUBGRID] Processed %d/%d dense/SF gas particles\n",
-               sf_gas_count, Sp->NumGas);
-  }
-}
-#endif
-*/
-
 #endif

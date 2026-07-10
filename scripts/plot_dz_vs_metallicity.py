@@ -78,20 +78,23 @@ from halo_utils import (
     read_snap_header,
     glob_snap_chunks,
 )
-plt.style.use('sleek.mplstyle')
+plt.style.use('cosmicgrain.mplstyle')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Path anchoring — works regardless of cwd
 # ─────────────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 BASE_DIR   = SCRIPT_DIR.parent
+SIMS_ROOT  = BASE_DIR  # parent dir containing {run}_output_{res}/ folders;
+                        # override with --sims-root if runs live in a
+                        # subfolder (e.g. a consolidated
+                        # "simulation_runs_used_for_paper/"). Kept separate
+                        # from BASE_DIR, which also anchors the default
+                        # FIGDIR output location below -- overriding one
+                        # should not silently change the other.
 
 FIGDIR = BASE_DIR / "dust_figures"
 FIGDIR.mkdir(parents=True, exist_ok=True)
-
-_mplstyle = SCRIPT_DIR / "sleek.mplstyle"
-if _mplstyle.exists():
-    plt.style.use(str(_mplstyle))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Styling
@@ -179,7 +182,7 @@ _li19_dz = np.array([0.003,  0.010, 0.030, 0.090, 0.180, 0.280, 0.370, 0.420])
 # ─────────────────────────────────────────────────────────────────────────────
 
 def output_dir(run, resolution):
-    return BASE_DIR / f"{run}_output_{resolution}"
+    return SIMS_ROOT / f"{run}_output_{resolution}"
 
 
 def find_snapshots(run, resolution):
@@ -787,6 +790,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--runs", nargs="+", default=None)
     parser.add_argument("--res", nargs="+", type=int, default=[512])
+    parser.add_argument("--sims-root", default=None,
+                        help="Parent directory containing {run}_output_{res}/ "
+                             "folders (default: parent of this script's "
+                             "directory). Point this at a consolidated "
+                             "directory if your runs live in a subfolder, "
+                             "e.g. ../simulation_runs_used_for_paper")
     parser.add_argument("--aperture", type=float, default=20.0,
                         help="Aperture radius in physical kpc (default: 20 pkpc)")
     parser.add_argument("--nh-min", dest="nh_min", type=float, default=None,
@@ -800,6 +809,10 @@ def main():
                              "Rendered as open markers with × overlay.")
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
+
+    global SIMS_ROOT
+    if args.sims_root is not None:
+        SIMS_ROOT = Path(args.sims_root)
 
     resolutions      = args.res
     convergence_mode = len(resolutions) > 1

@@ -90,13 +90,11 @@ void dust_grain_growth(simparticles *Sp, int gas_idx, double dt);
 
 // Gradual erosion functions
 int erode_dust_grain_thermal(simparticles *Sp, int dust_idx, double T_gas, double dt);
-int erode_dust_grain_shock(simparticles *Sp, int dust_idx, double shock_velocity_km_s, 
-                           double distance_to_sn, double shock_radius, int nearest_gas_hint);
 
 // ========== SHOCK DESTRUCTION ==========
 
-void destroy_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx, 
-                                 double sn_energy, double metals_produced, MPI_Comm comm);
+void erode_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx, 
+                                double sn_energy, MPI_Comm comm);
 double calculate_sn_shock_radius(double sn_energy_erg, double gas_density_cgs, double time_myr);
 double calculate_current_sn_shock_radius(simparticles *Sp, int sn_star_idx,
                                           double *out_density_cgs,

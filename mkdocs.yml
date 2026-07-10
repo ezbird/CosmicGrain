@@ -1,0 +1,99 @@
+site_name: CosmicGrain
+site_description: Live dust evolution for cosmological hydrodynamics simulations
+site_url: https://docs.cosmicgrain.space
+
+repo_name: ezbird/CosmicGrain
+repo_url: https://github.com/ezbird/CosmicGrain
+
+theme:
+  name: material
+  logo: assets/cosmicgrain-logo.svg
+  favicon: assets/favicon.png
+
+  palette:
+    scheme: slate
+    primary: deep purple
+    accent: teal
+
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+extra_css:
+  - stylesheets/cosmicgrain.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - footnotes
+  - pymdownx.arithmatex:
+      generic: true
+  - md_in_html
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+
+  - Getting Started:
+      - Overview: getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Compilation: getting-started/compilation.md
+      - Quick Start: getting-started/quick-start.md
+      - First Simulation: getting-started/first-simulation.md
+      - Zoom Setup: getting-started/zoom-setup.md
+      - HPC Systems: getting-started/hpc.md
+
+  - Running CosmicGrain:
+      - Overview: running/index.md
+      - Parameter Files: running/parameter-files.md
+      - Compile-time Options: running/compile-options.md
+      - Initial Conditions: running/initial-conditions.md
+      - Output Files: running/output-files.md
+      - Restart Files: running/restart-files.md
+      - Performance: running/performance.md
+      - Troubleshooting: running/troubleshooting.md
+      - Analysis: running/analysis.md
+
+  - Dust Physics:
+      - Overview: physics/index.md
+      - Dust Creation: physics/dust-creation.md
+      - Astration: physics/astration.md
+      - Gas-Dust Drag: physics/gas-dust-drag.md
+      - Thermal Sputtering: physics/thermal-sputtering.md
+      - Shock Destruction: physics/shock-destruction.md
+      - Grain Growth: physics/grain-growth.md
+      - Subgrid Clumping: physics/subgrid-clumping.md
+      - Coagulation: physics/coagulation.md
+      - Shattering: physics/shattering.md
+      - Radiation Pressure: physics/radiation-pressure.md
+
+#  - Developer Guide:
+#      - Overview: developer/index.md
+#      - Code Architecture: developer/architecture.md
+#      - Source Tree: developer/source-tree.md
+#      - Particle Types: developer/particle-types.md
+#      - Time Integration: developer/time-integration.md
+#      - Adding New Physics: developer/adding-new-physics.md
+#      - Coding Conventions: developer/coding-conventions.md
+#      - API Reference: developer/api-reference.md
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js

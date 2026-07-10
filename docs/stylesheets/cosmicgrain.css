@@ -1,0 +1,380 @@
+:root {
+  --md-primary-fg-color: #03040b;
+  --md-accent-fg-color: #9f55ff;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #03040b;
+  --md-default-fg-color: #f4f0ff;
+  --md-typeset-color: #f4f0ff;
+  --md-typeset-a-color: #c69aff;
+  --md-code-bg-color: rgba(0, 0, 0, 0.38);
+  --md-code-fg-color: #f4f0ff;
+}
+
+body {
+  background:
+    radial-gradient(circle at 14% 44%, rgba(135, 56, 255, 0.18), transparent 18rem),
+    radial-gradient(circle at 88% 44%, rgba(135, 56, 255, 0.13), transparent 22rem),
+    linear-gradient(180deg, #03040b 0%, #070812 55%, #03040b 100%);
+}
+
+.md-header,
+.md-tabs {
+  background: rgba(3, 4, 11, 0.92);
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid rgba(188, 134, 255, 0.14);
+}
+
+.md-content {
+  background:
+    linear-gradient(180deg, rgba(14, 15, 28, 0.72), rgba(5, 6, 14, 0.86));
+  border: 1px solid rgba(188, 134, 255, 0.18);
+  border-radius: 1rem;
+  padding: 1.5rem 2rem;
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  color: #fff;
+  letter-spacing: -0.035em;
+}
+
+.md-typeset a {
+  color: #c69aff;
+}
+
+.md-typeset a:hover {
+  color: #5ee6d6;
+}
+
+.md-typeset pre > code {
+  border: 1px solid rgba(188, 134, 255, 0.18);
+  border-radius: 0.65rem;
+}
+
+.md-search__form {
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(188, 134, 255, 0.16);
+}
+
+.md-nav__link--active,
+.md-nav__link:hover {
+  color: #c69aff;
+}
+
+/* CosmicGrain admonition theme */
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 0.8rem;
+  border-width: 1px;
+  background:
+    linear-gradient(180deg, rgba(20, 21, 38, 0.78), rgba(8, 9, 20, 0.86));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+}
+
+/* Scientific motivation */
+.md-typeset .admonition.info,
+.md-typeset details.info {
+  border-color: rgba(159, 85, 255, 0.55);
+}
+
+.md-typeset .info > .admonition-title,
+.md-typeset .info > summary {
+  background: rgba(159, 85, 255, 0.16);
+}
+
+.md-typeset .info > .admonition-title::before,
+.md-typeset .info > summary::before {
+  background-color: #c69aff;
+}
+
+/* Numerical implementation / algorithm */
+.md-typeset .admonition.example,
+.md-typeset details.example {
+  border-color: rgba(94, 230, 214, 0.5);
+}
+
+.md-typeset .example > .admonition-title,
+.md-typeset .example > summary {
+  background: rgba(94, 230, 214, 0.12);
+}
+
+.md-typeset .example > .admonition-title::before,
+.md-typeset .example > summary::before {
+  background-color: #5ee6d6;
+}
+
+/* Validation */
+.md-typeset .admonition.success,
+.md-typeset details.success {
+  border-color: rgba(103, 232, 154, 0.5);
+}
+
+.md-typeset .success > .admonition-title,
+.md-typeset .success > summary {
+  background: rgba(103, 232, 154, 0.12);
+}
+
+.md-typeset .success > .admonition-title::before,
+.md-typeset .success > summary::before {
+  background-color: #67e89a;
+}
+
+/* Why this matters */
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-color: rgba(255, 210, 115, 0.5);
+}
+
+.md-typeset .tip > .admonition-title,
+.md-typeset .tip > summary {
+  background: rgba(255, 210, 115, 0.13);
+}
+
+.md-typeset .tip > .admonition-title::before,
+.md-typeset .tip > summary::before {
+  background-color: #ffd273;
+}
+
+/* Source files / references */
+.md-typeset .admonition.quote,
+.md-typeset details.quote {
+  border-color: rgba(188, 134, 255, 0.32);
+}
+
+.md-typeset .quote > .admonition-title,
+.md-typeset .quote > summary {
+  background: rgba(188, 134, 255, 0.1);
+}
+
+.md-typeset .quote > .admonition-title::before,
+.md-typeset .quote > summary::before {
+  background-color: #bdb6cc;
+}
+/* CosmicGrain documentation components */
+
+.cg-glance,
+.cg-card {
+  margin: 1.4rem 0;
+  padding: 1.25rem;
+  border: 1px solid rgba(188, 134, 255, 0.32);
+  border-radius: 1rem;
+  background:
+    linear-gradient(180deg, rgba(20, 21, 38, 0.78), rgba(8, 9, 20, 0.88));
+  box-shadow:
+    0 18px 60px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.cg-glance h2,
+.cg-card h2 {
+  margin-top: 0;
+  color: #fff;
+}
+
+.cg-glance-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid rgba(188, 134, 255, 0.18);
+  margin-top: 1rem;
+}
+
+.cg-glance-grid > div {
+  padding: 1rem;
+  border-right: 1px solid rgba(188, 134, 255, 0.14);
+  border-bottom: 1px solid rgba(188, 134, 255, 0.14);
+}
+
+.cg-glance-grid > div:nth-child(3n) {
+  border-right: 0;
+}
+
+.cg-glance-grid h3 {
+  margin: 0 0 0.45rem;
+  color: #c69aff;
+  font-size: 0.95rem;
+}
+
+.cg-glance-grid p {
+  margin: 0;
+}
+
+.cg-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.1rem;
+  margin: 1.4rem 0;
+}
+
+.cg-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.1rem;
+  margin: 1.4rem 0;
+}
+
+.cg-card.motivation {
+  border-color: rgba(198, 154, 255, 0.42);
+}
+
+.cg-card.model {
+  border-color: rgba(94, 230, 214, 0.42);
+}
+
+.cg-card.assumptions {
+  border-color: rgba(103, 232, 154, 0.42);
+}
+
+.cg-card.implementation {
+  border-color: rgba(45, 190, 255, 0.42);
+}
+
+.cg-card.why {
+  border-color: rgba(255, 210, 115, 0.5);
+}
+
+.cg-card.references {
+  border-color: rgba(188, 134, 255, 0.28);
+}
+
+.cg-card table {
+  margin-bottom: 0;
+}
+
+.cg-equation {
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(94, 230, 214, 0.28);
+  border-radius: 0.7rem;
+  background: rgba(0, 0, 0, 0.32);
+  text-align: center;
+  font-size: 1.1rem;
+}
+
+.cg-flow {
+  overflow-x: auto;
+}
+
+.cg-flow .mermaid {
+  min-width: 1100px;
+  justify-content: flex-start;
+}
+
+.cg-flow .mermaid svg {
+  max-width: none !important;
+  width: 1100px !important;
+  height: auto !important;
+}
+
+.cg-flow h2 {
+  margin-top: 0;
+}
+
+/* Mermaid diagrams */
+.mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 1rem 0;
+}
+
+.cg-flow .mermaid {
+  min-width: 1100px;
+  justify-content: flex-start;
+}
+
+.cg-flow .mermaid svg {
+  max-width: none !important;
+  width: 1100px !important;
+  height: auto !important;
+}
+
+@media (max-width: 900px) {
+  .cg-glance-grid,
+  .cg-grid-2,
+  .cg-grid-3 {
+    grid-template-columns: 1fr;
+  }
+
+  .cg-glance-grid > div {
+    border-right: 0;
+  }
+}
+
+mjx-container {
+  color: #f4f0ff;
+}
+
+.cg-equation mjx-container {
+  margin: 0 !important;
+}
+
+.cg-flow-steps {
+  margin: 1.4rem 0;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid rgba(45, 190, 255, 0.38);
+  border-radius: 1rem;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(45, 190, 255, 0.10), transparent 45%),
+    linear-gradient(180deg, rgba(12, 17, 31, 0.86), rgba(5, 7, 15, 0.9));
+}
+
+.cg-flow-steps ol {
+  margin: 0;
+  padding-left: 1.4rem;
+}
+
+.cg-flow-steps li {
+  margin: 0.8rem 0;
+}
+
+.cg-flow-steps li::marker {
+  color: #5ee6d6;
+  font-weight: 800;
+}
+
+/* ---------- Reference cards ---------- */
+
+.reference-note {
+    margin: 0.45rem 0 0.8rem;
+    color: #b7c8d8;
+    font-style: italic;
+    line-height: 1.55;
+}
+
+.reference-links {
+    margin-bottom: 1rem;
+}
+
+.reference-links a {
+    display: inline-block;
+    margin-right: 0.5rem;
+    margin-bottom: 0.4rem;
+    padding: 0.32rem 0.8rem;
+    border-radius: 999px;
+    border: 1px solid rgba(188,134,255,0.28);
+    background: rgba(188,134,255,0.08);
+    color: #d7b5ff;
+    text-decoration: none;
+    font-size: 0.82rem;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.reference-links a:hover {
+    background: rgba(94,230,214,0.14);
+    border-color: rgba(94,230,214,0.5);
+    color: white;
+    transform: translateY(-1px);
+}
+
+.cg-card.references hr {
+    border: 0;
+    border-top: 1px solid rgba(188,134,255,0.16);
+    margin: 1.5rem 0;
+}

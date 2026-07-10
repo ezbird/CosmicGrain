@@ -11,10 +11,14 @@ Interactive 3D Plotly viewer for Gadget-4 HDF5 snapshots with:
 - fixed axis ranges AND fixed aspect ratio so toggling traces doesn't rescale the scene
 
 CENTERING NOTE:
-  In halo mode, the center defaults to SubhaloCM[0] (center of mass of the
-  main subhalo), NOT GroupPos (FOF group center of mass).  GroupPos is biased
-  toward the outer halo/satellite mass and is typically offset ~10-50 kpc from
-  the stellar/dust concentration.  SubhaloCM[0] tracks the galaxy itself.
+  In halo mode, the center uses halo_utils' density-weighted shrinking-sphere
+  center (gas-density-weighted, iteratively refined), NOT SubhaloCM or
+  GroupPos directly. This is more robust than either raw catalog field:
+  GroupPos is biased toward outer/satellite mass, and SubhaloCM can still be
+  offset from the true galaxy center in disturbed/merging systems. R200 is
+  computed via a true spherical-overdensity calculation on the particles
+  themselves, not read from the catalog's Group_R_Crit200 (used only as a
+  fallback if the particle-based calculation can't converge).
 
 Examples:
   # Normal mode (full snapshot):
@@ -22,17 +26,15 @@ Examples:
       --types 0 4 6 --color-by DustTemperature \
       --center 25000 25000 25000 --rmax 3000
 
-  # HALO MODE (extract target halo automatically):
-  python plotly_snapshot_viewer.py ../S10_output_2048_cygnus_ISM_devoid/snapdir_049 \
-      --snap 49 \
-      --catalog ../S10_output_2048_cygnus_ISM_devoid/groups_049/fof_subhalo_tab_049.0.hdf5 \
-      --types 0 1 4 6 --rmax 200 --out my_halo.html
+  # HALO MODE (extract target halo automatically via halo_utils):
+  python plotly_snapshot_viewer.py ../S10_output_1024/snapdir_047 --snap 47 --catalog --types 0 1 4 6 --rmax 200 --out my_halo.html
 """
 
 import argparse
 import glob
 import os
 import sys
+from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
@@ -49,10 +51,16 @@ except ImportError:
     print("ERROR: This script requires plotly. Try: pip install plotly", file=sys.stderr)
     sys.exit(1)
 
-# Try to import halo_utils
+# Try to import halo_utils (current API)
 HALO_UTILS_AVAILABLE = False
 try:
-    from halo_utils import load_target_halo, extract_dust_spatially, convert_to_physical_units
+    from halo_utils import (
+        get_halo569_reference,
+        get_halo569,
+        load_particles_within_radius,
+        convert_code_mass_to_msun,
+        _SPATIAL_FIELDS,
+    )
     HALO_UTILS_AVAILABLE = True
 except ImportError:
     pass
@@ -105,31 +113,6 @@ def _find_snapshot_files(path: str, snap: Optional[int]) -> List[str]:
     return files
 
 
-def _get_snapshot_base(path: str, snap: Optional[int]) -> str:
-    """Get the snapshot base path for halo_utils (e.g., 'snapdir_049/snapshot_049')."""
-    if os.path.isfile(path):
-        base = path
-        if '.hdf5' in base:
-            base = base[:base.rfind('.hdf5')]
-            # Strip trailing .N (any number of digits after a dot)
-            import re
-            base = re.sub(r'\.\d+$', '', base)
-        return base
-
-    # Directory path
-    if snap is None:
-        raise ValueError("Must provide --snap when using directory path with --catalog")
-
-    s = f"{snap:03d}"
-    for prefix in ['snapshot', 'snap']:
-        candidate = os.path.join(path, f"{prefix}_{s}")
-        test_files = glob.glob(f"{candidate}.*.hdf5") or glob.glob(f"{candidate}.hdf5")
-        if test_files:
-            return candidate
-
-    raise FileNotFoundError(f"Cannot determine snapshot base in {path} for snap {snap}")
-
-
 def _read_block(files: List[str], ptype: int, block: str) -> Optional[np.ndarray]:
     """Read a dataset for a given PartType across snapshot pieces and concatenate.
     Returns None if the dataset does not exist.
@@ -179,76 +162,6 @@ def _get_redshift(files: List[str]) -> Optional[float]:
         except Exception:
             pass
 
-    return None
-
-
-# -------------------------
-# Halo center helpers
-# -------------------------
-
-def _get_subhalo_cm(catalog_path: str) -> np.ndarray:
-    """
-    Return the best center for visualization from the subfind catalog.
-
-    Priority:
-      1. SubhaloCM[0]  — center of mass of the most massive subhalo
-                         (tracks the stellar/dust concentration directly)
-      2. SubhaloPos[0] — position of most bound particle of subhalo 0
-      3. GroupPos[0]   — FOF group center of mass (last resort; can be
-                         offset from galaxy center by 10-100 kpc if the
-                         halo has significant satellite mass)
-
-    All values are in comoving kpc/h, matching Gadget-4 snapshot Coordinates.
-    """
-    # Handle multi-file catalogs: the .0.hdf5 file has the first chunk
-    if not os.path.isfile(catalog_path):
-        # Try to find it
-        base = catalog_path.replace('.hdf5', '')
-        candidates = glob.glob(f"{base}.hdf5") + glob.glob(f"{base}.0.hdf5")
-        if not candidates:
-            raise FileNotFoundError(f"Catalog not found: {catalog_path}")
-        catalog_path = candidates[0]
-
-    with h5py.File(catalog_path, 'r') as f:
-        if 'Subhalo' in f:
-            sh = f['Subhalo']
-            if 'SubhaloCM' in sh and sh['SubhaloCM'].shape[0] > 0:
-                cm = np.array(sh['SubhaloCM'][0], dtype=np.float64)
-                print(f"  Center: SubhaloCM[0] = [{cm[0]:.2f}, {cm[1]:.2f}, {cm[2]:.2f}] ckpc/h")
-                return cm
-            if 'SubhaloPos' in sh and sh['SubhaloPos'].shape[0] > 0:
-                pos = np.array(sh['SubhaloPos'][0], dtype=np.float64)
-                print(f"  Center: SubhaloPos[0] = [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}] ckpc/h  (SubhaloCM absent)")
-                return pos
-
-        if 'Group' in f and 'GroupPos' in f['Group']:
-            gpos = np.array(f['Group']['GroupPos'][0], dtype=np.float64)
-            print(f"  Center: GroupPos[0] = [{gpos[0]:.2f}, {gpos[1]:.2f}, {gpos[2]:.2f}] ckpc/h  (Subhalo table absent)")
-            return gpos
-
-    raise RuntimeError(f"Could not read any center from catalog: {catalog_path}")
-
-
-def _get_halo_r200(catalog_path: str) -> Optional[float]:
-    """
-    Read Group_R_Crit200 (preferred) or Group_R_Mean200 from the catalog.
-    Returns value in ckpc/h, or None if absent.
-    """
-    if not os.path.isfile(catalog_path):
-        candidates = glob.glob(catalog_path.replace('.hdf5', '.0.hdf5'))
-        if not candidates:
-            return None
-        catalog_path = candidates[0]
-
-    with h5py.File(catalog_path, 'r') as f:
-        if 'Group' not in f:
-            return None
-        grp = f['Group']
-        for key in ('Group_R_Crit200', 'Group_R_Mean200'):
-            if key in grp and grp[key].shape[0] > 0:
-                r = float(grp[key][0])
-                print(f"  R200 from catalog ({key}): {r:.2f} ckpc/h")
-                return r
     return None
 
 
@@ -438,9 +351,12 @@ def parse_args():
     ap.add_argument("--snap", type=int, default=None, help="Snapshot number (used when path is a snapdir).")
 
     # HALO MODE
-    ap.add_argument("--catalog", default=None,
-                    help="Subfind catalog (e.g., fof_subhalo_tab_049.0.hdf5) to extract target halo. "
-                         "Enables halo extraction mode.")
+    ap.add_argument("--catalog", action="store_true",
+                    help="Enable halo extraction mode via halo_utils (get_halo569_reference/"
+                         "get_halo569). The catalog path is now auto-derived from the snapdir's "
+                         "parent directory + --snap, so no path value is needed here -- just "
+                         "pass the flag. (Kept as --catalog rather than renamed, for muscle "
+                         "memory from older invocations of this script.)")
 
     ap.add_argument("--types", type=int, nargs="+", default=[0, 4, 6],
                     help="PartTypes to plot (e.g. 0 4 6). Default: 0 4 6")
@@ -451,9 +367,10 @@ def parse_args():
 
     ap.add_argument("--center", type=float, nargs=3, default=None,
                     help="Override center for radius cut (ckpc/h). "
-                         "In halo mode, defaults to SubhaloCM[0] from the catalog.")
+                         "In halo mode, defaults to halo_utils' shrinking-sphere center.")
     ap.add_argument("--rmax", type=float, default=None,
-                    help="Max radius to include (ckpc/h). In halo mode, defaults to R_Crit200.")
+                    help="Max radius to include (ckpc/h). In halo mode, defaults to the "
+                         "spherical-overdensity R200c computed by halo_utils.")
 
     ap.add_argument("--color-by", default=None,
                     help="Dataset name inside each PartType group to color points by.")
@@ -499,10 +416,12 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     # Check if halo mode is requested
-    halo_mode = args.catalog is not None
+    halo_mode = args.catalog
 
     if halo_mode and not HALO_UTILS_AVAILABLE:
-        print("ERROR: --catalog requires halo_utils.py. Make sure it's in the same directory.", file=sys.stderr)
+        print("ERROR: --catalog requires halo_utils.py (current API: get_halo569_reference, "
+              "get_halo569, load_particles_within_radius, convert_code_mass_to_msun). "
+              "Make sure halo_utils.py is in the same directory and up to date.", file=sys.stderr)
         sys.exit(1)
 
     files = _find_snapshot_files(args.path, args.snap)
@@ -534,73 +453,77 @@ def main():
     # ======================
     if halo_mode:
         print("=" * 60)
-        print("HALO EXTRACTION MODE")
+        print("HALO EXTRACTION MODE (halo_utils: shrinking-sphere center + spherical-overdensity R200)")
         print("=" * 60)
 
-        snapshot_base = _get_snapshot_base(args.path, args.snap)
-        print(f"Snapshot base: {snapshot_base}")
-        print(f"Catalog: {args.catalog}")
+        # halo_utils expects (output_dir, snap_num), where output_dir is the
+        # parent directory containing snapdir_NNN/ and groups_NNN/. args.path
+        # is normally the snapdir itself (e.g. ".../S10_output_1024/snapdir_049"),
+        # so its parent is output_dir.
+        path_p = Path(args.path)
+        output_dir = path_p.parent if path_p.name.startswith("snapdir_") else path_p
+        if args.snap is None:
+            print("ERROR: --snap is required in halo mode.", file=sys.stderr)
+            sys.exit(1)
+        snap_num = args.snap
+        snapdir = output_dir / f"snapdir_{snap_num:03d}"
+        groups_dir = output_dir / f"groups_{snap_num:03d}"
+        print(f"Output dir: {output_dir}")
+        print(f"Snapshot:   {snap_num:03d}")
         print()
 
+        ref = get_halo569_reference(output_dir, verbose=True)
+        halo = get_halo569(groups_dir, snap_num, ref, verbose=True)
+        if halo is None:
+            print(f"ERROR: could not identify the target halo at snap {snap_num:03d}.", file=sys.stderr)
+            sys.exit(1)
+
         # ── Determine center ──────────────────────────────────────────────────
-        # Use SubhaloCM[0] by default — this tracks the galaxy's stellar/dust
-        # concentration rather than the FOF group's center of mass.
         if args.center is not None:
             center = np.array(args.center, dtype=np.float64)
             print(f"  Center: user-supplied {center} ckpc/h")
         else:
-            center = _get_subhalo_cm(args.catalog)
+            center = halo["center"]
+            print(f"  Center: halo_utils shrinking-sphere center = "
+                  f"[{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}] ckpc/h")
 
         # ── Determine rmax ────────────────────────────────────────────────────
         if args.rmax is not None:
             rmax = float(args.rmax)
             print(f"  rmax: user-supplied {rmax:.2f} ckpc/h")
         else:
-            r200 = _get_halo_r200(args.catalog)
-            if r200 is not None:
-                rmax = r200
-                print(f"  rmax defaulting to R_Crit200 = {rmax:.2f} ckpc/h")
-            else:
-                rmax = 200.0
-                print(f"  rmax defaulting to 200 ckpc/h (no R200 in catalog)")
+            rmax = halo["r200_ckpch"]
+            print(f"  rmax defaulting to R200c (spherical-overdensity) = {rmax:.2f} ckpc/h")
 
         print(f"\nFinal center: [{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}] ckpc/h")
         print(f"Final rmax:   {rmax:.2f} ckpc/h")
 
-        # ── Extract halo particles via halo_utils ─────────────────────────────
-        halo = load_target_halo(
-            args.catalog,
-            snapshot_base,
-            particle_types=args.types,
-            verbose=True
+        # ── Load particles for every requested type in one pass ───────────────
+        # load_particles_within_radius handles all PartTypes uniformly, dust
+        # (PartType6) included -- no separate dust-extraction step needed.
+        # Build a fields-by-type map that starts from halo_utils' own defaults
+        # per type, extended with whatever the user wants to color by or
+        # density-subsample on, so those fields are guaranteed to be loaded.
+        fields_by_type = {}
+        for pt in args.types:
+            fields = list(_SPATIAL_FIELDS.get(pt, ["Coordinates", "Masses"]))
+            if args.color_by and args.color_by not in fields:
+                fields.append(args.color_by)
+            if args.subsample == "density" and pt in subsample_types and args.density_field not in fields:
+                fields.append(args.density_field)
+            fields_by_type[pt] = fields
+
+        halo_data = load_particles_within_radius(
+            snapdir, center, rmax, part_types=args.types, fields_by_type=fields_by_type,
         )
+        halo_mass = halo["m200_msun"]
 
-        halo_info = halo['halo_info']
-        halo_mass = halo_info['mass'] if 'mass' in halo_info else halo_info.get('m200', float('nan'))
-
-        # Extract dust spatially if requested
-        if 6 in args.types:
-            print("\nExtracting dust spatially (Subfind doesn't track PartType6)...")
-            dust_data = extract_dust_spatially(snapshot_base, center, radius_kpc=rmax, verbose=True)
-            if dust_data is not None:
-                halo['dust'] = dust_data
-
-        # Convert units if requested
+        # ── Convert units if requested ──────────────────────────────────────────
         if args.convert_mass:
             print("\nConverting masses to M_sun...")
-            ptype_names = {0: 'gas', 1: 'dm', 2: 'dm2', 4: 'stars', 5: 'bh', 6: 'dust'}
             for pt in args.types:
-                pname = ptype_names.get(pt)
-                if pname and pname in halo:
-                    convert_to_physical_units(halo[pname], mass_in_msun=True)
-
-        # Prepare data dict for plotting
-        ptype_names = {0: 'gas', 1: 'dm', 2: 'dm2', 4: 'stars', 5: 'bh', 6: 'dust'}
-        halo_data = {}
-        for pt in args.types:
-            pname = ptype_names.get(pt)
-            if pname and pname in halo:
-                halo_data[pt] = halo[pname]
+                if pt in halo_data and "Masses" in halo_data[pt]:
+                    halo_data[pt]["Masses"] = convert_code_mass_to_msun(halo_data[pt]["Masses"], halo["h"])
 
         print("\n" + "=" * 60)
     else:
@@ -608,7 +531,6 @@ def main():
         center = np.array(args.center) if args.center is not None else np.array([0.0, 0.0, 0.0])
         rmax = args.rmax
         halo_data = None
-        halo_info = None
         halo_mass = float('nan')
 
     # ======================
@@ -820,8 +742,10 @@ def main():
         print(f"  {_ptype_label(pt)} (PartType{pt}): {a:,} avail / {p:,} plotted")
 
     print(f"\nSaved: {args.out}")
-    print(f"Center used: [{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}] ckpc/h  (SubhaloCM[0])")
-    print(f"rmax used:   {rmax:.2f} ckpc/h")
+    center_source = "shrinking-sphere" if (halo_mode and args.center is None) else \
+                     "user-supplied" if args.center is not None else "origin (normal mode default)"
+    print(f"Center used: [{center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}] ckpc/h  ({center_source})")
+    print(f"rmax used:   {rmax:.2f} ckpc/h" if rmax is not None else "rmax used:   (none -- full extent)")
     print(f"Total plotted points: {total_plotted:,}")
 
     if args.show:

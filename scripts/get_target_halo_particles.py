@@ -1,4 +1,10 @@
-# halo_utils.py
+"""
+get_target_halo_particles.py
+=============================
+Extract all particle types (gas, DM, stars, dust) within a target halo from
+a Gadget-4 FOF/SubFind catalog + snapshot, with per-type field selection.
+Defines load_target_halo(), used by plot_dust_histograms_agecoded.py.
+"""
 import h5py
 import numpy as np
 import glob

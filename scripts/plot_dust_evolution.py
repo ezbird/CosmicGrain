@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from pathlib import Path
 from halo_utils import get_halo569_reference, get_halo569
-plt.style.use('sleek.mplstyle')
+plt.style.use('cosmicgrain.mplstyle')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants

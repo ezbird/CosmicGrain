@@ -217,7 +217,8 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustCollisionDensityThresh", &DustCollisionDensityThresh, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustCoagulationCalibration", &DustCoagulationCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustShatteringCalibration", &DustShatteringCalibration, PARAM_DOUBLE, PARAM_FIXED);
-  add_param("DustCoagulationMaxSize", &DustCoagulationMaxSize, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustMinGrainSize", &DustMinGrainSize, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustMaxGrainSize", &DustMaxGrainSize, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustDebugLevel", &DustDebugLevel, PARAM_INT, PARAM_FIXED);
   add_param("DustParticlesPerSNII", &DustParticlesPerSNII, PARAM_INT, PARAM_FIXED);
   add_param("DustParticlesPerAGB", &DustParticlesPerAGB, PARAM_INT, PARAM_FIXED);
@@ -227,6 +228,7 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustYieldSNII", &DustYieldSNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustYieldAGB", &DustYieldAGB, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustGrowthCalibration", &DustGrowthCalibration, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustAstrationCalibration", &DustAstrationCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustAccommodationCoeff", &DustAccommodationCoeff, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustRadiationPressureEfficiency", &DustRadiationPressureEfficiency, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustShockAmbientDensity", &DustShockAmbientDensity, PARAM_DOUBLE, PARAM_FIXED);

@@ -69,6 +69,7 @@ int CheckpointDebugLevel;   // 0=off, 1=detailed output
   double DustYieldSNII;             // Dust mass fraction from Type II SN
   double DustYieldAGB;              // Dust mass fraction from AGB stars
   double DustGrowthCalibration;     // Grain growth calibration factor
+  double DustAstrationCalibration;  // Astration calibration factor
   double DustOffsetMinSNII;         // Minimum of sphere around SN to spawn dust particles [kpc]
   double DustOffsetMaxSNII;         // Maximum of sphere around SN to spawn dust particles [kpc]
   double DustOffsetMinAGB;          // Minimum of sphere around AGB to spawn dust particles [kpc]
@@ -76,10 +77,11 @@ int CheckpointDebugLevel;   // 0=off, 1=detailed output
   double DustAccommodationCoeff;    // Thermal accommodation coefficient for gas-grain collisions (alpha in Hollenbach & McKee 1979, ApJS 41 555)
   double DustRadiationPressureEfficiency; // Efficiency of radiation pressure on dust grains
   double DustShockAmbientDensity;   // Ambient density for shock destruction calculations (g/cm^3)
-  double DustCollisionDensityThresh;
+  double DustCollisionDensityThresh; // Threshold density for collision calculations    
   double DustCoagulationCalibration;
   double DustShatteringCalibration;
-  double DustCoagulationMaxSize;
+  double DustMinGrainSize;          // Minimum grain size for dust particles [nm]
+  double DustMaxGrainSize;          // Maximum grain size for dust particles [nm]
 #endif
 
 #ifdef STARFORMATION

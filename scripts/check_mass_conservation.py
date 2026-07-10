@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# Run with: python3 check_mass_conservation.py ../simulation_runs_used_for_paper/S10_output_2048/
+
 import argparse
 import glob
 import os
