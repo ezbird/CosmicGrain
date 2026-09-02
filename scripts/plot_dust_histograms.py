@@ -106,7 +106,7 @@ def load_dust(snap_files, ctr_ckpch, rmax_ckpch, box_ckpch, h, a):
     Load PartType6 within rmax_ckpch of ctr_ckpch.
     Returns dict of arrays with masses in Msun, positions in pkpc.
     """
-    fields_wanted = ["Masses", "GrainRadius", "CarbonFraction",
+    fields_wanted = ["Masses", "GrainRadius", "CarbonMassFraction",
                      "Velocities", "DustTemperature", "DustFormationTime"]
 
     buffers = {f: [] for f in fields_wanted}
@@ -341,9 +341,9 @@ def main():
     print(f"GrainRadius    : {dust['GrainRadius'].min():.2f} -- "
           f"{dust['GrainRadius'].max():.2f} nm  "
           f"(median {np.median(dust['GrainRadius']):.2f})")
-    print(f"CarbonFraction : {dust['CarbonFraction'].min():.3f} -- "
-          f"{dust['CarbonFraction'].max():.3f}  "
-          f"(median {np.median(dust['CarbonFraction']):.3f})")
+    print(f"CarbonMassFraction : {dust['CarbonMassFraction'].min():.3f} -- "
+          f"{dust['CarbonMassFraction'].max():.3f}  "
+          f"(median {np.median(dust['CarbonMassFraction']):.3f})")
     print(f"Mass           : {dust['Masses'].min():.2e} -- "
           f"{dust['Masses'].max():.2e} Msun  "
           f"(median {np.median(dust['Masses']):.2e})")

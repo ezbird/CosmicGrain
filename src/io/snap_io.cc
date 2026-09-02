@@ -120,45 +120,117 @@ void snap_io::init_basic(simparticles *Sp_ptr)
 
 #ifdef STARFORMATION
 
-  init_field("SFR ", "StarFormationRate", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, All.RestartFlag == RST_FOF ? READ_IF_PRESENT : SKIP_ON_READ,
-             1, A_NONE, 0, io_func_sfr, GAS_ONLY, 1, 0., 0., -1., 1., 1., SOLAR_MASS / SEC_PER_YEAR);
+  init_field("SFR ", "StarFormationRate", MEM_MY_FLOAT, FILE_MY_IO_FLOAT,
+             All.RestartFlag == RST_FOF ? READ_IF_PRESENT : SKIP_ON_READ,
+             1, A_NONE, 0, io_func_sfr, GAS_ONLY,
+             1, 0., 0., -1., 1., 1., SOLAR_MASS / SEC_PER_YEAR);
 
-  init_field("AGE ", "StellarFormationTime", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_P, &Sp->P[0].StellarAge, NULL,
-             AGE_BLOCK, /* stellar formation time */
+  init_field("AGE ", "StellarFormationTime",
+             MEM_MY_FLOAT, FILE_MY_IO_FLOAT,
+             READ_IF_PRESENT, 1, A_P,
+             &Sp->P[0].StellarAge, NULL,
+             STARS_ONLY, /* stellar formation time */
              0, 0, 0, 0, 0, 0, 0);
-
-  init_field("Z   ", "Metallicity", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_NONE, 0, io_func_metallicity,
-             Z_BLOCK, /* gas and star metallicity */
-             0, 0, 0, 0, 0, 0, 0);
-#endif
 
 #ifdef FEEDBACK
-  init_field("FBFG", "FeedbackFlag", MEM_INT, FILE_INT, READ_IF_PRESENT, 1, A_P, &Sp->P[0].FeedbackFlag, NULL,
-             STARS_ONLY, 0, 0, 0, 0, 0, 0, 0);
-#endif
+
+  init_field("ERES", "EnergyReservoir",
+             MEM_DOUBLE, FILE_DOUBLE,
+             READ_IF_PRESENT, 1, A_P,
+             &Sp->P[0].EnergyReservoir, NULL,
+             STARS_ONLY, /* unprocessed stellar-feedback energy */
+             0, 0, 0, 0, 0, 0, 0);
+
+  init_field("SBM ", "StellarBirthMass",
+             MEM_MY_FLOAT, FILE_MY_IO_FLOAT,
+             READ_IF_PRESENT, 1, A_P,
+             &Sp->P[0].StellarBirthMass, NULL,
+             STARS_ONLY, /* initial SSP mass for stellar-yield normalization */
+             0, 0, 0, 0, 0, 0, 0);
+
+  init_field("FBFG", "FeedbackFlag",
+             MEM_INT, FILE_INT,
+             READ_IF_PRESENT, 1, A_P,
+             &Sp->P[0].FeedbackFlag, NULL,
+             STARS_ONLY, /* completed stellar-feedback channels and tranches */
+             0, 0, 0, 0, 0, 0, 0);
+
+#endif /* FEEDBACK */
+
+  init_field("Z   ", "Metallicity",
+             MEM_MY_FLOAT, FILE_MY_IO_FLOAT,
+             READ_IF_PRESENT, 1, A_NONE,
+             0, io_func_metallicity,
+             Z_BLOCK, /* gas and star metallicity, not dust */
+             0, 0, 0, 0, 0, 0, 0);
+
+  // Gas-phase elemental mass fractions:
+  // X_i = M_i,gas / M_gas
+  init_field("XC  ", "GasCarbonMassFraction",
+             MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT,
+             1, A_SPHP, &Sp->SphP[0].GasCarbonMassFraction, NULL,
+             GAS_ONLY,
+             0, 0, 0, 0, 0, 0, 0);
+
+  init_field("XN  ", "GasNitrogenMassFraction",
+           MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT,
+           1, A_SPHP, &Sp->SphP[0].GasNitrogenMassFraction, NULL,
+           GAS_ONLY,
+           0, 0, 0, 0, 0, 0, 0);
+
+  init_field("XO  ", "GasOxygenMassFraction",
+             MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT,
+             1, A_SPHP, &Sp->SphP[0].GasOxygenMassFraction, NULL,
+             GAS_ONLY,
+             0, 0, 0, 0, 0, 0, 0);
+
+  init_field("XNE ", "GasNeonMassFraction",
+           MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT,
+           1, A_SPHP, &Sp->SphP[0].GasNeonMassFraction, NULL,
+           GAS_ONLY,
+           0, 0, 0, 0, 0, 0, 0);
+
+  init_field("XMG ", "GasMagnesiumMassFraction",
+             MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT,
+             1, A_SPHP, &Sp->SphP[0].GasMagnesiumMassFraction, NULL,
+             GAS_ONLY,
+             0, 0, 0, 0, 0, 0, 0);
+
+  init_field("XSI ", "GasSiliconMassFraction",
+             MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT,
+             1, A_SPHP, &Sp->SphP[0].GasSiliconMassFraction, NULL,
+             GAS_ONLY,
+             0, 0, 0, 0, 0, 0, 0);
+
+  init_field("XFE ", "GasIronMassFraction",
+             MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT,
+             1, A_SPHP, &Sp->SphP[0].GasIronMassFraction, NULL,
+             GAS_ONLY,
+             0, 0, 0, 0, 0, 0, 0);
+#endif /* STARFORMATION */
 
 #ifdef DUST
   init_field("DAGE", "DustFormationTime", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_P, &Sp->P[0].StellarAge, NULL,
              DUST_ONLY, /* dust formation time (reuses StellarAge storage) */
              0, 0, 0, 0, 0, 0, 0);
-  
+
   init_field("GRAD", "GrainRadius", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_DUST, &Sp->DustP[0].GrainRadius, NULL,
              DUST_ONLY, /* grain radius in cm */
              1, 0., 0., 1., 0., 0., 1.0);  // Already in cm, no unit conversion needed
-  
-  init_field("GTYP", "GrainType", MEM_INT, FILE_INT, READ_IF_PRESENT, 1, A_DUST, &Sp->DustP[0].GrainType, NULL,
-            DUST_ONLY, /* 0=silicate, 1=carbon, 2=mixed */
+
+  init_field("DSRC", "DustSource", MEM_INT, FILE_INT, READ_IF_PRESENT, 1, A_DUST, &Sp->DustP[0].DustSource, NULL,
+            DUST_ONLY, /* 0=SNII, 1=AGB, 2=LRN */
             0, 0, 0, 0, 0, 0, 0);
-  
-  init_field("CFRC", "CarbonFraction", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_DUST, &Sp->DustP[0].CarbonFraction, NULL,
+
+  init_field("CFRC", "CarbonMassFraction", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_DUST, &Sp->DustP[0].CarbonMassFraction, NULL,
              DUST_ONLY, /* fraction of mass in carbonaceous grains */
              0, 0, 0, 0, 0, 0, 0);
-  
+
   init_field("DTMP", "DustTemperature", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_DUST, &Sp->DustP[0].DustTemperature, NULL,
              DUST_ONLY, /* dust temperature in K */
              0, 0, 0, 0, 0, 0, 0);
 
-  init_field("BPOS", "BirthPos", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 3, A_DUST, 
+  init_field("BPOS", "BirthPos", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 3, A_DUST,
              &Sp->DustP[0].BirthPos[0], NULL,
              DUST_ONLY,
              0, 0, 0, 0, 0, 0, 0);
@@ -924,7 +996,7 @@ void snap_io::read_file_header(const char *fname, int filenr, int readTask, int 
       memmove(&Ptmp[Sp->NumGas + nall], &Ptmp[Sp->NumGas], (Sp->NumPart - Sp->NumGas) * sizeof(ptmp_data));
   #endif
   #ifdef DUST
-  // We need P[] and DustP[] to stay synchronized through the entire read process, 
+  // We need P[] and DustP[] to stay synchronized through the entire read process,
   // or else when restarting the simulation, many DustP entried will get bungled.
       memmove(static_cast<void *>(&Sp->DustP[Sp->NumGas + nall]), static_cast<void *>(&Sp->DustP[Sp->NumGas]),
               (Sp->NumPart - Sp->NumGas) * sizeof(dust_data));

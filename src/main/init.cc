@@ -501,7 +501,7 @@ Domain.domain_decomposition(STANDARD);  /* do initial domain decomposition (give
     if(Sp.P[i].getType() == 6)
       if(Sp.DustP[i].GrainRadius > 0) valid++;
       else invalid++;
-  
+
   // If dust corruption is occurring, print to see where we were last
   // mpi_printf("DUST_CHECK [post-domain-decomp] T=%d: valid=%d invalid=%d\n", ThisTask, valid, invalid);
 }
@@ -646,12 +646,42 @@ Domain.domain_decomposition(STANDARD);  /* do initial domain decomposition (give
     }
 
 #ifdef STARFORMATION
-  /* initialize absolute masses in materials */
   for(int i = 0; i < Sp.NumGas; i++)
     {
-      Sp.SphP[i].Metallicity = Sp.P[i].Metallicity;  // set above
+      Sp.SphP[i].Metallicity = Sp.P[i].Metallicity;
+      Sp.SphP[i].MassMetallicity =
+          Sp.SphP[i].Metallicity * Sp.P[i].getMass();
 
-      Sp.SphP[i].MassMetallicity = Sp.SphP[i].Metallicity * Sp.P[i].getMass();
+      // Fresh ICs do not yet contain element-resolved abundances.
+      // Initialize them from the AGSS21 solar metal-mass pattern.
+      //
+      // When starting from an evolved snapshot, preserve the elemental
+      // abundances that were read from that snapshot.
+      if(All.RestartFlag == RST_BEGIN)
+        {
+          double Z = Sp.SphP[i].Metallicity;
+
+          Sp.SphP[i].GasCarbonMassFraction =
+              Z * SOLAR_METAL_FRAC_C;
+
+          Sp.SphP[i].GasNitrogenMassFraction =
+              Z * SOLAR_METAL_FRAC_N;
+
+          Sp.SphP[i].GasOxygenMassFraction =
+              Z * SOLAR_METAL_FRAC_O;
+
+          Sp.SphP[i].GasNeonMassFraction =
+              Z * SOLAR_METAL_FRAC_NE;
+
+          Sp.SphP[i].GasMagnesiumMassFraction =
+              Z * SOLAR_METAL_FRAC_MG;
+
+          Sp.SphP[i].GasSiliconMassFraction =
+              Z * SOLAR_METAL_FRAC_SI;
+
+          Sp.SphP[i].GasIronMassFraction =
+              Z * SOLAR_METAL_FRAC_FE;
+        }
     }
 #endif
 

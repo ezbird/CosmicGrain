@@ -47,8 +47,17 @@ struct particle_data
 #endif
 
 #if defined(FEEDBACK)
-  int FeedbackFlag;             // Bit 0: Type II done, Bit 1: AGB done
-  double EnergyReservoir;       // Stored feedback energy (code units)
+  // Bit 0: all SNII/HN tranches complete
+  // Bit 1: AGB feedback complete
+  // Bits 2--9: individual SNII/HN tranches
+  int FeedbackFlag;
+
+  // Stellar mass at the moment a PartType4 particle was created.
+  // Stored in code mass units and never modified afterward.
+  MyFloat StellarBirthMass;
+
+  // Unprocessed stellar-feedback energy in code energy units.
+  double EnergyReservoir;
 #endif
 
   copyable_atomic<integertime> Ti_Current; /**< current time on integer timeline */

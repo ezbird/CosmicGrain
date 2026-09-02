@@ -101,6 +101,21 @@ struct sph_particle_data : public sph_particle_data_hydrocore
 #ifdef STARFORMATION
   MyFloat Metallicity;
   MyFloat MassMetallicity;
+
+  // Element-resolved gas-phase metal mass fractions.
+  // Each is defined relative to the TOTAL gas-particle mass:
+  //
+  //   X_i = M_i,gas / M_gas
+  //
+  // They therefore do NOT sum to 1. Their sum should be <= Metallicity,
+  // with the difference representing metals not explicitly tracked here.
+  MyFloat GasCarbonMassFraction;
+  MyFloat GasNitrogenMassFraction;
+  MyFloat GasOxygenMassFraction;
+  MyFloat GasNeonMassFraction;
+  MyFloat GasMagnesiumMassFraction;
+  MyFloat GasSiliconMassFraction;
+  MyFloat GasIronMassFraction;
 #endif
 
 #ifdef COOLING
@@ -152,20 +167,20 @@ struct sph_particle_data : public sph_particle_data_hydrocore
       if(Density <= 0 || Density != Density) {  // Check for <= 0 or NaN
           Density = 1e-5;    // Reset to vacuum threshold
       }
-      
+
       double rho = Density;
       Pressure = get_pressure();
-      
+
       // If pressure is bad after density fix, reset entropy too
       if(Pressure < 0 || Pressure != Pressure) {  // Check for < 0 or NaN
           Entropy = 1.0;      // Reset entropy
           Pressure = get_pressure();  // Recalculate
-          
+
           if(Pressure < 0) {
               Pressure = 1e-10;  // Force positive as last resort
           }
       }
-      
+
       Csnd = get_sound_speed();
   }
 

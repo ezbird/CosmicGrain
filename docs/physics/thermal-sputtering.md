@@ -41,7 +41,7 @@ a_{\rm new} = a \times \exp\left(-\Delta t / \tau_{\rm sp}\right)
 
 **Composition dependence.** Carbonaceous grains have a lower binding energy (4 eV) than silicates (6 eV) and sputter proportionally faster. This is implemented as a linear blend in binding energy weighted by carbon fraction, giving a composition factor that ranges from 1 (pure silicate) to roughly 1.5 (pure carbon).
 
-**Sublimation.** Independently of gas-driven sputtering, a grain is destroyed instantaneously if its own equilibrium dust temperature exceeds its material sublimation point, \(T_{\rm sublimate} = 1500 + 500 \times {\rm CarbonFraction}\) K — silicates sublimate near 1500 K, pure carbon grains near 2000 K.
+**Sublimation.** Independently of gas-driven sputtering, a grain is destroyed instantaneously if its own equilibrium dust temperature exceeds its material sublimation point, \(T_{\rm sublimate} = 1500 + 500 \times {\rm CarbonMassFraction}\) K — silicates sublimate near 1500 K, pure carbon grains near 2000 K.
 
 ### Assumptions
 

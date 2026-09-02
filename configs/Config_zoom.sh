@@ -8,7 +8,7 @@
 #--------------------------------------- Basic operation mode of code
 
 PERIODIC                                     # enables periodic boundary condistions
-NTYPES=7                                     # number of particle types 
+NTYPES=7                                     # number of particle types
 RANDOMIZE_DOMAINCENTER                       # shifts the particle distribution randomly each step to reduce correlations of force errors in time
 #RANDOMIZE_DOMAINCENTER_TYPES=2                 # can be used to set a zoom region via a particle type which is then never placed across large node boundaries
 #LEAN                                         # selects a special 'lean' mode of code operation, which is optimized for aggressive memory saving
@@ -18,7 +18,7 @@ RANDOMIZE_DOMAINCENTER                       # shifts the particle distribution 
 #GRAVITY_TALLBOX=2                            # this can be used to set-up gravity with two periodicity only in two of three dimensions
 #TWODIMS                                      # restricts SPH formulation to two dimensions (for tests)
 #ONEDIMS                                      # restricts SPH formulation to one dimension (for tests)
-#GADGET2_HEADER                               # allows reading of snapshots with GADGET-2/3 header format 
+#GADGET2_HEADER                               # allows reading of snapshots with GADGET-2/3 header format
 #SECOND_ORDER_LPT_ICS                         # treats second order LPT ICs generated with Adrian Jenkin's code
 
 
@@ -29,19 +29,19 @@ SELFGRAVITY                                   # switch to enable self-gravity of
 #MULTIPOLE_ORDER=2                            # sets the multipole order of Tree or FMM computations
 EVALPOTENTIAL                                # computes gravitational potential besides force
 #EXTRAPOTTERM                                 # this computes an extra multipole term for the potential which is not needed for the forces
-#EXTRA_HIGH_EWALD_ACCURACY                    # this uses third-order instead of second-order Taylor expansion to interpolate Ewald corrections from table 
-#ALLOW_DIRECT_SUMMATION                       # allows calculation of direct summation gravity force if only a tiny number of particles as active 
+#EXTRA_HIGH_EWALD_ACCURACY                    # this uses third-order instead of second-order Taylor expansion to interpolate Ewald corrections from table
+#ALLOW_DIRECT_SUMMATION                       # allows calculation of direct summation gravity force if only a tiny number of particles as active
 #EXTERNALGRAVITY                              # switches on inclusion of external gravitational potential
 #EXTERNALGRAVITY_STATICHQ                     # example for a simple external potential due to a Hernquist halo
 
 #--------------------------------------- TreePM Options
 
-PMGRID=256                                    # basic mesh size for TreePM calculations
+PMGRID=512                                    # basic mesh size for TreePM calculations
 ASMTH=1.25                                    # sets the smoothing of the PM force and thus the split-scale between Tree/FMM force and PM force
 RCUT=6.0                                      # cut-off radius beyond which Tree or FMM evaluations are stopped in TreePM / FMM-PM
 #NTAB=128                                     # size of short-range look-up table
 #PLACEHIGHRESREGION=2                         # bitmask selecting the particle types that are used to define the location of a secondary PM mesh
-HRPMGRID=768                                 # dimension of high-res PM grid (optional, default is HRPMGRID=PMGRID); Typical: HRPMGRID should be ~0.5-0.75× the cube root of high-res particle count
+#HRPMGRID=1024                                 # dimension of high-res PM grid (optional, default is HRPMGRID=PMGRID); Typical: HRPMGRID should be ~0.5-0.75× the cube root of high-res particle count
 FFT_COLUMN_BASED                             # uses a column-based FFT algorithm instead of the default slab-based one
 PM_ZOOM_OPTIMIZED                             # selects a communication strategy in the PM code that is better balanced for zoom simulations
 TREE_NUM_BEFORE_NODESPLIT=10                  # number of particles are are at most allowed in a tree node before it is split (can be 1)
@@ -50,21 +50,21 @@ TREE_NUM_BEFORE_NODESPLIT=10                  # number of particles are are at m
 #--------------------------------------- Time integration options
 
 TREEPM_NOTIMESPLIT                           # if this is activated, long-range and short-range gravity are time-integrated on a common timestep
-HIERARCHICAL_GRAVITY                         # enables hierarchical time integration of the gravity 
+HIERARCHICAL_GRAVITY                         # enables hierarchical time integration of the gravity
 #FORCE_EQUAL_TIMESTEPS                        # this chooses a global timestep for all particles
 
 
 #--------------------------------------- Treatment of gravitational softening
 
-INDIVIDUAL_GRAVITY_SOFTENING=16+4                # bitmasks which selects the particle type(s) which pick their softening class based on particle mass
+INDIVIDUAL_GRAVITY_SOFTENING=4                # bitmasks which selects the particle type(s) which pick their softening class based on particle mass
 #NSOFTCLASSES=4                               # number of different softening classes
 ADAPTIVE_HYDRO_SOFTENING                      # makes SPH gas particles pick an adaptive gravitational softening proportional to their SPH smoothing lengths
 
 
 #--------------------------------------- SPH treatmeant and formulation
 
-#REUSE_HYDRO_ACCELERATIONS_FROM_PREVIOUS_STEP # does not recompute the pressure forces after application of source functions 
-#VISCOSITY_LIMITER_FOR_LARGE_TIMESTEPS        # limits the acceleration due to the viscosity  
+#REUSE_HYDRO_ACCELERATIONS_FROM_PREVIOUS_STEP # does not recompute the pressure forces after application of source functions
+#VISCOSITY_LIMITER_FOR_LARGE_TIMESTEPS        # limits the acceleration due to the viscosity
 #PRESSURE_ENTROPY_SPH                         # enables the Hopkins (2013) pressure-entropy formulation, other density-entropy is used
 #GAMMA=1.4                                    # sets the adiabatic index
 #ISOTHERM_EQS                                 # selects an isothermal equation of state
@@ -95,9 +95,6 @@ FEEDBACK
 METALS                                       # Track metallicity and enable metal cooling
 DUST
 
-FEEDBACK_LIMIT_DULOG                         # optional safety clamp (Δlog10 u ≤ ~2)
-FEEDBACK_T_CAP                               # optional debug cap on post-heating T
-
 #---------------------------------------- Single/double precision and data types
 
 #POSITIONS_IN_32BIT                           # if set, use 32-integers for positions  (default for single precision)
@@ -117,7 +114,7 @@ IDS_64BIT                                    # selects 64-bit IDs for internal s
 
 #INITIAL_CONDITIONS_CONTAIN_ENTROPY
 #OUTPUT_VELOCITY_GRADIENT                     # output velocity gradients
-#OUTPUT_PRESSURE                              # output gas pressure   
+#OUTPUT_PRESSURE                              # output gas pressure
 #OUTPUT_ENTROPY                               # output gas entropy
 #OUTPUT_CHANGEOFENTROPY                       # output rate of change of entropy
 #OUTPUT_POTENTIAL                             # output gravitational potential
@@ -174,7 +171,7 @@ SUBFIND_STORE_LOCAL_DENSITY                  # calculates local densities and ve
 
 
 #--------------------------------------- IC creation
- 
+
 #NGENIC=256                                   # generate cosmological ICs, set NGENIC to the FFT grid size used for IC generation
 #NGENIC_2LPT                                  # applies 2LPT instead of just Zeldovich approximation
 #CREATE_GRID                                  # start with a regular Cartesian DM particle grid, instead of reading a glass file (for NGENIC)
@@ -189,14 +186,14 @@ SUBFIND_STORE_LOCAL_DENSITY                  # calculates local densities and ve
 
 #IMPOSE_PINNING                               # enables pinning of MPI processes to CPU cores
 #IMPOSE_PINNING_OVERRIDE_MODE                 # tries to do the pinning even if a prior pinning is detected
-#PRESERVE_SHMEM_BINARY_INVARIANCE             # preserve binary invariance of results despite machine weather, at the price of more tree walk overhead 
+#PRESERVE_SHMEM_BINARY_INVARIANCE             # preserve binary invariance of results despite machine weather, at the price of more tree walk overhead
 EXPLICIT_VECTORIZATION                       # use AVX at selected places in SPH kernels through the vectorclass C++ library
 #SIMPLE_DOMAIN_AGGREGATION                    # this is an experimental modification of the domain decomposition algorithm (can either help or harm performance)
 
 
 #---------------------------------------- MPI related settings
 
-#NUMBER_OF_MPI_LISTENERS_PER_NODE=1           # set such that the number of MPI-ranks per node and listener is maller than MAX_NUMBER_OF_RANKS_WITH_SHARED_MEMORY 
+#NUMBER_OF_MPI_LISTENERS_PER_NODE=1           # set such that the number of MPI-ranks per node and listener is maller than MAX_NUMBER_OF_RANKS_WITH_SHARED_MEMORY
 #MAX_NUMBER_OF_RANKS_WITH_SHARED_MEMORY=64    # default is 64, but can also be set to 32
 #NUMPART_PER_TASK_LARGE                       # set this if the number of particles per task is so large that more than 2 GB are comprised just by particle data
 #USE_MPIALLTOALLV_IN_DOMAINDECOMP             # replaces hypercube communication in domain particle exchance with a single MPI_Allgatherv (can be less stable)

@@ -1,13 +1,23 @@
 # CosmicGrain
 
-Welcome to the official documentation for **CosmicGrain**.
+Welcome to the official documentation for **CosmicGrain**, a live dust-physics extension for GADGET-4.
 
-CosmicGrain is a cosmological hydrodynamics simulation code with active on-the-fly dust evolution.
+CosmicGrain follows explicit PartType6 dust superparticles alongside gas, stars, and dark matter. The current model includes stellar dust production, drag, astration, sputtering, shock destruction, grain growth, coagulation, shattering, radiation pressure, dust cooling, evolving carbon/silicate composition, and element-resolved enrichment.
 
-This documentation contains installation instructions, tutorials, and descriptions of the dust physics.
+## Documentation
 
-------------------
+- **Getting started** — installation, compilation, first runs, HPC use, and zoom setup
+- **Physics** — detailed descriptions of the implemented dust processes
+- **Running** — parameter files, outputs, restarts, performance, and troubleshooting
+- **Analysis** — snapshots, halo catalogs, radial profiles, and dust diagnostics
+- **Developer** — architecture, particle types, source tree, and adding new physics
+- **Reference** — compile flags, parameters, constants, units, and equations
+- **Validation** — numerical validation benchmarks and convergence limitations
 
-This section is still under construction! We'll have this pages filled out as soon as we can.
+## Current status
 
-Last Updated: July 9, 2026.
+A complete dust-enabled cosmological zoom validation run has evolved from z≈98 to z=0 with whole-box baryonic mass conserved to a fractional drift of 7.75×10⁻⁹ and exact carbon+silicate closure of the surviving dust mass.
+
+The 512³-equivalent zoom level is treated as a **validation resolution rather than a physically converged galaxy calculation**. Convergence testing is proceeding through 1024³, 2048³, and 4096³-equivalent zooms.
+
+The LRN dust-production channel is implemented, but its absolute normalization remains under active calibration.

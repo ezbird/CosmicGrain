@@ -17,7 +17,6 @@
 #include <gsl/gsl_math.h>
 #include <mpi.h>
 #include <algorithm>
-#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -56,7 +55,7 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
 
   FoFGravTree.treeallocate(Tp->NumPart, Tp, SubDomain);
   FoFGravTree.treebuild(NumPartGroup, IndexList);
-  
+
   /* determine the radius that encloses a certain number of link particles */
   subfind_find_linkngb(SubDomain, NumPartGroup, IndexList);
 
@@ -400,28 +399,7 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
   /*
    * Now we do the unbinding of the subhalo candidates that contain other subhalo candidates.
    * This will be done with several CPUs if needed.
-   *
-   * COSMICGRAIN NOTE: The serial O(N) chain-walk inside this loop (subfind_distlinklist_get_next
-   * called len times with MPI round-trips for remote particles) deadlocks or exceeds walltime
-   * for large candidates when NTask is small relative to TotNumPart — which happens on desktop
-   * restarts and is exacerbated by CosmicGrain's PartType6 dust particles inflating TotNumPart.
-   *
-   * The guard below uses the same criterion that the independent-unbinding loop uses to decide
-   * a candidate is "too large to do independently": len > 0.20 * TotNumPart / NTask.
-   * Any candidate that was force-promoted to collective by that criterion is also too large
-   * for a serial chain walk. We declare it bound by fiat (it passed density-peak selection)
-   * and fill unbind_list via a local SFTail[] scan instead of the chain walk.
-   *
-   * For the background (full-halo envelope) candidate, len == totgrouplen, so it is always
-   * caught by this guard regardless of NTask. The local-scan also handles it correctly because
-   * the unbind_list fill loop below marks SFTail[i].index = nsubs for all unclaimed particles.
    */
-  const long long chain_walk_limit = (long long)(0.20 * Tp->TotNumPart / NTask);
-
-  subfind_collective_printf(
-      "SUBFIND: root-task=%d: collective unbinding phase: chain_walk_limit=%lld "
-      "(0.20 * TotNumPart=%lld / NTask=%d)\n",
-      ThisTask, chain_walk_limit, (long long)Tp->TotNumPart, NTask);
 
   double t0 = Logs.second();
 
@@ -438,7 +416,7 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
             {
               len    = coll_candidates[k].len;
               nsubs  = coll_candidates[k].nsub;
-              parent = coll_candidates[k].parent;
+              parent = coll_candidates[k].parent; /* this is here actually the daughter count */
             }
 
           MPI_Bcast(&parent, sizeof(parent), MPI_BYTE, master, SubComm);
@@ -449,38 +427,8 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
               MPI_Bcast(&len, sizeof(len), MPI_BYTE, master, SubComm);
               MPI_Bcast(&nsubs, sizeof(nsubs), MPI_BYTE, master, SubComm);
 
-              /* COSMICGRAIN FIX: any candidate whose length exceeds the independent-unbinding
-               * size threshold is also too large for the serial O(N) MPI chain walk.
-               * Declare it bound and collect particles via a local SFTail[] scan.
-               * This correctly handles both mid-sized nested candidates (the case that
-               * was hanging on the desktop restart) and the background envelope candidate
-               * (len == totgrouplen), which is always above the threshold. */
-              if(len > chain_walk_limit)
-                {
-                  subfind_collective_printf(
-                      "SUBFIND: root-task=%d: skipping chain-walk for large collective candidate "
-                      "nr=%d (len=%lld > chain_walk_limit=%lld); using local SFTail scan\n",
-                      ThisTask, nr, (long long)len, chain_walk_limit);
-
-                  if(SubThisTask == master)
-                    coll_candidates[k].bound_length = len;
-
-                  /* Mark unclaimed particles with INT_MAX sentinel rather than nsubs.
-                   * Using nsubs here would break the property determination loop, because
-                   * coll_candidates is re-sorted by bound_length between the unbinding and
-                   * property loops — so the nsubs broadcast in the property loop for this
-                   * candidate will not match the value stored here. INT_MAX is safe because
-                   * nsubs is bounded by totcand << INT_MAX, so it can never be a valid nsubs. */
-                  for(int i = 0; i < NumPartGroup; i++)
-                    if(SFTail[i].index < 0)
-                      SFTail[i].index = INT_MAX;
-
-                  nr++;
-                  continue;
-                }
-
-              subfind_collective_printf("SUBFIND: root-task=%d: collective unbinding of nr=%d (%lld) of length=%lld\n",
-                                        ThisTask, nr, nremaining, (long long)len);
+              subfind_collective_printf("SUBFIND: root-task=%d: collective unbinding of nr=%d (%d) of length=%d\n", ThisTask, nr,
+                                        nremaining, (int)len);
 
               nr++;
 
@@ -609,8 +557,8 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
               MPI_Allreduce(&LocalLen, &len, 1, MPI_INT, MPI_SUM, SubComm);
 
               subfind_collective_printf(
-                  "SUBFIND: root-task=%d: collective unbinding of nr=%d (%lld) of length=%d, bound length=%d    took %g sec\n",
-                  ThisTask, nr - 1, nremaining, oldlen, (int)len, Logs.timediff(tt0, tt1));
+                  "SUBFIND: root-task=%d: collective unbinding of nr=%d (%d) of length=%d, bound length=%d    took %g sec\n", ThisTask,
+                  nr - 1, nremaining, oldlen, (int)len, Logs.timediff(tt0, tt1));
 
               if(len >= All.DesLinkNgb)
                 {
@@ -731,21 +679,9 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
 
   unbind_list = (int *)Mem.mymalloc_movable(&unbind_list, "unbind_list", NumPartGroup * sizeof(int));
 
-  /* COSMICGRAIN DIAG: announce entry to property determination phase so we can
-   * distinguish a hang here from one in the unbinding phase above. */
-  fprintf(stderr, "SUBFIND-DIAG task=%d/%d: entering property determination loop "
-          "(totgrouplen=%lld totcand=%lld chain_walk_limit=%lld)\n",
-          SubThisTask, SubNTask, totgrouplen, totcand, chain_walk_limit);
-  fflush(stderr);
-
   for(int master = 0, subnr = 0; master < SubNTask; master++)
     {
       int ncand = count_cand;
-
-      fprintf(stderr, "SUBFIND-DIAG task=%d: prop-loop master=%d/%d ncand-local=%d subnr-so-far=%d\n",
-              SubThisTask, master, SubNTask, ncand, subnr);
-      fflush(stderr);
-
       MPI_Bcast(&ncand, sizeof(ncand), MPI_BYTE, master, SubComm);
 
       for(int k = 0; k < ncand; k++)
@@ -769,74 +705,25 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
 
               LocalLen = 0;
 
-              /* COSMICGRAIN FIX: same guard as the unbinding loop above — any candidate
-               * whose len exceeds chain_walk_limit skips the serial O(N) master/slave
-               * chain walk and instead does a local SFTail[] scan.
-               *
-               * IMPORTANT: we scan for INT_MAX, NOT nsubs. The unbinding loop marked
-               * unclaimed particles with INT_MAX (not nsubs) precisely because
-               * coll_candidates is re-sorted by bound_length between the two loops,
-               * making the nsubs broadcast here a different value than what was stored
-               * in SFTail[] during the unbinding skip. INT_MAX is an unambiguous sentinel
-               * that survives the sort without any mapping bookkeeping. */
-              if(len > chain_walk_limit)
-                {
-                  subfind_collective_printf(
-                      "SUBFIND: root-task=%d: using local SFTail scan for large candidate "
-                      "property determination (len=%lld > chain_walk_limit=%lld)\n",
-                      ThisTask, (long long)len, chain_walk_limit);
-
-                  fprintf(stderr, "SUBFIND-DIAG task=%d: local-scan start (sentinel=INT_MAX) nsubs=%d\n",
-                          SubThisTask, nsubs);
-                  fflush(stderr);
-
-                  for(int i = 0; i < NumPartGroup; i++)
-                    if(SFTail[i].index == INT_MAX)
-                      {
-                        unbind_list[LocalLen] = i;
-                        LocalLen++;
-                      }
-
-                  fprintf(stderr, "SUBFIND-DIAG task=%d: local-scan done LocalLen=%d\n", SubThisTask, LocalLen);
-                  fflush(stderr);
-                }
+              if(SubThisTask != master)
+                subfind_poll_for_requests();
               else
                 {
-                  /* Normal path: master walks the distributed linked list,
-                   * non-masters poll for incoming requests. */
-                  fprintf(stderr, "SUBFIND-DIAG task=%d: chain-walk start subnr=%d len=%lld\n",
-                          SubThisTask, subnr, (long long)len);
-                  fflush(stderr);
-
-                  if(SubThisTask != master)
-                    subfind_poll_for_requests();
-                  else
+                  location p = coll_candidates[k].head;
+                  for(MyLenType i = 0; i < coll_candidates[k].len; i++)
                     {
-                      location p = coll_candidates[k].head;
-                      for(MyLenType i = 0; i < coll_candidates[k].len; i++)
-                        {
-                          subfind_distlinklist_add_bound_particles(p, nsubs);
-                          p = subfind_distlinklist_get_next(p);
-                        }
-
-                      /* now tell the others to stop polling */
-                      for(int i = 0; i < SubNTask; i++)
-                        if(i != SubThisTask)
-                          MPI_Send(&i, 1, MPI_INT, i, TAG_POLLING_DONE, SubComm);
+                      subfind_distlinklist_add_bound_particles(p, nsubs);
+                      p = subfind_distlinklist_get_next(p);
                     }
 
-                  fprintf(stderr, "SUBFIND-DIAG task=%d: chain-walk done LocalLen=%d\n", SubThisTask, LocalLen);
-                  fflush(stderr);
+                  /* now tell the others to stop polling */
+                  for(int i = 0; i < SubNTask; i++)
+                    if(i != SubThisTask)
+                      MPI_Send(&i, 1, MPI_INT, i, TAG_POLLING_DONE, SubComm);
                 }
-
-              fprintf(stderr, "SUBFIND-DIAG task=%d: entering Allreduce Nsubhalos subnr=%d\n", SubThisTask, subnr);
-              fflush(stderr);
 
               int max_nsubhalos;
               MPI_Allreduce(&Nsubhalos, &max_nsubhalos, 1, MPI_INT, MPI_MAX, SubComm);
-
-              fprintf(stderr, "SUBFIND-DIAG task=%d: passed Allreduce Nsubhalos max=%d\n", SubThisTask, max_nsubhalos);
-              fflush(stderr);
 
               if(max_nsubhalos >= MaxNsubhalos)
                 {
@@ -856,15 +743,7 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
                     Terminate("strange");
                 }
 
-              fprintf(stderr, "SUBFIND-DIAG task=%d: entering determine_sub_halo_properties subnr=%d LocalLen=%d\n",
-                      SubThisTask, subnr, LocalLen);
-              fflush(stderr);
-
               int marked = subfind_determine_sub_halo_properties(unbind_list, LocalLen, &Subhalo[Nsubhalos], SubComm);
-
-              fprintf(stderr, "SUBFIND-DIAG task=%d: determine_sub_halo_properties done subnr=%d marked=%d\n",
-                      SubThisTask, subnr, marked);
-              fflush(stderr);
 
               for(int i = 0; i < LocalLen; i++)
                 {
@@ -874,13 +753,7 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
                     Terminate("also strange");
                 }
 
-              fprintf(stderr, "SUBFIND-DIAG task=%d: entering Allreduce marked subnr=%d\n", SubThisTask, subnr);
-              fflush(stderr);
-
               MPI_Allreduce(MPI_IN_PLACE, &marked, 1, MPI_INT, MPI_SUM, SubComm);
-
-              fprintf(stderr, "SUBFIND-DIAG task=%d: passed Allreduce marked=%d subnr=%d\n", SubThisTask, marked, subnr);
-              fflush(stderr);
 
               if(SubThisTask == 0)
                 {
@@ -918,9 +791,6 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
         }
     }
 
-  fprintf(stderr, "SUBFIND-DIAG task=%d: property determination loop complete\n", SubThisTask);
-  fflush(stderr);
-
   subfind_collective_printf("SUBFIND: root-task=%d: determining substructure properties done\n", ThisTask);
 
   Mem.myfree(unbind_list);
@@ -932,7 +802,6 @@ void fof<partset>::subfind_process_single_group(domain<partset> *SubDomain, doma
   Mem.myfree(SFHead);
   Mem.myfree(sd);
 }
-
 
 /* This function finds the subhalo candidates (i.e. locally overdense structures bounded by a saddle point).
  * They can be nested inside each other, and will later be subjected to an unbinding procedure.

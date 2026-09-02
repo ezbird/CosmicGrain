@@ -1964,10 +1964,10 @@ long long IO_Def::get_particles_in_block(int blocknr, long long *npart_file, int
         for(int i = 0; i < NTYPES; i++)
           {
             typelist[i] = 0;  // Start with all disabled
-            
+
             if(i == 6)  // Only Type 6 (dust)
               typelist[i] = (npart_file[i] > 0);
-            
+
             npart += npart_file[i] * typelist[i];
           }
         return npart;
@@ -1984,17 +1984,14 @@ long long IO_Def::get_particles_in_block(int blocknr, long long *npart_file, int
           return npart;
           break;
 
+      // stars and gas only
       case Z_BLOCK:
         for(int i = 0; i < NTYPES; i++)
           {
-            typelist[i] = (npart_file[i] > 0);
-            if((file_format == FILEFORMAT_HDF5 && (i == 1 || i == 5)) || (file_format != FILEFORMAT_HDF5 && (i != 0 && i != 4)))
-              typelist[i] = 0;
-
+            typelist[i] = ((i == 0 || i == 4) && npart_file[i] > 0);
             npart += npart_file[i] * typelist[i];
           }
         return npart;
-        break;
 
       case GROUPS:
         npart       = npart_file[0];
@@ -2440,10 +2437,10 @@ void IO_Def::read_single_file_segment(const char *basename, int filenr, int type
 void IO_Def::rename_file_to_bak_if_it_exists(char *fname)
 {
   char fin[MAXLEN_PATH], buf[MAXLEN_PATH_EXTRA];
-  
+
   strncpy(fin, fname, MAXLEN_PATH);
   fin[MAXLEN_PATH - 1] = 0;
-  
+
   char *p = strrchr(fin, '/');
   if(p)
     {

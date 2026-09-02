@@ -3,6 +3,9 @@ S[0-9]_output_*/
 S[0-9][0-9]_output_*/
 full_*_backup_*/
 snapdir_*/
+halo*_output_*/
+*_output_*/
+diagnostics_out/
 
 # Executables
 CosmicGrain
@@ -10,6 +13,7 @@ Gadget4
 
 # Runtime logs
 *.log
+ICs/MUSIC2_params/*_log.txt
 
 # Local documentation deployment script
 saveDocsToServer.sh
@@ -113,3 +117,8 @@ WARNINGS
 /Config.sh
 /Makefile.systype
 *-usedvalues
+
+# Generated Lagrangian-region products
+scripts/lagrangian_particle_sets/
+scripts/lagrangian_regions_initial/
+scripts/lagrangian_regions_minimal/

@@ -16,7 +16,7 @@ consistent with all other CosmicGrain analysis scripts.
 Unit conventions:
   GrainRadius   : values in HDF5 are already in nm (snap_io applies
                   cm->nm conversion on write). Do NOT apply extra factor.
-  CarbonFraction: dimensionless [0, 1]
+  CarbonMassFraction: dimensionless [0, 1]
   Coordinates   : comoving kpc/h  -> physical kpc via * a / h
   Masses        : 1e10 Msun/h
   h             : from f["Parameters"].attrs["HubbleParam"]  (NOT Header)
@@ -153,7 +153,7 @@ def read_dust(snap_files, box_ckpch, ctr_ckpch, r200_ckpch, h, a):
             pos_l.append(coords[mask])
             mass_l.append(pt6["Masses"][:][mask])
             arad_l.append(pt6["GrainRadius"][:][mask])
-            fc_l.append(pt6["CarbonFraction"][:][mask])
+            fc_l.append(pt6["CarbonMassFraction"][:][mask])
 
         if (idx + 1) % 50 == 0 or (idx + 1) == n_total:
             print(f"    read chunk {idx+1}/{n_total}", end="\r", flush=True)
@@ -169,7 +169,7 @@ def read_dust(snap_files, box_ckpch, ctr_ckpch, r200_ckpch, h, a):
 
     print(f"  Dust within R200 : {len(a_nm):,} particles")
     print(f"  GrainRadius range: {a_nm.min():.2f} -- {a_nm.max():.2f} nm")
-    print(f"  CarbonFraction   : mean={fc.mean():.3f}  "
+    print(f"  CarbonMassFraction   : mean={fc.mean():.3f}  "
           f"min={fc.min():.3f}  max={fc.max():.3f}")
 
     return dict(pos_ckpch=pos, mass_code=mass, a_nm=a_nm, fc=fc)

@@ -481,7 +481,7 @@ def load_dust_for_snap(snap_base, halo_center, rmax):
                 pos_list.append(pos[mask])
                 mass_list.append(pt['Masses'][:][mask])
                 radius_list.append(pt['GrainRadius'][:][mask])
-                cfrac_list.append(pt['CarbonFraction'][:][mask])
+                cfrac_list.append(pt['CarbonMassFraction'][:][mask])
                 temp_list.append(pt['DustTemperature'][:][mask])
         except Exception as e:
             print(f'    load_dust: error reading {fname}: {e}')

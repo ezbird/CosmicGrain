@@ -3,16 +3,15 @@ FEEDBACK
 DUST
 
 OUTPUT_COOLHEAT                              # per-particle CoolHeat accumulation & step summary
-COOLING_HOT_DEBUG                            # print limited details about very hot particles
-COOLING_LIMIT_DU                             # clamp |Δlog10 u| per step to avoid pathologies
-COOLING_Z_REION_CUT
-FEEDBACK_DIAG                                # step stats & prints
-FEEDBACK_LIMIT_DULOG                         # optional safety clamp (Δlog10 u ≤ ~2)
-FEEDBACK_T_CAP                               # optional debug cap on post-heating T
+# COOLING_HOT_DEBUG                            # print limited details about very hot particles
+# COOLING_LIMIT_DU                             # clamp |Δlog10 u| per step to avoid pathologies
+# COOLING_Z_REION_CUT
+# FEEDBACK_DIAG                                # step stats & prints
 PASSIVE_SCALARS
 
 # defines for headers
 AGB_YIELDS_H
+SNII_YIELDS_H
 DUST_H
 VERSION_H
 HDF5UTIL_H

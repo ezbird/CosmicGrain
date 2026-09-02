@@ -421,14 +421,14 @@ void coolsfr::GetTableIndex(const std::vector<double> &array, double value, int 
         fraction = 0.0;
         return;
     }
-    
+
     if(value >= array.back())
     {
         index = array.size() - 2;
         fraction = 1.0;
         return;
     }
-    
+
     int low = 0, high = array.size() - 1;
     while(high - low > 1)
     {
@@ -438,7 +438,7 @@ void coolsfr::GetTableIndex(const std::vector<double> &array, double value, int 
         else
             high = mid;
     }
-    
+
     index = low;
     fraction = (value - array[low]) / (array[high] - array[low]);
 }
@@ -451,27 +451,27 @@ double coolsfr::GetMetallicitySolarUnits(double total_metallicity)
 
 double coolsfr::GetMetalLambda(double logT, double logZ)
 {
-    if(!metal_table.table_loaded || 
+    if(!metal_table.table_loaded ||
        logZ < metal_table.z_min || logZ > metal_table.z_max ||
        logT < metal_table.t_min || logT > metal_table.t_max)
     {
         return 0.0;
     }
-    
+
     int z_index, t_index;
     double z_frac, t_frac;
-    
+
     GetTableIndex(metal_table.metallicity_bins, logZ, z_index, z_frac);
     GetTableIndex(metal_table.temperature_bins, logT, t_index, t_frac);
-    
+
     double lambda_00 = metal_table.cooling_rates[z_index][t_index];
-    double lambda_10 = (z_index + 1 < metal_table.n_metallicity) ? 
+    double lambda_10 = (z_index + 1 < metal_table.n_metallicity) ?
                        metal_table.cooling_rates[z_index + 1][t_index] : lambda_00;
     double lambda_01 = (t_index + 1 < metal_table.n_temperature) ?
                        metal_table.cooling_rates[z_index][t_index + 1] : lambda_00;
     double lambda_11 = (z_index + 1 < metal_table.n_metallicity && t_index + 1 < metal_table.n_temperature) ?
                        metal_table.cooling_rates[z_index + 1][t_index + 1] : lambda_00;
-    
+
     // Bilinear interpolation
     double lambda_0 = (1.0 - z_frac) * lambda_00 + z_frac * lambda_10;
     double lambda_1 = (1.0 - z_frac) * lambda_01 + z_frac * lambda_11;
@@ -498,12 +498,12 @@ void coolsfr::ReadMetalCoolingTable(const char *filename)
 
     double metallicity;
     int n_temp;
-    
+
     while(fscanf(file, "%lg %d", &metallicity, &n_temp) == 2)
     {
         metal_table.metallicity_bins.push_back(metallicity);
         std::vector<double> lambda_row;
-        
+
         for(int i = 0; i < n_temp; i++)
         {
             double temp, lambda;
@@ -511,21 +511,21 @@ void coolsfr::ReadMetalCoolingTable(const char *filename)
             {
                 Terminate("Error reading metal cooling table at metallicity %g, point %d\n", metallicity, i);
             }
-            
+
             // On first metallicity bin, store temperature grid
             if(metal_table.metallicity_bins.size() == 1)
                 metal_table.temperature_bins.push_back(temp);
-            
+
             lambda_row.push_back(lambda);
         }
         metal_table.cooling_rates.push_back(lambda_row);
     }
-    
+
     fclose(file);
-    
+
     metal_table.n_metallicity = metal_table.metallicity_bins.size();
     metal_table.n_temperature = metal_table.temperature_bins.size();
-    
+
     if(metal_table.n_metallicity > 0 && metal_table.n_temperature > 0)
     {
         metal_table.z_min = metal_table.metallicity_bins.front();
@@ -533,12 +533,12 @@ void coolsfr::ReadMetalCoolingTable(const char *filename)
         metal_table.t_min = metal_table.temperature_bins.front();
         metal_table.t_max = metal_table.temperature_bins.back();
         metal_table.table_loaded = true;
-        
+
         if(ThisTask == 0)
         {
             mpi_printf("METAL_COOLING: Read table with %d metallicity bins and %d temperature points\n",
                        metal_table.n_metallicity, metal_table.n_temperature);
-            mpi_printf("METAL_COOLING: Metallicity range: %g to %g (log Z/Z_solar)\n", 
+            mpi_printf("METAL_COOLING: Metallicity range: %g to %g (log Z/Z_solar)\n",
                        metal_table.z_min, metal_table.z_max);
             mpi_printf("METAL_COOLING: Temperature range: %g to %g (log T)\n",
                        metal_table.t_min, metal_table.t_max);
@@ -606,7 +606,7 @@ double coolsfr::CoolingRate(double logT, double rho, double *nelec, gas_state *g
                 double Z_solar = this->GetMetallicitySolarUnits(gs->metallicity);
                 double logZ = log10(std::max(Z_solar, 1e-4));  // Floor to prevent log(0)
                 double metal_lambda = this->GetMetalLambda(logT, logZ);
-                
+
                 // Count total times metal cooling is applied
                 if(metal_lambda > 0)
                   this->metal_cooling_count++;
@@ -615,7 +615,7 @@ double coolsfr::CoolingRate(double logT, double rho, double *nelec, gas_state *g
                 static int counter = 0;
                 if(counter < 10 && metal_lambda > 0)  // Print first 10 times it contributes
                   {
-                    mpi_printf("METAL_COOL: T=%.2e K, Z/Zsol=%.2e, Lambda_metal=%.2e erg cm^3/s\n", 
+                    mpi_printf("METAL_COOL: T=%.2e K, Z/Zsol=%.2e, Lambda_metal=%.2e erg cm^3/s\n",
                               pow(10.0, logT), Z_solar, metal_lambda);
                     counter++;
                   }
@@ -856,19 +856,14 @@ void coolsfr::InitCool(void)
     if(All.MetalcoolFile[0] != '\0')
       {
         this->ReadMetalCoolingTable(All.MetalcoolFile);
-
-        // *** QUICK TEST ***
-        if(ThisTask == 0 && metal_table.table_loaded)
-          mpi_printf("METAL_COOLING: Self-test at T=1e5K, Z=Zsolar gives Lambda=%.3e erg cm^3/s\n", 
-                    GetMetalLambda(5.0, 0.0));
-        }
+      }
     else
       {
         if(ThisTask == 0)
           mpi_printf("METAL_COOLING: No MetalcoolFile specified, metal cooling disabled\n");
       }
   #endif
-  
+
   All.Time = All.TimeBegin;
   All.set_cosmo_factors_for_current_time();
 
@@ -987,65 +982,12 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
       {
           double rho_code = dens * All.cf_a3inv;
           double h_code   = Sp->SphP[i].Hsml * All.cf_atime;
-          double u_jeans  = All.G * rho_code * h_code * h_code
-                            / (M_PI * GAMMA * GAMMA_MINUS1);
-
-          // SAFETY CEILING: the Jeans floor must never push a particle above the
-          // same hard temperature cap feedback.cc enforces (u_max_particle =
-          // TK_to_ucode(1.0e8)). Without this, a dense, freshly-fed-back-on
-          // particle (small Hsml, high rho) can be re-heated by this floor to
-          // above the feedback ceiling entirely outside feedback's own clamping
-          // logic -- this path never touches deposit_energy_stochastic()'s caps,
-          // so no [FEEDBACK_CAP_FAIL] warning is ever printed when it happens.
-          // That silent re-heating is what was driving MaxSignalVel up to the
-          // ~1e8 K sound speed and collapsing dt_courant to the integer-timestep
-          // floor at 2048^3.
-          //
-          // mu here intentionally mirrors feedback.cc's mu_default(), not
-          // gs->yhelium/ne, so this ceiling and feedback's ceiling agree on the
-          // same physical temperature rather than drifting apart by whatever
-          // small difference the two mu conventions would imply.
-          const double FEEDBACK_HARD_CAP_K = 1.0e8;
-          {
-              double mu_cap = (FEEDBACK_HARD_CAP_K > 1.5e4) ? 0.62 : 1.22;
-              double u_jeans_ceiling =
-                  (BOLTZMANN * FEEDBACK_HARD_CAP_K) / (GAMMA_MINUS1 * mu_cap * PROTONMASS)
-                  / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
-              if(u_jeans > u_jeans_ceiling) {
-                  static long long jeans_clamp_count = 0;
-                  if(++jeans_clamp_count % 50 == 1 && ThisTask == 0)
-                      printf("[JEANS_CLAMP|Step=%d] ID=%lld Hsml=%.3f rho=%.3e u_jeans_raw=%.3e clamped_to=%.3e\n",
-                            All.NumCurrentTiStep, (long long)Sp->P[i].ID.get(),
-                            Sp->SphP[i].Hsml, rho_phys, u_jeans, u_jeans_ceiling);
-                  u_jeans = u_jeans_ceiling;
-              }
-          }
+          double u_jeans = All.G * rho_code * h_code * h_code / (M_PI * GAMMA * GAMMA_MINUS1);
 
           if(unew < u_jeans)
               unew = u_jeans;
       }
 
-      /* ── CMB temperature floor ──────────────────────────────────────────────
-      * Gas cannot cool below the CMB temperature T_CMB = 2.73 * (1+z).
-      * Without this, diffuse IGM particles cool to unphysical sub-CMB
-      * temperatures at high resolution (2048³ and above).
-      *
-      * Guard: same nH > CritPhysDensity condition as the Jeans floor.
-      * Applying the CMB floor to diffuse gas at high redshift creates pressure
-      * discontinuities that corrupt DtEntropy in the SPH hydro update — the
-      * same failure mode as the Jeans floor on low-density particles. The CMB
-      * floor is only physically meaningful in dense gas that can actually cool
-      * to sub-CMB temperatures; diffuse IGM is kept above T_CMB naturally by
-      * photoionization heating from the UV background. 
-      if(nH_cgs > All.CritPhysDensity)
-      {
-          double T_cmb = 2.73 / All.Time;
-          double u_cmb = T_cmb * (1. + GasState.yhelium) /
-                        ((1. + 4.*GasState.yhelium) * GasState.mhboltz * GAMMA_MINUS1);
-          if(unew < u_cmb)
-              unew = u_cmb;
-      }
-      */
   if(unew < 0)
     Terminate("invalid temperature: i=%d unew=%g\n", i, unew);
 
@@ -1061,7 +1003,7 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
       Sp->SphP[i].CoolHeat = du * Sp->P[i].getMass() / dtime;
   #endif
 
-  
+
   Sp->set_entropy_from_utherm(utherm, i);
   Sp->SphP[i].set_thermodynamic_variables();
 
@@ -1072,7 +1014,7 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
  * This function finds the most massive halo (which should be our zoom target)
  * and computes the stellar mass within its virial radius. It then writes
  * the proper stellar-to-halo mass ratio to stellar_evolution.txt.
- * 
+ *
  * This should be called after Subfind completes.
  *
  * \param Sp Pointer to simparticles
@@ -1082,12 +1024,12 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
 {
   // Read group catalog from disk
   char fname[512];
-  snprintf(fname, sizeof(fname), "%s/groups_%03d/fof_subhalo_tab_%03d.0.hdf5", 
+  snprintf(fname, sizeof(fname), "%s/groups_%03d/fof_subhalo_tab_%03d.0.hdf5",
            All.OutputDir, snapshot_number, snapshot_number);
-  
+
   if(ThisTask == 0)
     mpi_printf("HALO_TRACK: Reading group catalog from %s\n", fname);
-  
+
   // Variables for halo properties
   int ngroups = 0;
   double max_mass = 0;
@@ -1095,7 +1037,7 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
   double r_vir = 0;
   double halo_pos[3] = {0, 0, 0};
   int halo_len = 0;
-  
+
   // Helper variables
   double boxhalf = All.BoxSize / 2.0;
   double scale_factor = All.Time;  // Current scale factor
@@ -1117,37 +1059,37 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
           hsize_t dims[1];
           H5Sget_simple_extent_dims(dataspace, dims, NULL);
           ngroups = dims[0];
-          
+
           float *group_mass = (float*)malloc(ngroups * sizeof(float));
           H5Dread(dataset, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, group_mass);
           H5Dclose(dataset);
-          
+
           // Read M_Crit200
           dataset = H5Dopen(file_id, "/Group/Group_M_Crit200", H5P_DEFAULT);
           float *m_crit200 = (float*)malloc(ngroups * sizeof(float));
           H5Dread(dataset, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, m_crit200);
           H5Dclose(dataset);
-          
+
           // Read R_Crit200
           dataset = H5Dopen(file_id, "/Group/Group_R_Crit200", H5P_DEFAULT);
           float *r_crit200 = (float*)malloc(ngroups * sizeof(float));
           H5Dread(dataset, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, r_crit200);
           H5Dclose(dataset);
-          
+
           // Read GroupPos
           dataset = H5Dopen(file_id, "/Group/GroupPos", H5P_DEFAULT);
           float *group_pos = (float*)malloc(ngroups * 3 * sizeof(float));
           H5Dread(dataset, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, group_pos);
           H5Dclose(dataset);
-          
+
           // Read GroupLen
           dataset = H5Dopen(file_id, "/Group/GroupLen", H5P_DEFAULT);
           int *group_len = (int*)malloc(ngroups * sizeof(int));
           H5Dread(dataset, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, group_len);
           H5Dclose(dataset);
-          
+
           H5Fclose(file_id);
-          
+
           // Find most massive halo
           int target = -1;
           for(int i = 0; i < ngroups; i++)
@@ -1159,7 +1101,7 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
                   target = i;
                 }
             }
-          
+
           if(target >= 0)
             {
               halo_mass = (m_crit200[target] > 0) ? m_crit200[target] : group_mass[target];
@@ -1168,11 +1110,11 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
               halo_pos[1] = group_pos[3*target + 1];
               halo_pos[2] = group_pos[3*target + 2];
               halo_len = group_len[target];
-              
+
               mpi_printf("HALO_TRACK: Found halo: %d particles, M=%.3e, R=%.3e\n",
                         halo_len, halo_mass, r_vir);
             }
-          
+
           free(group_mass);
           free(m_crit200);
           free(r_crit200);
@@ -1180,7 +1122,7 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
           free(group_len);
         }
     }
-  
+
   // Broadcast halo properties to all tasks
   MPI_Bcast(&halo_mass, 1, MPI_DOUBLE, 0, Communicator);
   MPI_Bcast(&r_vir, 1, MPI_DOUBLE, 0, Communicator);
@@ -1189,29 +1131,29 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
 
   if(halo_mass == 0)
     return;
-  
+
   // ==========================================================================
   // COUNT STARS AND GAS WITHIN VIRIAL RADIUS
   // ==========================================================================
-  
+
   double local_stellar_mass = 0;
   double local_gas_mass = 0;
   int local_star_count = 0;
   int local_gas_count = 0;
-  
+
   for(int i = 0; i < Sp->NumPart; i++)
     {
       int ptype = Sp->P[i].getType();
-      
+
       if(ptype == STAR_TYPE || ptype == 0)  // Stars or gas
         {
           double particle_pos[3];
           Sp->intpos_to_pos(Sp->P[i].IntPos, particle_pos);
-          
+
           double dx = particle_pos[0] - halo_pos[0];
           double dy = particle_pos[1] - halo_pos[1];
           double dz = particle_pos[2] - halo_pos[2];
-          
+
           // Apply periodic boundaries
           if(dx > boxhalf) dx -= All.BoxSize;
           if(dx < -boxhalf) dx += All.BoxSize;
@@ -1219,9 +1161,9 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
           if(dy < -boxhalf) dy += All.BoxSize;
           if(dz > boxhalf) dz -= All.BoxSize;
           if(dz < -boxhalf) dz += All.BoxSize;
-          
+
           double r = sqrt(dx*dx + dy*dy + dz*dz);
-          
+
           if(r < r_vir)
             {
               if(ptype == STAR_TYPE)
@@ -1237,25 +1179,25 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
             }
         }
     }
-  
+
   // MPI reductions for stars and gas
   double total_stellar_mass = 0;
   double total_gas_mass = 0;
   int total_star_count = 0;
   int total_gas_count = 0;
-  
+
   MPI_Allreduce(&local_stellar_mass, &total_stellar_mass, 1, MPI_DOUBLE, MPI_SUM, Communicator);
   MPI_Allreduce(&local_gas_mass, &total_gas_mass, 1, MPI_DOUBLE, MPI_SUM, Communicator);
   MPI_Allreduce(&local_star_count, &total_star_count, 1, MPI_INT, MPI_SUM, Communicator);
   MPI_Allreduce(&local_gas_count, &total_gas_count, 1, MPI_INT, MPI_SUM, Communicator);
-  
+
   // ==========================================================================
   // COUNT ALL STARS IN SIMULATION (DIAGNOSTIC)
   // ==========================================================================
-  
+
   int local_all_stars = 0;
   double local_all_stellar_mass = 0;
-  
+
   for(int i = 0; i < Sp->NumPart; i++)
     {
       if(Sp->P[i].getType() == STAR_TYPE)
@@ -1264,46 +1206,46 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
           local_all_stellar_mass += Sp->P[i].getMass();
         }
     }
-  
+
   int total_all_stars = 0;
   double total_all_stellar_mass = 0;
   MPI_Allreduce(&local_all_stars, &total_all_stars, 1, MPI_INT, MPI_SUM, Communicator);
   MPI_Allreduce(&local_all_stellar_mass, &total_all_stellar_mass, 1, MPI_DOUBLE, MPI_SUM, Communicator);
-  
+
   double total_all_stellar_mass_msun = total_all_stellar_mass * (All.UnitMass_in_g / SOLAR_MASS);
-  
+
   if(ThisTask == 0)
     {
-      mpi_printf("HALO_TRACK: Total stars in simulation: %d (M*_total = %.3e Msun)\n", 
+      mpi_printf("HALO_TRACK: Total stars in simulation: %d (M*_total = %.3e Msun)\n",
                  total_all_stars, total_all_stellar_mass_msun);
       if(total_all_stars > 0)
         {
           mpi_printf("HALO_TRACK: Stars in target halo: %d (%.1f%% of total)\n",
                      total_star_count, 100.0 * total_star_count / (double)total_all_stars);
           mpi_printf("HALO_TRACK: Stars outside target halo: %d (%.1f%% of total)\n",
-                     total_all_stars - total_star_count, 
+                     total_all_stars - total_star_count,
                      100.0 * (total_all_stars - total_star_count) / (double)total_all_stars);
         }
     }
-  
+
   // ==========================================================================
   // COUNT DUST PARTICLES WITHIN VIRIAL RADIUS
   // ==========================================================================
-  
+
   int local_dust_count = 0;
   double local_dust_mass = 0;
-  
+
   for(int i = 0; i < Sp->NumPart; i++)
     {
       if(Sp->P[i].getType() == 6)  // Dust particles are PartType6
         {
           double particle_pos[3];
           Sp->intpos_to_pos(Sp->P[i].IntPos, particle_pos);
-          
+
           double dx = particle_pos[0] - halo_pos[0];
           double dy = particle_pos[1] - halo_pos[1];
           double dz = particle_pos[2] - halo_pos[2];
-          
+
           // Apply periodic boundaries
           if(dx > boxhalf) dx -= All.BoxSize;
           if(dx < -boxhalf) dx += All.BoxSize;
@@ -1311,9 +1253,9 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
           if(dy < -boxhalf) dy += All.BoxSize;
           if(dz > boxhalf) dz -= All.BoxSize;
           if(dz < -boxhalf) dz += All.BoxSize;
-          
+
           double r = sqrt(dx*dx + dy*dy + dz*dz);
-          
+
           if(r < r_vir)
             {
               local_dust_mass += Sp->P[i].getMass();
@@ -1321,24 +1263,24 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
             }
         }
     }
-  
+
   // ==========================================================================
   // CALCULATE METAL MASS IN GAS (WITHIN VIRIAL RADIUS)
   // ==========================================================================
-  
+
   double local_metal_mass = 0;
-  
+
   for(int i = 0; i < Sp->NumPart; i++)
     {
       if(Sp->P[i].getType() == 0)  // Gas particles
         {
           double particle_pos[3];
           Sp->intpos_to_pos(Sp->P[i].IntPos, particle_pos);
-          
+
           double dx = particle_pos[0] - halo_pos[0];
           double dy = particle_pos[1] - halo_pos[1];
           double dz = particle_pos[2] - halo_pos[2];
-          
+
           // Apply periodic boundaries
           if(dx > boxhalf) dx -= All.BoxSize;
           if(dx < -boxhalf) dx += All.BoxSize;
@@ -1346,9 +1288,9 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
           if(dy < -boxhalf) dy += All.BoxSize;
           if(dz > boxhalf) dz -= All.BoxSize;
           if(dz < -boxhalf) dz += All.BoxSize;
-          
+
           double r = sqrt(dx*dx + dy*dy + dz*dz);
-          
+
           if(r < r_vir)
             {
               // Metal mass = gas mass × metallicity
@@ -1358,70 +1300,70 @@ void coolsfr::track_target_halo_evolution(simparticles *Sp, int snapshot_number)
             }
         }
     }
-  
+
   // MPI reductions for dust and metals
   double total_dust_mass = 0;
   double total_metal_mass = 0;
   int total_dust_count = 0;
-  
+
   MPI_Allreduce(&local_dust_mass, &total_dust_mass, 1, MPI_DOUBLE, MPI_SUM, Communicator);
   MPI_Allreduce(&local_metal_mass, &total_metal_mass, 1, MPI_DOUBLE, MPI_SUM, Communicator);
   MPI_Allreduce(&local_dust_count, &total_dust_count, 1, MPI_INT, MPI_SUM, Communicator);
-  
+
   // ==========================================================================
   // CONVERT TO SOLAR MASSES AND CALCULATE RATIOS
   // ==========================================================================
-  
+
   double stellar_mass_msun = total_stellar_mass * (All.UnitMass_in_g / SOLAR_MASS);
   double gas_mass_msun = total_gas_mass * (All.UnitMass_in_g / SOLAR_MASS);
   double halo_mass_msun = halo_mass * (All.UnitMass_in_g / SOLAR_MASS);
   double dust_mass_msun = total_dust_mass * (All.UnitMass_in_g / SOLAR_MASS);
   double metal_mass_msun = total_metal_mass * (All.UnitMass_in_g / SOLAR_MASS);
-  
+
   double stellar_to_halo = (halo_mass > 0) ? total_stellar_mass / halo_mass : 0.0;
   double baryon_to_halo = (halo_mass > 0) ? (total_stellar_mass + total_gas_mass) / halo_mass : 0.0;
   double dust_to_metal = (total_metal_mass > 0) ? total_dust_mass / total_metal_mass : 0.0;
   double dust_to_gas = (total_gas_mass > 0) ? total_dust_mass / total_gas_mass : 0.0;
-  
+
   // ==========================================================================
   // WRITE STELLAR EVOLUTION DATA
   // ==========================================================================
-  
+
   if(ThisTask == 0)
     {
       char outfname[512];
       snprintf(outfname, sizeof(outfname), "%s/stellar_evolution.txt", All.OutputDir);
       FILE *fd = fopen(outfname, "a");
-      
+
       if(fd)
         {
           // Format: scale_factor, stellar_mass, halo_mass, ratio, gas_mass, baryon_fraction
-          fprintf(fd, "%.6e %.6e %.6e %.6e %.6e %.6e\n", 
+          fprintf(fd, "%.6e %.6e %.6e %.6e %.6e %.6e\n",
                   scale_factor, stellar_mass_msun, halo_mass_msun, stellar_to_halo,
                   gas_mass_msun, baryon_to_halo);
           fclose(fd);
         }
-      
+
       mpi_printf("HALO_TRACK: a=%.4f z=%.2f: M*=%.3e Msun (%d), M_gas=%.3e Msun (%d), M_halo=%.3e Msun, f_baryon=%.4f\n",
-                scale_factor, redshift, stellar_mass_msun, total_star_count, 
+                scale_factor, redshift, stellar_mass_msun, total_star_count,
                 gas_mass_msun, total_gas_count, halo_mass_msun, baryon_to_halo);
     }
-  
+
   // ==========================================================================
   // WRITE DUST EVOLUTION DATA
   // ==========================================================================
-  
+
   if(ThisTask == 0)
     {
       mpi_printf("DUST_TRACK: a=%.4f z=%.2f: M_dust=%.3e Msun (%d), M_metal=%.3e Msun, D/Z=%.4f, D/G=%.4e\n",
                  scale_factor, redshift,
                  dust_mass_msun, total_dust_count,
                  metal_mass_msun, dust_to_metal, dust_to_gas);
-      
+
       char outfname[512];
       snprintf(outfname, sizeof(outfname), "%s/dust_evolution.txt", All.OutputDir);
       FILE *fd = fopen(outfname, "a");
-      
+
       if(fd)
         {
           // Format: scale_factor, M_dust, M_metal, M_gas, D/Z, D/G, M_halo

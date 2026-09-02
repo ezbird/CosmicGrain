@@ -39,6 +39,34 @@ void coolsfr::cooling_and_starformation(simparticles *Sp)
 {
   TIMER_START(CPU_COOLING_SFR);
 
+  /*
+   * Late-time star-formation diagnostics.
+   *
+   * These counters accumulate ACTIVE hydro-particle processing events
+   * between diagnostic printouts. They do not alter the physics.
+   *
+   * Note that the same gas particle may be processed more than once
+   * during a reporting interval, so these are event counts, not unique
+   * instantaneous particle counts.
+   */
+  static long long diag_n_dense          = 0;
+  static long long diag_n_overdens_rej   = 0;
+  static long long diag_n_sfbranch       = 0;
+  static long long diag_n_thermal_rej    = 0;
+  static long long diag_n_sfr_positive   = 0;
+
+  static double diag_m_dense_msun        = 0.0;
+  static double diag_m_overdens_rej_msun = 0.0;
+  static double diag_m_sfbranch_msun     = 0.0;
+  static double diag_m_thermal_rej_msun  = 0.0;
+  static double diag_m_sfr_positive_msun = 0.0;
+
+  static double diag_sfr_sum             = 0.0;
+
+  /* Roughly 40 reports from a=0.8 to a=1.0. */
+  static double diag_next_a = 0.0;
+  const double diag_da = 0.005;
+
   /* clear the SFR stored in the active timebins */
   for(int bin = 0; bin < TIMEBINS; bin++)
     if(Sp->TimeBinSynchronized[bin])
@@ -72,12 +100,35 @@ void coolsfr::cooling_and_starformation(simparticles *Sp)
            */
           int flag = 1; /* default is normal cooling */
 
-          if(dens * All.cf_a3inv >= All.PhysDensThresh)
-            flag = 0;
+          const double pmass_msun =
+              Sp->P[target].getMass() *
+              (All.UnitMass_in_g / SOLAR_MASS);
 
+          /* First gate: physical star-formation density threshold. */
+          if(dens * All.cf_a3inv >= All.PhysDensThresh)
+            {
+              flag = 0;
+              diag_n_dense++;
+              diag_m_dense_msun += pmass_msun;
+            }
+
+          /* Second gate: cosmological overdensity requirement. */
           if(All.ComovingIntegrationOn)
-            if(dens < All.OverDensThresh)
-              flag = 1;
+            {
+              if(flag == 0 && dens < All.OverDensThresh)
+                {
+                  diag_n_overdens_rej++;
+                  diag_m_overdens_rej_msun += pmass_msun;
+                  flag = 1;
+                }
+            }
+
+          /* Reaching flag==0 means the effective multiphase SF branch is entered. */
+          if(flag == 0)
+            {
+              diag_n_sfbranch++;
+              diag_m_sfbranch_msun += pmass_msun;
+            }
 
           if(flag == 1) /* normal implicit isochoric cooling */
             {
@@ -151,12 +202,55 @@ void coolsfr::cooling_and_starformation(simparticles *Sp)
                 }
 
               if(utherm > 1.01 * egyeff)
-                Sp->SphP[target].Sfr = 0;
+                {
+                  Sp->SphP[target].Sfr = 0;
+                  diag_n_thermal_rej++;
+                  diag_m_thermal_rej_msun += pmass_msun;
+                }
               else
                 {
                   /* note that we convert the star formation rate to solar masses per year */
                   Sp->SphP[target].Sfr =
                       (1 - All.FactorSN) * cloudmass / tsfr * (All.UnitMass_in_g / SOLAR_MASS) / (All.UnitTime_in_s / SEC_PER_YEAR);
+
+                if(Sp->SphP[target].Sfr > 0)
+                  {
+                    diag_n_sfr_positive++;
+                    diag_m_sfr_positive_msun += pmass_msun;
+                    diag_sfr_sum += Sp->SphP[target].Sfr;
+
+                    /*
+                    * Detailed late-time SF density diagnostic.
+                    * Print only a handful of genuinely star-forming particles
+                    * near z=0 so we can compare their internal GADGET density
+                    * directly with the HDF5 snapshot Density field.
+                    */
+                    static int sf_detail_printed = 0;
+
+                    if(All.Time > 0.99 && sf_detail_printed < 20)
+                      {
+                        const double rho_phys = dens * All.cf_a3inv;
+                        const double ratio    = rho_phys / All.PhysDensThresh;
+
+                        printf(
+                            "[SF-DETAIL] task=%d ID=%llu "
+                            "a=%.8f dens=%.8e rho_phys=%.8e "
+                            "rho_thresh=%.8e ratio=%.8f "
+                            "SFR=%.8e\n",
+                            ThisTask,
+                            (unsigned long long)Sp->P[target].ID.get(),
+                            All.Time,
+                            dens,
+                            rho_phys,
+                            All.PhysDensThresh,
+                            ratio,
+                            Sp->SphP[target].Sfr
+                        );
+
+                        fflush(stdout);
+                        sf_detail_printed++;
+                      }
+                  }
                 }
 
               Sp->TimeBinSfr[Sp->P[target].getTimeBinHydro()] += Sp->SphP[target].Sfr;
@@ -168,6 +262,46 @@ void coolsfr::cooling_and_starformation(simparticles *Sp)
   //#ifdef DUST
   //  process_dust_growth_all_gas(Sp);
   //#endif
+
+  /* Print accumulated SF diagnostics every diag_da in scale factor. */
+  if(All.ComovingIntegrationOn && All.Time >= diag_next_a)
+    {
+      long long local_n[5] = {
+          diag_n_dense, diag_n_overdens_rej, diag_n_sfbranch,
+          diag_n_thermal_rej, diag_n_sfr_positive};
+      long long global_n[5] = {0, 0, 0, 0, 0};
+
+      double local_m[6] = {
+          diag_m_dense_msun, diag_m_overdens_rej_msun,
+          diag_m_sfbranch_msun, diag_m_thermal_rej_msun,
+          diag_m_sfr_positive_msun, diag_sfr_sum};
+      double global_m[6] = {0, 0, 0, 0, 0, 0};
+
+      MPI_Reduce(local_n, global_n, 5, MPI_LONG_LONG_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+      MPI_Reduce(local_m, global_m, 6, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+      if(ThisTask == 0)
+        {
+          const double z = 1.0 / All.Time - 1.0;
+          printf(
+              "[SFR-DIAG] a=%.6f z=%.4f "
+              "dense=%lld overdens_rej=%lld sfbranch=%lld "
+              "thermal_rej=%lld sfr_positive=%lld | "
+              "Mdense=%.6e Moverdens_rej=%.6e Msfbranch=%.6e "
+              "Mthermal_rej=%.6e Msfr_positive=%.6e SFRsum=%.6e\n",
+              All.Time, z,
+              global_n[0], global_n[1], global_n[2], global_n[3], global_n[4],
+              global_m[0], global_m[1], global_m[2], global_m[3], global_m[4], global_m[5]);
+          fflush(stdout);
+        }
+
+      diag_n_dense = diag_n_overdens_rej = diag_n_sfbranch = 0;
+      diag_n_thermal_rej = diag_n_sfr_positive = 0;
+      diag_m_dense_msun = diag_m_overdens_rej_msun = diag_m_sfbranch_msun = 0.0;
+      diag_m_thermal_rej_msun = diag_m_sfr_positive_msun = 0.0;
+      diag_sfr_sum = 0.0;
+      diag_next_a = All.Time + diag_da;
+    }
 
   TIMER_STOP(CPU_COOLING_SFR);
 }

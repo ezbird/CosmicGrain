@@ -330,8 +330,13 @@ int simparticles::drift_particle(particle_data *P, sph_particle_data *SphP, inte
       return buffer_full_flag;
     }
 
-  if(time1 < time0)
-    Terminate("no prediction into past allowed: time0=%lld time1=%lld\n", (long long)time0, (long long)time1);
+if(time1 < time0)
+  Terminate(
+      "no prediction into past allowed: ID=%lld type=%d time0=%lld time1=%lld\n",
+      (long long)P->ID.get(),
+      P->getType(),
+      (long long)time0,
+      (long long)time1);
 
   double dt_drift;
 

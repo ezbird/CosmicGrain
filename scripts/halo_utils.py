@@ -10,23 +10,47 @@ Core philosophy
 2. Compute R200c/M200c directly from particles around that center using a true
    spherical-overdensity calculation.
 3. Keep units explicit everywhere.
+4. Detect (not just document) FOF bridging.
+5. Track Halo 569's MAIN PROGENITOR backward from the true final snapshot
+   with a conserved dark-matter CORE ParticleID set. FOF position is not used
+   to discover identity; exact DM IDs are located globally in the earlier
+   snapshot and their densest spatial cluster defines the progenitor center.
+   get_halo569_series() deliberately walks through EVERY available intervening
+   snapshot, even when the caller requests only a sparse subset. This prevents
+   merger/bridging epochs from jumping between nearby FOF structures.
 
 Unit conventions
 ----------------
 Snapshot/catalog positions : comoving kpc/h  (ckpc/h)
 Snapshot/catalog masses    : 1e10 Msun/h     (Gadget code mass units)
 Physical distance          : pkpc = ckpc/h * a / h
-Physical mass              : Msun = code_mass * 1e10 / h
+Physical mass               : Msun = code_mass * 1e10 / h
 Returned halo['center']    : ckpc/h
 Returned halo['r200_ckpch']: ckpc/h
 Returned halo['r200_pkpc'] : physical kpc
 Returned halo['m200_code'] : 1e10 Msun/h
 Returned halo['m200_msun'] : Msun
+Returned halo['mass_ratio_group_to_so']: GroupMass / M200c_SO (dimensionless)
+Returned halo['likely_bridged']        : bool, True if that ratio is large
+                                          enough to indicate FOF bridging
+                                          onto a neighboring structure --
+                                          treat center/R200/M200 as unreliable
+                                          when this is True
 
 Primary API
 -----------
-    ref  = get_halo569_reference(output_dir)
-    halo = get_halo569(groups_dir, snap_num, ref)
+    ref = get_halo569_reference(output_dir)
+
+    # Recommended for all multi-snapshot work. Main-progenitor identity is
+    # determined by DM ParticleID continuity, not nearest-position matching:
+    halos = get_halo569_series(output_dir, snap_nums, ref)
+
+    # Safe convenience helper for ONE historical snapshot. It still anchors at
+    # the final snapshot and walks through every intervening snapshot:
+    halo = get_halo569_at_snapshot(output_dir, snap_num, ref=ref)
+
+    # get_halo569(...) remains available as a legacy position-based helper,
+    # but should not be used to build merger histories.
 
 Optional particle loader:
     pdata = load_particles_within_radius(snapdir, halo['center'], halo['r200_ckpch'])
@@ -36,7 +60,9 @@ Notes
 This version deliberately does NOT use GroupMass as M200 and does NOT derive
 R200 from GroupMass. FOF mass can include bridges/companions and is not a
 spherical-overdensity mass. Catalog Group_R_Crit200/Group_M_Crit200 are kept
-as diagnostics only.
+as diagnostics, and -- new in this version -- GroupMass is actively compared
+against the particle-based M200c_SO to flag likely bridging (see
+GROUP_MASS_RATIO_WARN below).
 
 Catalog naming -- FOF-only vs SUBFIND runs
 -------------------------------------------
@@ -61,6 +87,11 @@ from typing import Dict, Iterable, Optional, Sequence, Tuple
 import h5py
 import numpy as np
 
+try:
+    from scipy.spatial import cKDTree
+except Exception:
+    cKDTree = None
+
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
@@ -75,6 +106,38 @@ G_CGS         = 6.67430e-8
 HALO569_SEARCH_RADIUS_CKPCH = 3000.0
 DEFAULT_SO_RMAX_CKPCH       = 2000.0
 
+# GroupMass / M200c_SO above this ratio is flagged as likely FOF bridging
+# onto a neighboring structure rather than genuine FOF-vs-SO mass excess.
+# Empirically, on a clean (non-bridged) snapshot this ratio sits ~1.0-1.2x
+# for Halo 569; bridged snapshots seen so far jump to 70-230x. 20.0 is a
+# conservative cut sitting in the wide gap between those two populations --
+# re-check it against your own run's clean-snapshot scatter if this module
+# is reused for a different halo/box.
+GROUP_MASS_RATIO_WARN = 20.0
+
+# Fallback shrinking-sphere offset cap (ckpc/h) used only when no prior
+# validated halo size is available to scale against (e.g. the very first
+# snapshot processed, or get_halo569_reference() itself). Deliberately much
+# tighter than the old fixed 300.0 ckpc/h default, which was larger than
+# Halo 569's own R200c at every epoch in this run and so never actually
+# caught anything.
+FALLBACK_MAX_OFFSET_CKPCH = 100.0
+
+# Main-progenitor DM-ID tracking controls.
+#
+# Identity is based on conserved PartType1 ParticleIDs, not FOF proximity.
+# We extract a compact DM core from the last TRUSTED halo, locate those exact
+# IDs globally in the earlier snapshot, and identify the densest spatial
+# cluster of those conserved particles.
+DM_TRACK_CORE_RADIUS_FACTOR = 0.50
+DM_TRACK_CLUSTER_RADIUS_FACTOR = 0.35
+DM_TRACK_CLUSTER_RADIUS_MIN_CKPCH = 12.0
+DM_TRACK_CLUSTER_RADIUS_MAX_CKPCH = 60.0
+DM_TRACK_MIN_CORE_IDS = 16
+DM_TRACK_MIN_CLUSTER_IDS = 8
+DM_TRACK_MIN_CLUSTER_FRACTION = 0.05
+DM_TRACK_MAX_FOF_ASSOC_DIST_FACTOR = 2.0
+
 # For loading spatial particle subsets.
 _SPATIAL_FIELDS = {
     0: ["Coordinates", "Masses", "Density", "Metallicity", "InternalEnergy", "StarFormationRate"],
@@ -82,7 +145,7 @@ _SPATIAL_FIELDS = {
     2: ["Coordinates", "Velocities", "ParticleIDs"],
     4: ["Coordinates", "Masses", "Velocities", "Metallicity", "StellarFormationTime", "ParticleIDs"],
     5: ["Coordinates", "Masses", "Velocities", "ParticleIDs"],
-    6: ["Coordinates", "Masses", "GrainRadius", "GrainType", "DustTemperature", "CarbonFraction", "Velocities", "ParticleIDs"],
+    6: ["Coordinates", "Masses", "GrainRadius", "DustSource", "DustTemperature", "CarbonMassFraction", "Velocities", "ParticleIDs"],
 }
 
 # Per-resolution override for z=0 target selection.
@@ -488,6 +551,515 @@ def find_shrinking_sphere_center(
     return ctr
 
 
+
+# -----------------------------------------------------------------------------
+# Dark-matter ParticleID main-progenitor tracking
+# -----------------------------------------------------------------------------
+
+def _load_dm_snapshot(snap_path: str | Path) -> tuple[np.ndarray, np.ndarray, float]:
+    """Load all PartType1 coordinates and IDs for one snapshot.
+
+    Returns
+    -------
+    coords : (N,3) float array, ckpc/h
+    ids    : (N,) uint64 array
+    box    : float, ckpc/h
+
+    The DM particle set is the most stable identity tracer in a merger and is
+    therefore used for main-progenitor matching.  This routine is intentionally
+    separate from load_particles_within_radius() so a snapshot is read only once
+    per tracking step.
+    """
+    chunks = glob_snap_chunks(snap_path)
+    pos_l, id_l = [], []
+    box = None
+
+    for chunk in chunks:
+        with h5py.File(chunk, "r") as f:
+            if box is None:
+                box = float(f["Header"].attrs["BoxSize"])
+            if "PartType1" not in f:
+                continue
+            g = f["PartType1"]
+            if "Coordinates" not in g or "ParticleIDs" not in g:
+                continue
+            pos_l.append(np.asarray(g["Coordinates"][:], dtype=float))
+            id_l.append(np.asarray(g["ParticleIDs"][:], dtype=np.uint64))
+
+    if not pos_l:
+        return np.empty((0, 3), dtype=float), np.empty(0, dtype=np.uint64), float(box or 0.0)
+
+    return np.vstack(pos_l), np.concatenate(id_l), float(box)
+
+
+def _query_periodic_indices(
+    coords: np.ndarray,
+    center: np.ndarray,
+    radius_ckpch: float,
+    box: float,
+    tree=None,
+) -> np.ndarray:
+    """Indices of particles inside a periodic sphere.
+
+    Uses scipy's periodic cKDTree when available; falls back to a vectorized
+    periodic-distance calculation otherwise.
+    """
+    if len(coords) == 0 or radius_ckpch <= 0:
+        return np.empty(0, dtype=np.int64)
+
+    center = np.mod(np.asarray(center, dtype=float), box)
+
+    if tree is not None:
+        return np.asarray(tree.query_ball_point(center, float(radius_ckpch)), dtype=np.int64)
+
+    d = _periodic_delta(coords, center, box)
+    r2 = np.einsum("ij,ij->i", d, d)
+    return np.where(r2 <= float(radius_ckpch) ** 2)[0]
+
+
+def load_halo_dm_ids(
+    output_dir: str | Path,
+    snap_num: int,
+    halo: dict,
+    radius_factor: float = DM_TRACK_CORE_RADIUS_FACTOR,
+) -> np.ndarray:
+    """Return PartType1 ParticleIDs within radius_factor * R200c of halo."""
+    output_dir = Path(output_dir)
+    snapdir = output_dir / f"snapdir_{snap_num:03d}"
+    coords, ids, box = _load_dm_snapshot(snapdir)
+    if len(ids) == 0:
+        return np.empty(0, dtype=np.uint64)
+
+    radius = float(radius_factor) * float(halo["r200_ckpch"])
+    if radius <= 0:
+        return np.empty(0, dtype=np.uint64)
+
+    tree = cKDTree(np.mod(coords, box), boxsize=box) if cKDTree is not None else None
+    ii = _query_periodic_indices(coords, halo["center"], radius, box, tree=tree)
+    return np.unique(ids[ii])
+
+
+def dm_overlap_metrics(ids_earlier: np.ndarray, ids_later: np.ndarray) -> dict:
+    """Dark-matter continuity metrics for an earlier candidate and later halo.
+
+    later_retained_fraction
+        Fraction of the later halo's DM IDs already present in the earlier
+        candidate.  This is the most useful backward-tracking quantity.
+
+    earlier_to_later_fraction
+        Fraction of the earlier candidate's DM IDs that end up in the later
+        halo.  A high value identifies a compact genuine progenitor even when
+        the later object has acquired substantial new material.
+    """
+    a = np.unique(np.asarray(ids_earlier, dtype=np.uint64))
+    b = np.unique(np.asarray(ids_later, dtype=np.uint64))
+
+    if len(a) == 0 or len(b) == 0:
+        return {
+            "n_earlier": int(len(a)),
+            "n_later": int(len(b)),
+            "n_shared": 0,
+            "later_retained_fraction": np.nan,
+            "earlier_to_later_fraction": np.nan,
+        }
+
+    shared = np.intersect1d(a, b, assume_unique=True)
+    ns = int(len(shared))
+    return {
+        "n_earlier": int(len(a)),
+        "n_later": int(len(b)),
+        "n_shared": ns,
+        "later_retained_fraction": ns / len(b),
+        "earlier_to_later_fraction": ns / len(a),
+    }
+
+
+def _match_ids_to_positions(
+    coords: np.ndarray,
+    ids_all: np.ndarray,
+    wanted_ids: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return positions and IDs for wanted ParticleIDs present in a snapshot.
+
+    ParticleIDs are conserved for collisionless DM, so this is the cleanest
+    possible cross-snapshot identity operation.  The implementation uses sorted
+    integer lookup rather than repeated np.isin() scans over the full snapshot.
+    """
+    if len(ids_all) == 0 or len(wanted_ids) == 0:
+        return np.empty((0, 3), float), np.empty(0, np.uint64)
+
+    ids_all = np.asarray(ids_all, dtype=np.uint64)
+    wanted = np.unique(np.asarray(wanted_ids, dtype=np.uint64))
+
+    order = np.argsort(ids_all)
+    sorted_ids = ids_all[order]
+    loc = np.searchsorted(sorted_ids, wanted)
+    good = loc < len(sorted_ids)
+    good[good] &= sorted_ids[loc[good]] == wanted[good]
+
+    if not np.any(good):
+        return np.empty((0, 3), float), np.empty(0, np.uint64)
+
+    snap_idx = order[loc[good]]
+    return np.asarray(coords[snap_idx], float), wanted[good]
+
+
+def _periodic_cluster_center(
+    positions: np.ndarray,
+    box: float,
+    search_center: np.ndarray,
+    cluster_radius_ckpch: float,
+) -> tuple[Optional[np.ndarray], np.ndarray]:
+    """Find the densest local cluster in a set of conserved DM-core particles.
+
+    The later halo's core particles can be split among multiple earlier
+    structures during a merger.  Taking one global mean/median can therefore
+    land between halos.  Instead, find the particle with the largest number of
+    conserved-core neighbors within a physically motivated radius, then take
+    the periodic median of that local cluster.
+
+    Returns
+    -------
+    center : ndarray or None
+        Robust periodic cluster center.
+    member_indices : ndarray
+        Indices into ``positions`` belonging to the selected cluster.
+    """
+    if len(positions) == 0:
+        return None, np.empty(0, dtype=np.int64)
+
+    pos = np.mod(np.asarray(positions, float), box)
+    r = float(cluster_radius_ckpch)
+
+    if len(pos) == 1:
+        return pos[0].copy(), np.array([0], dtype=np.int64)
+
+    if cKDTree is not None:
+        tree = cKDTree(pos, boxsize=box)
+
+        # For modest core sets, query every point.  This directly finds the
+        # densest conserved-ID clump without assuming a FOF center.
+        neighborhoods = tree.query_ball_point(pos, r)
+        counts = np.fromiter((len(x) for x in neighborhoods), dtype=int)
+        seed = int(np.argmax(counts))
+        members = np.asarray(neighborhoods[seed], dtype=np.int64)
+    else:
+        # Vectorized fallback.  Use the particle nearest the predicted center
+        # as a first seed, then gather its local neighbors.
+        dd0 = _periodic_delta(pos, np.asarray(search_center, float), box)
+        seed = int(np.argmin(np.einsum("ij,ij->i", dd0, dd0)))
+        dd = _periodic_delta(pos, pos[seed], box)
+        members = np.where(np.einsum("ij,ij->i", dd, dd) <= r*r)[0]
+
+    if len(members) == 0:
+        return None, members
+
+    seed_pos = pos[members[0]]
+    dd = _periodic_delta(pos[members], seed_pos, box)
+    shift = np.median(dd, axis=0)
+    center = np.mod(seed_pos + shift, box)
+
+    # One recentering iteration makes the member set less dependent on the
+    # arbitrary first member chosen above.
+    if cKDTree is not None:
+        members2 = np.asarray(
+            cKDTree(pos, boxsize=box).query_ball_point(center, r),
+            dtype=np.int64,
+        )
+    else:
+        dd2 = _periodic_delta(pos, center, box)
+        members2 = np.where(np.einsum("ij,ij->i", dd2, dd2) <= r*r)[0]
+
+    if len(members2) > 0:
+        dd = _periodic_delta(pos[members2], center, box)
+        center = np.mod(center + np.median(dd, axis=0), box)
+        members = members2
+
+    return center, members
+
+
+def _nearest_fof_to_center(
+    cat: dict,
+    center: np.ndarray,
+    box: float,
+) -> tuple[int, float]:
+    """Return nearest FOF group index and periodic distance to a trusted center."""
+    d = _periodic_delta(cat["pos"], np.asarray(center, float), box)
+    dist = np.sqrt(np.einsum("ij,ij->i", d, d))
+    idx = int(np.argmin(dist))
+    return idx, float(dist[idx])
+
+
+def _select_dm_main_progenitor(
+    output_dir: str | Path,
+    earlier_snap: int,
+    later_snap: int,
+    later_halo: dict,
+    refine_center: bool = False,
+    verbose: bool = True,
+) -> Optional[dict]:
+    """Recover the earlier main progenitor from conserved DM core ParticleIDs.
+
+    This routine intentionally does *not* use FOF proximity to establish halo
+    identity.  During a bridge/merger, FOF GroupPos and GroupMass can be badly
+    misleading, while PartType1 IDs remain exact.
+
+    Algorithm
+    ---------
+    1. Extract DM IDs inside 0.5 R200 of the last TRUSTED halo.
+    2. Locate those exact IDs globally in the earlier snapshot.
+    3. Find the densest spatial cluster of the conserved IDs.
+    4. Use that cluster center for a fresh particle-based SO calculation.
+    5. Associate the nearest FOF group only for diagnostics/catalog fallback.
+    6. Reject weak matches.  A weak/zero match is NEVER allowed to become the
+       next chain anchor.
+
+    This naturally handles catalog gaps: get_halo569_series() can try 044->043,
+    reject it, then try 044->042 using the same trusted 044 core.
+    """
+    output_dir = Path(output_dir)
+    earlier_snapdir = output_dir / f"snapdir_{earlier_snap:03d}"
+    later_snapdir = output_dir / f"snapdir_{later_snap:03d}"
+    earlier_groups = output_dir / f"groups_{earlier_snap:03d}"
+
+    cat = read_fof_catalog(earlier_groups, earlier_snap)
+    if cat is None:
+        if verbose:
+            print(f"  [halo569-ID] {earlier_snap:03d}: no FOF catalog")
+        return None
+
+    hdr_earlier = read_snap_header(earlier_snapdir)
+    box = float(hdr_earlier["box"])
+
+    # --------------------------------------------------------------
+    # 1. Trusted later-halo DM core.
+    # --------------------------------------------------------------
+    lcoords, lids_all, lbox = _load_dm_snapshot(later_snapdir)
+    if len(lids_all) == 0:
+        return None
+
+    core_radius = max(
+        DM_TRACK_CORE_RADIUS_FACTOR * float(later_halo["r200_ckpch"]),
+        DM_TRACK_CLUSTER_RADIUS_MIN_CKPCH,
+    )
+
+    ltree = (
+        cKDTree(np.mod(lcoords, lbox), boxsize=lbox)
+        if cKDTree is not None else None
+    )
+    jj = _query_periodic_indices(
+        lcoords,
+        later_halo["center"],
+        core_radius,
+        lbox,
+        tree=ltree,
+    )
+    trusted_core_ids = np.unique(lids_all[jj])
+
+    if len(trusted_core_ids) < DM_TRACK_MIN_CORE_IDS:
+        if verbose:
+            print(
+                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                f"trusted halo has only {len(trusted_core_ids)} DM core IDs; "
+                "not enough for robust tracking."
+            )
+        return None
+
+    # --------------------------------------------------------------
+    # 2. Locate the exact same IDs in the earlier snapshot.
+    # --------------------------------------------------------------
+    ecoords, eids_all, ebox = _load_dm_snapshot(earlier_snapdir)
+    if len(eids_all) == 0:
+        return None
+
+    matched_pos, matched_ids = _match_ids_to_positions(
+        ecoords, eids_all, trusted_core_ids
+    )
+    global_retained = len(matched_ids) / len(trusted_core_ids)
+
+    if len(matched_ids) < DM_TRACK_MIN_CLUSTER_IDS:
+        if verbose:
+            print(
+                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                f"only {len(matched_ids)}/{len(trusted_core_ids)} trusted "
+                "core IDs exist in earlier snapshot; rejecting."
+            )
+        return None
+
+    # --------------------------------------------------------------
+    # 3. Find the densest conserved-ID cluster.
+    # --------------------------------------------------------------
+    cluster_radius = np.clip(
+        DM_TRACK_CLUSTER_RADIUS_FACTOR * float(later_halo["r200_ckpch"]),
+        DM_TRACK_CLUSTER_RADIUS_MIN_CKPCH,
+        DM_TRACK_CLUSTER_RADIUS_MAX_CKPCH,
+    )
+
+    core_center, members = _periodic_cluster_center(
+        matched_pos,
+        ebox,
+        np.asarray(later_halo["center"], float),
+        cluster_radius,
+    )
+    if core_center is None or len(members) == 0:
+        return None
+
+    n_cluster = int(len(members))
+    cluster_fraction = n_cluster / len(trusted_core_ids)
+
+    if (
+        n_cluster < DM_TRACK_MIN_CLUSTER_IDS
+        or cluster_fraction < DM_TRACK_MIN_CLUSTER_FRACTION
+    ):
+        if verbose:
+            print(
+                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                f"weak conserved-core cluster: N={n_cluster}, "
+                f"fraction={cluster_fraction:.3f}; rejecting and keeping "
+                f"snapshot {later_snap:03d} as trusted anchor."
+            )
+        return None
+
+    # --------------------------------------------------------------
+    # 4/5. FOF association is diagnostic only; SO center is the DM core.
+    # --------------------------------------------------------------
+    idx, fof_dist = _nearest_fof_to_center(cat, core_center, ebox)
+
+    # If the nearest catalog group is absurdly far from the conserved-DM core,
+    # we still attempt a pure particle SO center, but mark the association weak.
+    assoc_scale = max(
+        float(cat["r200_catalog"][idx]) if cat["r200_catalog"][idx] > 0 else 0.0,
+        cluster_radius,
+    )
+    fof_assoc_weak = fof_dist > DM_TRACK_MAX_FOF_ASSOC_DIST_FACTOR * assoc_scale
+
+    offset_cap = max(
+        20.0,
+        3.0 * float(later_halo.get("r200_ckpch", 0.0)),
+    )
+
+    halo = None
+    build_errors = []
+
+    # First and preferred center: conserved DM core.
+    # Fallback: nearest FOF position only if the direct SO calculation fails.
+    for center_label, trial_center in (
+        ("conserved-DM core", core_center),
+        ("nearest FOF fallback", np.asarray(cat["pos"][idx], float)),
+    ):
+        try:
+            halo = _build_halo_result(
+                earlier_snapdir,
+                trial_center,
+                hdr_earlier,
+                idx,
+                cat,
+                refine_center=refine_center,
+                verbose=False,
+                max_offset_ckpch=offset_cap,
+            )
+            halo["tracking_center_method"] = center_label
+            break
+        except RuntimeError as exc:
+            build_errors.append(f"{center_label}: {exc}")
+
+    if halo is None:
+        if verbose:
+            print(
+                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                "conserved DM core found, but SO construction failed."
+            )
+            for msg in build_errors:
+                print(f"               {msg}")
+            print(
+                f"               snapshot {later_snap:03d} remains the trusted anchor."
+            )
+        return None
+
+    # --------------------------------------------------------------
+    # 6. Structural sanity check.  Do not impose monotonic mass growth:
+    # mergers/pseudo-evolution make that too restrictive.  Only reject truly
+    # catastrophic solutions that are inconsistent with the conserved core.
+    # --------------------------------------------------------------
+    later_mass = float(later_halo.get("m200_msun", np.nan))
+    mass_ratio = (
+        float(halo["m200_msun"]) / later_mass
+        if np.isfinite(later_mass) and later_mass > 0 else np.nan
+    )
+
+    catastrophic_mass = (
+        np.isfinite(mass_ratio)
+        and (mass_ratio < 0.01 or mass_ratio > 3.0)
+        and cluster_fraction < 0.25
+    )
+
+    if catastrophic_mass:
+        if verbose:
+            print(
+                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                f"rejecting structurally implausible solution "
+                f"(Mearlier/Mlater={mass_ratio:.3e}, "
+                f"core cluster fraction={cluster_fraction:.3f})."
+            )
+        return None
+
+    halo.update({
+        "center_ckpch": halo["center"],
+        "center_dm_shared": np.asarray(core_center, float),
+        "center_fof_catalog": np.asarray(cat["pos"][idx], float),
+        "selection": "conserved DM-core main progenitor",
+        "tracking_method": "conserved_dm_core_ids",
+        "tracking_from_snap": int(later_snap),
+        "tracking_gap": int(later_snap - earlier_snap),
+        "dm_n_trusted_core": int(len(trusted_core_ids)),
+        "dm_n_found_global": int(len(matched_ids)),
+        "dm_global_retained_fraction": float(global_retained),
+        "dm_n_shared": int(n_cluster),
+        "dm_n_shared_for_center": int(n_cluster),
+        "dm_later_retained_fraction": float(cluster_fraction),
+        "dm_earlier_to_later_fraction": np.nan,
+        "dm_cluster_fraction": float(cluster_fraction),
+        "dm_cluster_radius_ckpch": float(cluster_radius),
+        "dm_tracking_weak": False,
+        "fof_association_distance_ckpch": float(fof_dist),
+        "fof_association_weak": bool(fof_assoc_weak),
+        "refine_center": bool(refine_center),
+    })
+
+    if verbose:
+        print(
+            f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+            f"group={idx:4d}, core={n_cluster:5d}/{len(trusted_core_ids):5d} "
+            f"({cluster_fraction:.3f}), global-ID={global_retained:.3f}, "
+            f"FOFdist={fof_dist:.1f} ckpc/h"
+        )
+        print(
+            f"               R200={halo['r200_pkpc']:.1f} pkpc, "
+            f"M200={halo['m200_msun']:.3e} Msun, "
+            f"Mearlier/Mlater={mass_ratio:.3f}"
+            if np.isfinite(mass_ratio)
+            else
+            f"               R200={halo['r200_pkpc']:.1f} pkpc, "
+            f"M200={halo['m200_msun']:.3e} Msun"
+        )
+        print(
+            f"               center={halo.get('tracking_center_method','unknown')}, "
+            f"cluster-radius={cluster_radius:.1f} ckpc/h"
+        )
+        if fof_assoc_weak:
+            print(
+                "               NOTE: nearest FOF group is far from the conserved "
+                "DM core; trust the particle-based SO center, not GroupPos."
+            )
+        if halo.get("likely_bridged", False):
+            print(
+                "               NOTE: FOF bridging flagged; identity/center came "
+                "from conserved DM core IDs."
+            )
+
+    return halo
+
+
 # -----------------------------------------------------------------------------
 # Primary API
 # -----------------------------------------------------------------------------
@@ -500,8 +1072,16 @@ def _build_halo_result(
     cat: dict,
     refine_center: bool = True,
     verbose: bool = True,
+    max_offset_ckpch: float = 300.0,
 ) -> dict:
-    """Refine center if requested, compute SO R200c/M200c, return standard halo dict."""
+    """Refine center if requested, compute SO R200c/M200c, return standard halo dict.
+
+    max_offset_ckpch is forwarded to find_shrinking_sphere_center's own
+    rejection guard. Callers that know the halo's approximate current size
+    (e.g. get_halo569 chaining from a previous validated snapshot via
+    get_halo569_series) should pass a cap scaled to that size rather than
+    relying on the old fixed default -- see module docstring.
+    """
     center0 = np.asarray(fof_center, dtype=float)
     center = center0.copy()
 
@@ -511,7 +1091,7 @@ def _build_halo_result(
             center0,
             hdr["box"],
             start_r=300.0,
-            max_offset_ckpch=300.0,
+            max_offset_ckpch=max_offset_ckpch,
             verbose=False,
         )
 
@@ -551,25 +1131,84 @@ def _build_halo_result(
     else:
         so["used_catalog_fallback"] = False
 
+    # --- Bridging check -----------------------------------------------------
+    # GroupMass was previously kept as a diagnostic-only field with nothing
+    # comparing it to anything. A real galaxy's FOF group mass shouldn't
+    # wildly exceed its own SO M200 -- some excess is normal (FOF isn't SO,
+    # and picks up some unbound/CGM/companion mass), but a large ratio is
+    # the signature of FOF bridging onto a neighboring structure. See
+    # GROUP_MASS_RATIO_WARN's docstring for the empirical basis of the cut.
+    group_mass_msun = float(cat["group_mass"][group_idx] * MSUN_PER_CODE / hdr["h"])
+    m200_msun = so["m_delta_msun"]
+    mass_ratio = group_mass_msun / m200_msun if m200_msun > 0 else np.inf
+    likely_bridged = mass_ratio > GROUP_MASS_RATIO_WARN
+
+    # Independent sanity check: compare the particle-based SO solution against
+    # the catalog's Crit200 quantities. These are not used as the primary halo
+    # definition, but strong disagreement is useful for detecting a bad center
+    # or an SO crossing that has swallowed neighboring structure.
+    catalog_r200_ckpch = float(cat["r200_catalog"][group_idx])
+    catalog_m200_code = float(cat["m200_catalog"][group_idx])
+    catalog_r200_pkpc = catalog_r200_ckpch * hdr["a"] / hdr["h"]
+    catalog_m200_msun = catalog_m200_code * MSUN_PER_CODE / hdr["h"]
+
+    so_to_catalog_r_ratio = (
+        so["r_delta_pkpc"] / catalog_r200_pkpc
+        if catalog_r200_pkpc > 0 else np.nan
+    )
+    so_to_catalog_m_ratio = (
+        m200_msun / catalog_m200_msun
+        if catalog_m200_msun > 0 else np.nan
+    )
+
+    so_catalog_mismatch = bool(
+        (np.isfinite(so_to_catalog_r_ratio) and
+         (so_to_catalog_r_ratio > 2.0 or so_to_catalog_r_ratio < 0.5))
+        or
+        (np.isfinite(so_to_catalog_m_ratio) and
+         (so_to_catalog_m_ratio > 3.0 or so_to_catalog_m_ratio < (1.0 / 3.0)))
+    )
+
+    if likely_bridged and verbose:
+        print(
+            f"  [halo_utils] WARNING: GroupMass/M200c_SO = {mass_ratio:.1f}x "
+            f"(> {GROUP_MASS_RATIO_WARN:.0f}x) -- likely FOF bridging onto a "
+            f"neighboring structure. GroupMass is unreliable as a halo-mass "
+            f"proxy; inspect the center and independent SO diagnostics."
+        )
+
+    if so_catalog_mismatch and verbose:
+        print(
+            f"  [halo_utils] WARNING: particle-SO/catalog-SO mismatch: "
+            f"R ratio={so_to_catalog_r_ratio:.2f}, M ratio={so_to_catalog_m_ratio:.2f}. "
+            f"Treat this center/SO solution as suspect."
+        )
+
     return {
         "center": center,
         "center_fof": center0,
         "r200_ckpch": so["r_delta_ckpch"],
         "r200_pkpc": so["r_delta_pkpc"],
         "m200_code": so["m_delta_code"],
-        "m200_msun": so["m_delta_msun"],
+        "m200_msun": m200_msun,
         "group_idx": int(group_idx),
         "group_mass_code": float(cat["group_mass"][group_idx]),
-        "group_mass_msun": float(cat["group_mass"][group_idx] * MSUN_PER_CODE / hdr["h"]),
+        "group_mass_msun": group_mass_msun,
         "mstar_code": float(cat["mstar"][group_idx]),
         "mstar_msun": float(cat["mstar"][group_idx] * MSUN_PER_CODE / hdr["h"]),
-        "catalog_r200_ckpch": float(cat["r200_catalog"][group_idx]),
-        "catalog_r200_pkpc": float(cat["r200_catalog"][group_idx] * hdr["a"] / hdr["h"]),
-        "catalog_m200_code": float(cat["m200_catalog"][group_idx]),
-        "catalog_m200_msun": float(cat["m200_catalog"][group_idx] * MSUN_PER_CODE / hdr["h"]),
+        "catalog_r200_ckpch": catalog_r200_ckpch,
+        "catalog_r200_pkpc": float(catalog_r200_pkpc),
+        "catalog_m200_code": catalog_m200_code,
+        "catalog_m200_msun": float(catalog_m200_msun),
+        "so_to_catalog_r_ratio": float(so_to_catalog_r_ratio),
+        "so_to_catalog_m_ratio": float(so_to_catalog_m_ratio),
+        "so_catalog_mismatch": bool(so_catalog_mismatch),
         "so_is_lower_limit": bool(so.get("is_lower_limit", False)),
         "so_n_particles": int(so.get("n_particles", 0)),
         "used_catalog_fallback": bool(so.get("used_catalog_fallback", False)),
+        "mass_ratio_group_to_so": float(mass_ratio),
+        "likely_bridged": bool(likely_bridged),
+        "max_offset_ckpch_used": float(max_offset_ckpch),
         "h": hdr["h"],
         "a": hdr["a"],
     }
@@ -590,6 +1229,16 @@ def get_halo569_reference(
         sphere. If False, freeze the center definition to the catalog/FOF
         center. This is useful for comparing several runs with an identical
         centering convention.
+
+    Note
+    ----
+    This is the anchor every other snapshot gets matched against, so if IT
+    is bridged, everything downstream inherits the problem silently -- there
+    is no earlier "previous validated halo" to scale the offset cap against
+    here, so this call uses the conservative FALLBACK_MAX_OFFSET_CKPCH. If
+    the returned dict has likely_bridged=True, treat the reference itself as
+    untrustworthy: try a different snap_num_z0 (e.g. one snapshot earlier)
+    rather than proceeding.
     """
     output_dir = Path(output_dir)
     if snap_num_z0 is None:
@@ -618,6 +1267,7 @@ def get_halo569_reference(
         cat,
         refine_center=refine_center,
         verbose=verbose,
+        max_offset_ckpch=FALLBACK_MAX_OFFSET_CKPCH,
     )
     halo.update({
         "center_ckpch": halo["center"],      # backward-compatible alias
@@ -636,12 +1286,25 @@ def get_halo569_reference(
         print(f"  {center_label:16s}: {halo['center']}  offset={off:.1f} ckpc/h")
         print(f"  R200c SO         : {halo['r200_ckpch']:.1f} ckpc/h  ({halo['r200_pkpc']:.1f} pkpc)")
         print(f"  M200c SO         : {halo['m200_msun']:.3e} Msun")
-        print(f"  GroupMass diag   : {halo['group_mass_msun']:.3e} Msun")
+        print(f"  GroupMass diag   : {halo['group_mass_msun']:.3e} Msun  (ratio to M200c_SO: {halo['mass_ratio_group_to_so']:.1f}x)")
         print(f"  Catalog R/M diag : {halo['catalog_r200_pkpc']:.1f} pkpc, {halo['catalog_m200_msun']:.3e} Msun")
+        print(f"  SO/catalog ratio : R={halo['so_to_catalog_r_ratio']:.3f}, M={halo['so_to_catalog_m_ratio']:.3f}")
         if halo["so_is_lower_limit"]:
             print("  WARNING: SO radius is a lower limit; increase DEFAULT_SO_RMAX_CKPCH")
         if halo.get("used_catalog_fallback", False):
             print("  WARNING: used catalog Group_R_Crit200/Group_M_Crit200 fallback")
+        if halo["likely_bridged"]:
+            print(
+                "  WARNING: reference FOF GroupMass is likely bridged. This does "
+                "not automatically invalidate the FOF position or particle-based "
+                "SO result; check SO/catalog agreement below."
+            )
+        if halo.get("so_catalog_mismatch", False):
+            print(
+                "  WARNING: reference particle-SO and catalog-SO disagree strongly. "
+                "This is a genuinely suspect anchor; consider another snap_num_z0 "
+                "or disable center refinement."
+            )
 
     return halo
 
@@ -653,11 +1316,25 @@ def get_halo569(
     search_radius_ckpch: float = HALO569_SEARCH_RADIUS_CKPCH,
     verbose: bool = True,
     refine_center: bool = True,
+    prev_halo: Optional[dict] = None,
 ) -> Optional[dict]:
-    """Find Halo 569 near the reference position and compute particle SO R200c.
+    """LEGACY position-based matcher; compute particle SO R200c around its selected group.
 
-    Set refine_center=False to freeze the center definition to the catalog/FOF
-    center for this snapshot.
+    Parameters
+    ----------
+    refine_center : bool, default True
+        Set False to freeze the center definition to the catalog/FOF center
+        for this snapshot.
+    prev_halo : dict, optional
+        The last accepted halo dict in the tracking chain. Its center is used
+        as the positional reference for choosing the nearest FOF group, and its
+        R200 is used to scale the shrinking-sphere offset cap
+        (max(20, 3*r200)). This is what makes the tracking genuinely chained
+        rather than repeatedly matching every snapshot to the z=0 coordinate. If omitted, the
+        conservative FALLBACK_MAX_OFFSET_CKPCH is used instead. Prefer
+        get_halo569_series() over calling this directly in a loop, since it
+        handles robust main-progenitor tracking for you. New code should
+        prefer get_halo569_series() or get_halo569_at_snapshot().
     """
     groups_dir = Path(groups_dir)
     output_dir = groups_dir.parent
@@ -668,7 +1345,15 @@ def get_halo569(
     hdr = read_snap_header(snapdir)
     hdr["box"] = ref.get("box_ckpch", hdr["box"])
 
-    ref_pos = np.asarray(ref["center_ckpch"] if "center_ckpch" in ref else ref["center"], dtype=float)
+    # True chained positional matching:
+    # if a previously validated halo exists, use ITS center as the positional
+    # reference. Only fall back to the original z=0 reference when no prior
+    # accepted halo is available.
+    match_ref = prev_halo if prev_halo is not None else ref
+    ref_pos = np.asarray(
+        match_ref["center_ckpch"] if "center_ckpch" in match_ref else match_ref["center"],
+        dtype=float,
+    )
     dx = _periodic_delta(cat["pos"], ref_pos, hdr["box"])
     dist = np.sqrt((dx * dx).sum(axis=1))
     within = dist <= search_radius_ckpch
@@ -684,6 +1369,11 @@ def get_halo569(
     else:
         idx, sel_by = _select_primary_halo_idx(cat)
 
+    if prev_halo is not None and prev_halo.get("r200_ckpch", 0) > 0:
+        offset_cap = max(20.0, 3.0 * prev_halo["r200_ckpch"])
+    else:
+        offset_cap = FALLBACK_MAX_OFFSET_CKPCH
+
     halo = _build_halo_result(
         snapdir,
         cat["pos"][idx],
@@ -692,6 +1382,7 @@ def get_halo569(
         cat,
         refine_center=refine_center,
         verbose=False,
+        max_offset_ckpch=offset_cap,
     )
     halo.update({
         "dist_ckpch": float(dist[idx]),
@@ -703,11 +1394,148 @@ def get_halo569(
 
     if verbose:
         center_mode = "refined" if refine_center else "FOF/frozen"
-        print(f"  [halo569] snap {snap_num:03d}: group {idx}, {sel_by}, dist={dist[idx]:.0f} ckpc/h, center={center_mode}")
+        ref_kind = "previous halo" if prev_halo is not None else "z=0 reference"
+        print(f"  [halo569] snap {snap_num:03d}: group {idx}, {sel_by} to {ref_kind}, "
+              f"dist={dist[idx]:.0f} ckpc/h, center={center_mode}")
         print(f"  [halo569] R200c={halo['r200_pkpc']:.1f} pkpc, M200c={halo['m200_msun']:.3e} Msun")
-        print(f"  [halo569] diagnostics: GroupMass={halo['group_mass_msun']:.3e} Msun, catalog R200c={halo['catalog_r200_pkpc']:.1f} pkpc")
+        print(f"  [halo569] diagnostics: GroupMass={halo['group_mass_msun']:.3e} Msun "
+              f"(ratio {halo['mass_ratio_group_to_so']:.1f}x), "
+              f"catalog R200c={halo['catalog_r200_pkpc']:.1f} pkpc, "
+              f"SO/catalog R={halo['so_to_catalog_r_ratio']:.2f}, "
+              f"M={halo['so_to_catalog_m_ratio']:.2f}")
+        if halo["likely_bridged"]:
+            print(f"  [halo569] WARNING: snap {snap_num:03d} likely FOF-bridged; do not trust this center/R200/M200")
 
     return halo
+
+
+def get_halo569_series(
+    output_dir: str | Path,
+    snap_nums: Sequence[int],
+    ref: Optional[dict] = None,
+    verbose: bool = True,
+    refine_center: bool = False,
+) -> Dict[int, Optional[dict]]:
+    """Track Halo 569 backward using a STRICT trusted DM-core anchor.
+
+    The final/reference halo is the initial trusted anchor.  Each earlier
+    snapshot is tested against the conserved PartType1 core IDs of the most
+    recent trusted halo.
+
+    Crucially, failed or weak snapshots DO NOT advance the chain.  If 044->043
+    fails, the next attempt is 044->042, then 044->041, etc.  This turns bad
+    catalogs/merger phases into gaps rather than branch switches.
+
+    The tracker walks every complete intervening snapshot even for sparse user
+    requests, but returns only the requested epochs.
+    """
+    output_dir = Path(output_dir)
+    requested = sorted(set(int(s) for s in snap_nums))
+    if not requested:
+        return {}
+
+    if ref is None:
+        ref = get_halo569_reference(
+            output_dir,
+            snap_num_z0=None,
+            verbose=verbose,
+            refine_center=refine_center,
+        )
+
+    ref_snap = int(ref["snap_num_z0"])
+    if max(requested) > ref_snap:
+        raise ValueError(
+            f"Requested snapshot {max(requested)} is later than reference "
+            f"snapshot {ref_snap}."
+        )
+
+    available = [s for s, _, _ in find_snapshots(output_dir)]
+    available_set = set(available)
+    min_requested = min(requested)
+
+    chain = sorted(
+        [s for s in available if min_requested <= s <= ref_snap],
+        reverse=True,
+    )
+    if ref_snap not in chain:
+        chain.insert(0, ref_snap)
+
+    tracked_all: Dict[int, Optional[dict]] = {ref_snap: ref}
+
+    trusted_snap = ref_snap
+    trusted_halo = ref
+
+    if verbose:
+        print(
+            f"[halo569-ID] STRICT conserved-DM-core tracking: "
+            f"{ref_snap:03d} -> {min_requested:03d}"
+        )
+        print(
+            f"[halo569-ID] Walking {len(chain)} complete snapshots; "
+            "failed matches become gaps and NEVER replace the trusted anchor."
+        )
+
+    for earlier_snap in chain:
+        if earlier_snap == ref_snap:
+            continue
+
+        halo = _select_dm_main_progenitor(
+            output_dir,
+            earlier_snap=earlier_snap,
+            later_snap=trusted_snap,
+            later_halo=trusted_halo,
+            refine_center=refine_center,
+            verbose=verbose,
+        )
+
+        if halo is None:
+            tracked_all[earlier_snap] = None
+            if verbose:
+                print(
+                    f"  [halo569-ID] snap {earlier_snap:03d}: rejected/gap; "
+                    f"trusted anchor remains {trusted_snap:03d}"
+                )
+            continue
+
+        # Only accepted strong matches become the next trusted anchor.
+        tracked_all[earlier_snap] = halo
+        trusted_snap = earlier_snap
+        trusted_halo = halo
+
+    missing = [s for s in requested if s not in available_set and s != ref_snap]
+    if missing and verbose:
+        print(
+            f"[halo569-ID] WARNING: requested snapshots without complete "
+            f"snapshot/catalog pairs: {missing}"
+        )
+
+    return {s: tracked_all.get(s) for s in requested}
+
+
+def get_halo569_at_snapshot(
+    output_dir: str | Path,
+    snap_num: int,
+    ref: Optional[dict] = None,
+    verbose: bool = True,
+    refine_center: bool = False,
+) -> Optional[dict]:
+    """Safely return Halo 569 at one historical snapshot.
+
+    Unlike calling get_halo569_reference(..., snap_num_z0=snap_num), this does
+    NOT re-select the most stellar-massive object at that epoch. It anchors at
+    the true final Halo 569 and walks the DM-ID main-progenitor chain through
+    every intervening snapshot.
+
+    Use this helper in single-snapshot analysis scripts.
+    """
+    result = get_halo569_series(
+        output_dir,
+        [int(snap_num)],
+        ref=ref,
+        verbose=verbose,
+        refine_center=refine_center,
+    )
+    return result.get(int(snap_num))
 
 
 # -----------------------------------------------------------------------------

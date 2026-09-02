@@ -1,0 +1,29 @@
+CosmicGrain validation record
+==============================
+
+Run: Halo 295 / 512-equivalent zoom
+Evolution: z=98.104586 -> z=0
+
+Initial baryonic mass: 2.611556729e12 Msun
+Final baryonic mass:   2.611556749e12 Msun
+Fractional baryonic mass drift: 7.747311e-09
+
+Fractional DM mass drift: 7.375289e-16
+
+z=0 dust mass: 2.787970737e7 Msun
+Dust carbon mass: 7.988876730e6 Msun
+Dust silicate mass: 1.989083064e7 Msun
+(C + silicate) / dust: 1.000000000000
+
+Nonfinite masses: 0
+Negative masses: 0
+Invalid dust carbon fractions: 0
+
+Particle-count closure:
+initial gas = 137808
+final gas + stars = 136764 + 1044 = 137808
+
+RESULT: PASS
+
+This is an end-to-end code-validation benchmark, not a claim of
+physical convergence at 512-equivalent zoom resolution.

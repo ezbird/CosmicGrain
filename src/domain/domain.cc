@@ -89,20 +89,32 @@ void domain<partset>::domain_decomposition(domain_options mode)
   Mem.myfree(domain_leaf_cost);
 
   /* move stars out of gas block if present */
+  #ifdef DUST
   dust_integrity_check(Tp, "before rearrange", Communicator);
+  #endif
+
+#ifdef DUST
+  dust_integrity_check(Tp, "after rearrange", Communicator);
+#endif
 
   domain_rearrange_particle_sequence();
 
+  #ifdef DUST
   dust_integrity_check(Tp, "after rearrange", Communicator);
+  #endif
 
   /* finally, carry out the actual particle exchange */
   if(Mode == STANDARD)
   {
+      #ifdef DUST
       dust_integrity_check(Tp, "before exchange", Communicator);
+      #endif
 
       domain_exchange();
 
+      #ifdef DUST
       dust_integrity_check(Tp, "after exchange before peano", Communicator);
+      #endif
   }
   else if(Mode == COLL_SUBFIND)
     domain_coll_subfind_prepare_exchange();
@@ -118,7 +130,10 @@ void domain<partset>::domain_decomposition(domain_options mode)
 
       peano_hilbert_order(domain_key);
 
+      #ifdef DUST
       dust_integrity_check(Tp, "after peano", Communicator);
+      #endif
+
       TIMER_STOPSTART(CPU_PEANO, CPU_DOMAIN);
     }
 

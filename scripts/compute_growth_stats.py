@@ -12,15 +12,15 @@ CRITICAL CAVEAT -- READ BEFORE TRUSTING ANY "TOTAL MASS" NUMBER
 ============================================================================
 Unlike the astration dust_log_taskN.txt files (which record EVERY
 astration event completely), the [HK11_GROWTH] stdout lines are printed
-only once every 10,000 attempted growth events (confirmed directly from
-the sample: event numbers increment by exactly 10000 between consecutive
-printed events, e.g. #33010000, #33020000, ...). This script can compute
-accurate PER-EVENT statistics (mean fractional growth, mean tau_acc,
-species ratios) from the sampled events, since those are simple averages
-and a representative 1-in-10000 sample gives a reasonable estimate of
-them, PROVIDED growth conditions are not systematically different at the
-specific events that happen to land on a multiple of 10000 (unlikely,
-but not something this script can verify).
+only once every 10,000 attempted growth events (event numbers increment
+by exactly 10000 between consecutive printed events, e.g. #33890000,
+#33900000, ...). This script can compute accurate PER-EVENT statistics
+(mean fractional growth, mean tau_acc, species ratios) from the sampled
+events, since those are simple averages and a representative 1-in-10000
+sample gives a reasonable estimate of them, PROVIDED growth conditions
+are not systematically different at the specific events that happen to
+land on a multiple of 10000 (unlikely, but not something this script can
+verify).
 
 This script CANNOT compute a true total accreted mass the way
 compute_astration_mass.py computed a true total astrated mass, because
@@ -39,25 +39,27 @@ script's extrapolated total is a rough estimate only, suitable for an
 order-of-magnitude sanity check, not for a precise quoted number.
 ============================================================================
 
-INPUT FORMAT
-------------
-Three-line stdout blocks of the form:
-  [DUST|T=<task>|a=<a> z=<z>] [HK11_GROWTH] Event #<n>: species=<sp> CF=<cf> f_mol=<f> n_H=<nh> -> n_eff=<neff> cm^-3 (C=<c>)
-  [DUST|T=<task>|a=<a> z=<z>] [HK11_GROWTH] tau_acc=<tau> yr | n_eff=<neff2> cm^-3 T_eff=<teff> K Z=<z_gas>
-  [DUST|T=<task>|a=<a> z=<z>] [HK11_GROWTH] a=<a_old>-><a_new> nm | dm=<dm> (M: <m_old>-><m_new>) | Z=<z_old>-><z_new>
+INPUT FORMAT (fixed -- see below)
+----------------------------------
+FIX: this script previously expected an obsolete THREE-line block format
+("Event #<n>: species=<sp> CF=<cf> ... -> n_eff=...", then a separate
+"tau_acc=..." line, then a separate "a=...->..." line) that does not
+match the current source. The current [HK11_GROWTH] print statement in
+dust.cc emits ONE consolidated line per (sampled) event:
 
-The three lines for one event are tied together by appearing consecutively
-with the same [DUST|T=...|a=... z=...] prefix; this script groups them by
-that assumption (i.e. expects them in order, one event's 3 lines never
-interleaved with another event's lines -- true for single-threaded stdout
-output, may break if multiple MPI ranks write to a SHARED stdout stream
-with interleaved buffering; check your log structure if results look
-inconsistent).
+  [DUST|T=<task>|a=<a> z=<z>] [HK11_GROWTH] event=<n> species=<sp>
+      carbon_fraction=<cf> f_mol=<f> n_H_cm3=<nh> n_eff_cm3=<neff>
+      clumping_factor=<c> tau_acc_yr=<tau> T_eff_K=<teff>
+      Z_gas_before=<zb> Z_gas_after=<za> a_nm_old=<aold> a_nm_new=<anew>
+      dm_code=<dm> M_dust_before=<mold> M_dust_after=<mnew>
+
+This regex has already been verified against real S5 log lines.
 
 USAGE
 -----
   python compute_growth_stats.py --logfile path/to/output_S5_1024.log
   python compute_growth_stats.py --logfile path/to/output_S5_1024.log --a-min 0.5 --a-max 0.6
+  python compute_growth_stats.py --logfile path/to/output_S5_1024.log --print-unmatched-sample
 """
 
 import argparse
@@ -67,91 +69,64 @@ from collections import defaultdict
 
 import numpy as np
 
-EVENT_LINE_RE = re.compile(
-    r'\[HK11_GROWTH\]\s+Event\s+#(\d+):\s+species=(\w+)\s+CF=([\d.]+)\s+'
-    r'f_mol=([\d.]+)\s+n_H=([\d.eE+-]+)\s*(?:→|->)\s*n_eff=([\d.eE+-]+)'
-)
-TAU_LINE_RE = re.compile(
-    r'\[HK11_GROWTH\]\s+tau_acc=([\d.eE+-]+)\s+yr\s*\|\s*n_eff=([\d.eE+-]+)\s*'
-    r'cm\^-3\s+T_eff=([\d.eE+-]+)\s+K\s+Z=([\d.eE+-]+)'
-)
-MASS_LINE_RE = re.compile(
-    r'\[HK11_GROWTH\]\s+a=([\d.eE+-]+)\s*(?:→|->)\s*([\d.eE+-]+)\s+nm\s*\|\s*'
-    r'dm=([\d.eE+-]+)\s*\(M:\s*([\d.eE+-]+)\s*(?:→|->)\s*([\d.eE+-]+)\)'
+GROWTH_LINE_RE = re.compile(
+    r"\[HK11_GROWTH\] event=(\d+) species=(\w+) carbon_fraction=([\d.]+) f_mol=([\d.]+) "
+    r"n_H_cm3=([\deE+\-.]+) n_eff_cm3=([\deE+\-.]+) clumping_factor=([\d.]+) "
+    r"tau_acc_yr=([\deE+\-.]+) T_eff_K=([\d.]+) Z_gas_before=([\deE+\-.]+) Z_gas_after=([\deE+\-.]+) "
+    r"a_nm_old=([\deE+\-.]+) a_nm_new=([\deE+\-.]+) dm_code=([\deE+\-.]+) "
+    r"M_dust_before=([\deE+\-.]+) M_dust_after=([\deE+\-.]+)"
 )
 PREFIX_RE = re.compile(r'\[DUST\|T=(\d+)\|a=([\d.eE+-]+)\s+z=([\d.eE+-]+)\]')
 
 
-def parse_growth_log(logfile, a_min=None, a_max=None):
+def parse_growth_log(logfile, a_min=None, a_max=None, print_unmatched_sample=False):
     """
-    Parse a stdout log file for [HK11_GROWTH] three-line event blocks.
-    Returns a dict of per-event records: list of dicts with keys
-    species, cf, f_mol, n_H, n_eff, tau_acc, T_eff, Z_gas, a_old, a_new,
-    dm, m_old, m_new, a_scale, z.
-
-    Lines are matched independently (not strictly assuming adjacency),
-    then re-paired by event number proximity -- since the event number
-    only appears on the FIRST of the three lines, this script instead
-    pairs sequentially: each "Event #" line starts a new record, and the
-    next "tau_acc=" line and next "dm=" line encountered are assumed to
-    belong to it. This matches the sample format exactly (3 lines always
-    appear together, in order) but will silently mispair records if any
-    of the three lines for an event is ever missing (e.g. truncated by
-    a concurrent write) -- the n_records_incomplete counter below tracks
-    how often a started record never got all 3 lines.
+    Parse a stdout log file for single-line [HK11_GROWTH] events.
+    Returns (records, n_unmatched_hk11_lines).
     """
     records = []
-    n_incomplete = 0
-    pending = None
+    n_unmatched = 0
+    unmatched_samples = []
 
     with open(logfile, errors='replace') as f:
         for line in f:
-            m_evt = EVENT_LINE_RE.search(line)
-            if m_evt:
-                if pending is not None:
-                    n_incomplete += 1
-                m_prefix = PREFIX_RE.search(line)
-                a_scale = float(m_prefix.group(2)) if m_prefix else None
-                z_val = float(m_prefix.group(3)) if m_prefix else None
-                pending = dict(
-                    event_num=int(m_evt.group(1)),
-                    species=m_evt.group(2),
-                    cf=float(m_evt.group(3)),
-                    f_mol=float(m_evt.group(4)),
-                    n_H=float(m_evt.group(5)),
-                    n_eff_1=float(m_evt.group(6)),
-                    a_scale=a_scale,
-                    z=z_val,
-                )
+            if "[HK11_GROWTH]" not in line:
                 continue
 
-            m_tau = TAU_LINE_RE.search(line)
-            if m_tau and pending is not None and 'tau_acc' not in pending:
-                pending['tau_acc'] = float(m_tau.group(1))
-                pending['n_eff_2'] = float(m_tau.group(2))
-                pending['T_eff'] = float(m_tau.group(3))
-                pending['Z_gas'] = float(m_tau.group(4))
+            m = GROWTH_LINE_RE.search(line)
+            if not m:
+                n_unmatched += 1
+                if print_unmatched_sample and len(unmatched_samples) < 5:
+                    unmatched_samples.append(line.rstrip("\n"))
                 continue
 
-            m_mass = MASS_LINE_RE.search(line)
-            if m_mass and pending is not None and 'dm' not in pending:
-                pending['a_old'] = float(m_mass.group(1))
-                pending['a_new'] = float(m_mass.group(2))
-                pending['dm'] = float(m_mass.group(3))
-                pending['m_old'] = float(m_mass.group(4))
-                pending['m_new'] = float(m_mass.group(5))
+            m_prefix = PREFIX_RE.search(line)
+            a_scale = float(m_prefix.group(2)) if m_prefix else None
 
-                # Record is complete -- apply a-range filter and commit.
-                if (a_min is None or pending['a_scale'] >= a_min) and \
-                   (a_max is None or pending['a_scale'] < a_max):
-                    records.append(pending)
-                pending = None
-                continue
+            (event_num, species, cf, f_mol, n_H, n_eff, clump,
+             tau_acc, T_eff, Z_before, Z_after, a_old, a_new, dm,
+             m_old, m_new) = m.groups()
 
-    if pending is not None:
-        n_incomplete += 1
+            rec = dict(
+                event_num=int(event_num), species=species, cf=float(cf),
+                f_mol=float(f_mol), n_H=float(n_H), n_eff_2=float(n_eff),
+                clumping_factor=float(clump), tau_acc=float(tau_acc),
+                T_eff=float(T_eff), Z_gas=float(Z_after),
+                a_old=float(a_old), a_new=float(a_new), dm=float(dm),
+                m_old=float(m_old), m_new=float(m_new), a_scale=a_scale,
+            )
 
-    return records, n_incomplete
+            if (a_min is None or (a_scale is not None and a_scale >= a_min)) and \
+               (a_max is None or (a_scale is not None and a_scale < a_max)):
+                records.append(rec)
+
+    if print_unmatched_sample and unmatched_samples:
+        print(f"\n--- Sample of {len(unmatched_samples)} unmatched [HK11_GROWTH] line(s) ---")
+        for s in unmatched_samples:
+            print(f"  {s}")
+        print()
+
+    return records, n_unmatched
 
 
 def summarize(records, sample_interval=10000):
@@ -235,19 +210,24 @@ def main():
                           "confirmed from the event-number increments in "
                           "the sample log -- verify this matches your run "
                           "if event numbers increment differently).")
+    ap.add_argument("--print-unmatched-sample", action="store_true",
+                     help="Print up to 5 raw [HK11_GROWTH] lines that were "
+                          "found but failed to match the expected format, "
+                          "for debugging a future format drift.")
     args = ap.parse_args()
 
     try:
-        records, n_incomplete = parse_growth_log(
-            args.logfile, a_min=args.a_min, a_max=args.a_max)
+        records, n_unmatched = parse_growth_log(
+            args.logfile, a_min=args.a_min, a_max=args.a_max,
+            print_unmatched_sample=args.print_unmatched_sample)
     except FileNotFoundError:
         print(f"ERROR: could not find {args.logfile}", file=sys.stderr)
         sys.exit(1)
 
-    if n_incomplete > 0:
-        print(f"WARNING: {n_incomplete} event(s) started but never got all "
-              f"3 lines (possibly truncated by log rotation/interleaving) "
-              f"-- these were dropped, not counted.")
+    if n_unmatched > 0:
+        print(f"WARNING: {n_unmatched} [HK11_GROWTH] line(s) found but did not "
+              f"match the expected format -- these were skipped, not counted. "
+              f"Re-run with --print-unmatched-sample to see examples.")
 
     if not records:
         print("No complete [HK11_GROWTH] event records found. Check the "

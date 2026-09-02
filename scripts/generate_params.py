@@ -2,19 +2,26 @@
 """
 generate_params.py
 -------------------
-Generate one Gadget4 param file per simulation label by merging a shared
-base param file with per-run dust physics switch overrides.
+Generate Gadget4 parameter files by merging a shared base parameter file
+with resolution-dependent overrides and per-run overrides.
+
+This supports:
+  - the S0-S10 dust-physics ladder,
+  - resolution-convergence runs, and
+  - the 12-halo CosmicGrain science suite at 512/1024/2048/4096 resolution.
 
 Workflow:
   1. Edit param_base.txt for any shared change (yields, timescales, etc.)
   2. Edit RES_OVERRIDES below for anything that scales with resolution
-  3. Edit the GRID dict below to adjust dust switches or add new runs
-  4. Run:  python generate_params.py
-  5. All params/param_S*_*.txt files are regenerated automatically
+  3. Edit GRID below to adjust the physics ladder / convergence runs
+  4. Edit HALO_IDS below to adjust the multi-halo science suite
+  5. Run:  python generate_params.py
+  6. All generated param files are regenerated automatically
 
 Usage:
     python generate_params.py               # generate all
-    python generate_params.py S3_512        # regenerate one label only
+    python generate_params.py S3_512        # regenerate one physics-ladder label
+    python generate_params.py halo295_512   # regenerate one halo/resolution file
     python generate_params.py --dry-run     # print diffs, write nothing
 
 Resolution-dependent dust parameters — design notes
@@ -83,6 +90,10 @@ ALL_SWITCHES = [
 # Softening scaling rule: ε ∝ N^{-1/3}, i.e. halve every time linear
 # resolution doubles.  512→1024: ×0.5.  512→2048: ×0.25.  512→4096: ×0.125.
 #
+# MUSIC2 PartType2 may contain several coarse mass levels.  For the multi-halo
+# zoom suite compile Config_zoom.sh with INDIVIDUAL_GRAVITY_SOFTENING=4 so
+# PartType2 selects from the available collisionless softening classes by mass.
+#
 # CritPhysDensity: Jeans threshold must be resolved by ≥1 particle,
 # so ρ_crit scales roughly as m_gas^{-1}.
 #
@@ -92,10 +103,9 @@ ALL_SWITCHES = [
 #
 # DustShockAmbientDensity: see module docstring above.
 #   Calibration target: shock_events / live_dust_particles < 0.5 per window.
-#   At 1024³ the 512³ value of 0.01 cm^-3 was marginally OK; at 2048³ it
-#   caused ~2× shocks per grain per window by z~5. Values below were chosen
-#   to reproduce ~500k–1M shock events/window at peak SF (z~4–6), matching
-#   the 1024³ destruction rate scaled by particle count.
+#   The adopted values are empirical resolution-dependent calibrations.
+#   Re-check shock_events/live_dust_particles when promoting a run to a new
+#   resolution; do not infer the active value from old comments or prior runs.
 #
 # DustShatteringCalibration:
 #   1024³: nudged +20% (1.2) to compensate for absent coagulation.
@@ -104,10 +114,9 @@ ALL_SWITCHES = [
 #   4096³: coagulation yet more active; reduce further to 0.5.
 #
 # DustCollisionDensityThresh:
-#   The ratio to CritPhysDensity is remarkably stable at ~150× across
-#   512³/1024³/2048³ (15/0.1, 100/0.7, 150/1.0). Maintaining that ratio
-#   at 4096³ gives ~750 cm^-3; a conservative starting value of 500 is used
-#   pending density-histogram calibration.
+#   This threshold is empirically resolution dependent and is intentionally
+#   not forced to one fixed multiple of CritPhysDensity.  Revisit it using the
+#   live-dust density distribution and coagulation/shattering event rates.
 RES_OVERRIDES = {
     # ── 512³ ──────────────────────────────────────────────────────────────────
     # m_gas ~ 1e7 Msun  |  softenings are the baseline
@@ -115,23 +124,24 @@ RES_OVERRIDES = {
         "InitCondFile":               "ICs/IC_zoom_512_halo569_50Mpc_music_ellipsoid_with_dust",
 
         # Star formation
-        "CritPhysDensity":            "0.1",    # cm^-3; SH03/Illustris standard
+        "CritPhysDensity":            "0.3",    # cm^-3; SH03/Illustris standard
 
         # Dust collision / shock thresholds
-        # DustCollisionDensityThresh ~ 30 × CritPhysDensity (coagulation floor)
+        # DustCollisionDensityThresh = 15 cm^-3 (coagulation floor)
         # DustShockAmbientDensity: diffuse ISM appropriate for 512³ resolution;
         #   at this resolution we rarely resolve dense clumps, so n_amb is low.
         "DustCollisionDensityThresh": "15.0",
         "DustShockAmbientDensity":    "0.1",    # cm^-3; R_ST ~75 pc
 
         # Calibration
-        "DustGrowthCalibration":      "0.3",
+        "DustGrowthCalibration":      "0.25",
         "DustShatteringCalibration":  "1.0",    # baseline; coag does not fire at 512³
         "DustCoagulationCalibration": "1.0",
 
         # Dust sampling
         "DustParticlesPerSNII":       "4",
         "DustParticlesPerAGB":        "6",
+        "DustParticlesPerLRN":        "1",
 
         # Gravitational softenings (comoving kpc) — baseline
         "SofteningComovingClass0":    "6.0",    # Gas (adaptive backup floor)
@@ -153,12 +163,22 @@ RES_OVERRIDES = {
     },
 
     # ── 1024³ ─────────────────────────────────────────────────────────────────
-    # m_gas ~ 1.2e6 Msun  |  softenings × 0.5 vs 512³
+    # New MUSIC2 halo-suite high-resolution masses:
+    #   m_gas = 1.59470e6 Msun/h
+    #   m_DM  = 8.60802e6 Msun/h
+    #
+    # In the new MUSIC2 zoom ICs, PartType2 can contain more than one coarse
+    # particle mass.  The zoom executable should therefore be compiled with
+    # INDIVIDUAL_GRAVITY_SOFTENING=4 (PartType2 only).  Classes 2/3/5 below
+    # provide a discrete ladder of softenings for those mass levels rather than
+    # representing one fixed Type2 mass.
+    #
+    # HR gas/stars/dust/DM softenings retain the established 1024 values.
     "1024": {
         "InitCondFile":               "ICs/IC_zoom_1024_halo569_50Mpc_music_ellipsoid_with_dust",
 
         # Star formation
-        "CritPhysDensity": "0.7",
+        "CritPhysDensity": "0.3",
 
         # Dust collision / shock thresholds
         # n_amb raised to ~4× the 512³ value: 1024³ resolves moderately dense
@@ -168,21 +188,22 @@ RES_OVERRIDES = {
         "DustShockAmbientDensity":    "0.5",    # cm^-3; R_ST ~ 60 pc
 
         # Calibration
-        "DustGrowthCalibration":      "0.4",
+        "DustGrowthCalibration":      "0.3",
         "DustShatteringCalibration":  "1.2",    # +20% nudge: coag does not fire at 1024³
         "DustCoagulationCalibration": "7.0",
 
         # Dust sampling
         "DustParticlesPerSNII":       "8",
         "DustParticlesPerAGB":        "12",
+        "DustParticlesPerLRN":        "1",
 
         # Softenings halved
         "SofteningComovingClass0":    "3.0",
         "SofteningMaxPhysClass0":     "1.5",
         "SofteningComovingClass1":    "6.0",
         "SofteningMaxPhysClass1":     "3.0",
-        "SofteningComovingClass2":    "8.0",
-        "SofteningMaxPhysClass2":     "4.0",
+        "SofteningComovingClass2":    "12.0",   # level-9 coarse/background DM
+        "SofteningMaxPhysClass2":     "6.0",
         "SofteningComovingClass3":    "16.0",
         "SofteningMaxPhysClass3":     "8.0",
         "SofteningComovingClass4":    "3.0",
@@ -200,14 +221,10 @@ RES_OVERRIDES = {
     #
     # CRITICAL CALIBRATION NOTES FOR 2048³:
     #
-    # DustShockAmbientDensity = 20.0 cm^-3
-    #   At 2048³ we fully resolve dense star-forming clumps (n ~ 10–100 cm^-3).
-    #   SNe predominantly explode in high-density environments at this resolution.
-    #   R_ST at n=20: ~36 pc vs ~85 pc at n=0.5 (512³), a factor ~2.4 in radius,
-    #   ~14× in volume. This is the primary lever for controlling destruction rate.
-    #   Target: < 0.5 shock events per live dust particle per sync window.
-    #   Previous value of 0.1 cm^-3 produced ~1.8 shocks/particle/window by z=4.5,
-    #   with shock events growing as 4.4M/window at z=4.5 vs 2.4M live particles.
+    # DustShockAmbientDensity = 2.0 cm^-3
+    #   Active 2048³ calibration. This is a numerical/environment calibration,
+    #   not a direct claim that every SN explodes at n=2 cm^-3. Re-check
+    #   shock_events/live_dust_particles before promoting a new run to production.
     #
     # DustShatteringCalibration = 0.7
     #   Coagulation fires for the first time at 2048³ (n_eff > 30 cm^-3 threshold).
@@ -215,9 +232,9 @@ RES_OVERRIDES = {
     #   provides grain growth competition. Reducing below 1.0 prevents the
     #   coagulation/shattering balance from being shattering-dominated.
     #
-    # DustGrowthCalibration = 0.20
+    # DustGrowthCalibration
     #   More resolved dense cells → more growth attempts pass the density check.
-    #   Kept at 0.20 (same as before); revisit if D/G at z=0 is too high.
+    #   Revisit if D/G at z=0 is too high.
     "2048": {
         "InitCondFile":               "ICs/IC_zoom_2048_halo569_50Mpc_music_ellipsoid_with_dust",
 
@@ -229,13 +246,14 @@ RES_OVERRIDES = {
         "DustShockAmbientDensity":    "2",     # cm^-3; R_ST ~47 pc
 
         # Calibration
-        "DustGrowthCalibration":      "0.5",
+        "DustGrowthCalibration":      "0.4",
         "DustShatteringCalibration":  "0.7",    # revert 1024³ nudge; coag now active
         "DustCoagulationCalibration": "10.0",
 
         # Dust sampling (16/24 particles per event keeps m_dust/m_gas ~ constant)
         "DustParticlesPerSNII":       "16",
         "DustParticlesPerAGB":        "24",
+        "DustParticlesPerLRN":        "1",
 
         # Softenings quartered
         "SofteningComovingClass0":    "1.5",
@@ -261,27 +279,20 @@ RES_OVERRIDES = {
     #
     # CALIBRATION NOTES FOR 4096³ — all values are first-estimate:
     #
-    # CritPhysDensity = 5.0 cm^-3
+    # CritPhysDensity = 4.0 cm^-3
     #   The 512→1024 jump was ×7; 1024→2048 was conservative (×1.4). At 4096
     #   the Jeans argument (M_J ≥ m_gas) permits a larger step, but the
     #   star-formation phenomenology should be checked after first z~6 output.
-    #   The ×5 jump from 2048 is a reasonable midpoint; adjust to ×3–×10
-    #   depending on whether SF is overly bursty or suppressed at high-z.
+    #   The ×4 jump from 2048 is a reasonable first estimate; adjust only after
+    #   checking whether SF is overly bursty or suppressed at high-z.
     #
-    # DustShockAmbientDensity = 60.0 cm^-3
-    #   At 4096³ SNe are embedded in GMC-like environments. The Sedov-Taylor
-    #   shell-formation radius at n=60: R_SF ~ 22 pc × n^{-0.43} ~ 5 pc,
-    #   which is physically reasonable for a molecular cloud SN.
-    #   MUST verify shock_events/live_particles < 0.5 per sync window at z~5;
-    #   this is the highest-priority calibration check before letting the run
-    #   proceed past z~7. If over-destroying, raise n_amb toward 100 cm^-3.
+    # DustShockAmbientDensity = 10.0 cm^-3
+    #   First-estimate 4096³ calibration. MUST verify
+    #   shock_events/live_particles before promoting this tier to production.
     #
-    # DustCollisionDensityThresh = 500.0 cm^-3
-    #   Maintains roughly the ~150× CritPhysDensity ratio seen at lower res
-    #   (15/0.1, 100/0.7, 150/1.0 → this tier: 500/5.0 = 100×, conservative).
-    #   At 4096³ the density PDF extends to ~10³ cm^-3 in the ISM; coagulation
-    #   and shattering should fire in the upper tail of that distribution.
-    #   Revisit using density histograms of live dust particles from first outputs.
+    # DustCollisionDensityThresh = 600 cm^-3
+    #   First-estimate 4096³ value. Revisit using density histograms of live
+    #   dust particles and coagulation/shattering event rates.
     #
     # DustShatteringCalibration = 0.5
     #   Coagulation is even more active at 4096³. Continuing the downward
@@ -295,8 +306,8 @@ RES_OVERRIDES = {
     #   from 2048 is used here; revisit if coagulation events/window are
     #   excessive relative to the dust particle count.
     #
-    # DustGrowthCalibration = 0.7
-    #   Continuing the monotonic increase (0.3→0.4→0.5→0.7) as more gas cells
+    # DustGrowthCalibration = 0.5
+    #   Continuing the monotonic increase with resolution as more gas cells
     #   exceed the density threshold at higher resolution. Watch D/G ratio at
     #   z=0: if it exceeds observed range (~0.005–0.01) raise further.
     #
@@ -315,13 +326,14 @@ RES_OVERRIDES = {
         "DustShockAmbientDensity":    "10.0",   # cm^-3; R_SF ~5 pc; CALIBRATE FIRST
 
         # Calibration
-        "DustGrowthCalibration":      "0.7",    # monotonically increasing with resolution
+        "DustGrowthCalibration":      "0.5",    # monotonically increasing with resolution
         "DustShatteringCalibration":  "0.5",    # coag yet more active; continue downward trend
         "DustCoagulationCalibration": "12.0",   # +20% step from 2048³
 
         # Dust sampling (doubles each level to hold m_dust/m_gas constant)
         "DustParticlesPerSNII":       "32",
         "DustParticlesPerAGB":        "48",
+        "DustParticlesPerLRN":        "1",
 
         # Gravitational softenings (comoving kpc) — ×0.125 vs 512³ baseline
         "SofteningComovingClass0":    "0.75",   # Gas
@@ -345,8 +357,10 @@ RES_OVERRIDES = {
 
 # ── Simulation grid ───────────────────────────────────────────────────────────
 # Each entry: label → dict of parameter overrides.
-# Only OutputDir and DustEnable* switches go here; everything else comes
-# from param_base.txt or RES_OVERRIDES above.
+#
+# Physics-ladder / convergence entries typically override OutputDir and
+# DustEnable* switches. Halo-suite entries additionally override InitCondFile.
+# Everything else comes from param_base.txt or RES_OVERRIDES above.
 
 def make_switches(n_active):
     """Return a dict with the first n_active switches ON, rest OFF."""
@@ -393,6 +407,49 @@ GRID = {
     "S0_4096":  {**make_switches(1),  **{"OutputDir": "S0_output_4096"}},
     "S10_4096": {**make_switches(11), **{"OutputDir": "S10_output_4096"}},
 }
+
+
+# ── 12-halo CosmicGrain science suite ───────────────────────────────────────
+#
+# Every halo/resolution combination gets its own ready-to-run generated parameter
+# file, but these files are NOT maintained independently.  They all inherit:
+#
+#   - the full S10 dust-physics model (all DustEnable* switches ON),
+#   - the same RES_OVERRIDES for a given resolution, and
+#   - the same shared physics/cosmology/output settings from param_base.txt.
+#
+# Thus the only halo-specific values are InitCondFile and OutputDir.  This gives
+# convenient one-command launching while preserving identical numerical/physical
+# settings between halos at fixed resolution.
+#
+# Generated naming convention:
+#   params/param_halo295_512.txt
+#   params/param_halo295_1024.txt
+#   ...
+#   params/param_halo9235_4096.txt
+#
+# MUSIC2 IC naming convention:
+#   ICs/halo<ID>/IC_halo<ID>_zoom_<RES>.hdf5
+#
+# Gadget InitCondFile intentionally omits the .hdf5 suffix.
+
+HALO_IDS = [
+    295, 308, 441,
+    859, 1481, 1534,
+    3352, 3879, 3886,
+    5834, 7723, 9235,
+]
+
+HALO_RESOLUTIONS = ("512", "1024", "2048", "4096")
+
+for halo_id in HALO_IDS:
+    for res in HALO_RESOLUTIONS:
+        label = f"halo{halo_id}_{res}"
+        GRID[label] = {
+            **make_switches(11),
+            "InitCondFile": f"ICs/halo{halo_id}/IC_halo{halo_id}_zoom_{res}",
+            "OutputDir":    f"halo{halo_id}_output_{res}",
+        }
 
 
 # ── Core logic ────────────────────────────────────────────────────────────────
@@ -521,7 +578,7 @@ def main():
         print(f"\n(dry run — nothing written)")
     else:
         print(f"\nGenerated {len(labels)} param file(s) in {OUTPUT_DIR}/")
-        print("Re-run any time you change param_base.txt or the GRID dict.")
+        print("Re-run any time you change param_base.txt, RES_OVERRIDES, or GRID.")
 
 
 if __name__ == "__main__":

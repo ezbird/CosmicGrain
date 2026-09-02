@@ -5,10 +5,10 @@ set -euo pipefail
 # ==========================
 SIMS_ROOT=".."   # consolidated folder containing
                                                  # all {rung}_output_{res}/ dirs
-BASE_DIR="$SIMS_ROOT/S7_output_1024"
+BASE_DIR="$SIMS_ROOT/S10_output_512_3e6K"
 SNAP=47
-RES=1024              # resolution, used by plot_radial_dgr.py / plot_dz_vs_metallicity.py --res
-RMAX=127              # ckpc/h -- passed to plot_dust_histograms_agecoded.py's --rmax
+RES=512              # resolution, used by plot_radial_dgr.py / plot_dz_vs_metallicity.py --res
+#RMAX=127              # ckpc/h -- passed to plot_dust_histograms_agecoded.py's --rmax
                        # (matches Coordinates' native units; NOT physical pkpc)
 PLOTS_DIR="$BASE_DIR/all_plots"
 mkdir -p "$PLOTS_DIR"
@@ -69,7 +69,6 @@ python3 plot_dust_histograms_agecoded.py \
     --catalog  "$CATALOG" \
     --snapshot "$SNAPSHOT" \
     --out "$PLOTS_DIR/agecoded_${DATE}.png" \
-    --rmax "$RMAX"
 
 echo "--- [5/8] plot_gsd_comparison.py (grain-size distribution vs MRN/WD01/THEMIS) ---"
 python3 plot_gsd_comparison.py "$BASE_DIR" \

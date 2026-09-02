@@ -19,15 +19,10 @@
 struct dust_data
 {
   float GrainRadius;        /*!< grain radius in nm (e.g., 100 = 0.1 micron) */
-  float CarbonFraction;     /*!< fraction of mass in carbonaceous grains (0-1) */
+  float CarbonMassFraction; /*!< fraction of mass in carbonaceous grains (0-1) */
   float DustTemperature;    /*!< dust temperature in K */
-  float BirthPos[3];        /*!< star birth position in comoving kpc/h */ 
-  int GrainType;            /*!< grain composition: 0=silicate, 1=carbon, 2=mixed */
-  
-  // Helper functions
-  inline double get_grain_radius_microns(void) { return GrainRadius * 1e4; }  // Convert cm to microns
-  inline bool is_silicate(void) { return GrainType == 0; }
-  inline bool is_carbonaceous(void) { return GrainType == 1; }
+  float BirthPos[3];        /*!< star birth position in comoving kpc/h */
+  int DustSource;           /*!< dust source: 0=SNII, 1=AGB, 2=LRN */
 };
 
 #endif

@@ -48,7 +48,7 @@ void sim::find_hydro_timesteps(void)
 
   // Update CourantFac based on redshift
     double z = 1.0/All.Time - 1.0;  // Calculate current redshift
-    
+
     if(z > 20.0)
       All.CourantFac = All.CourantFac_z20;
     else if(z > 10.0)
@@ -94,7 +94,7 @@ void simparticles::assign_hydro_timesteps(void)
 
           /* ---- BIN_FLOOR diagnostic ---- */
           if(bin <= 10) {
-            double u_cgs = get_utherm_from_entropy(target) 
+            double u_cgs = get_utherm_from_entropy(target)
                * All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s;
             double T = u_cgs / (1.5 * BOLTZMANN / (0.62 * PROTONMASS));
             double nH = SphP[target].Density * All.cf_a3inv
@@ -106,11 +106,13 @@ void simparticles::assign_hydro_timesteps(void)
             // rather than only inferred from coincident step numbers. Also
             // dropped the ThisTask==0 restriction since the actual crash was
             // on tasks 3/12/17, not task 0.
+            #ifdef STARFORMATION
             printf("[BIN_FLOOR|task=%d|Step=%d] bin=%d ID=%lld T=%.2e K nH=%.2e cm^-3 "
                    "h=%.3f kpc SFR=%.2e count=%lld\n",
                    All.ThisTask, All.NumCurrentTiStep, bin,
                    (long long)P[target].ID.get(), T, nH,
                    SphP[target].Hsml, SphP[target].Sfr, bin_floor_hits);
+            #endif
           }
           /* ------------------------------ */
 
@@ -409,21 +411,21 @@ integertime simparticles::get_timestep_hydro(int p /*!< particle index */)
       double dt_actual = dt;
       const char* limiter = "UNKNOWN";
       double min_dt = 1e30;
-      
+
       if(dt_kin < min_dt) { min_dt = dt_kin; limiter = "KINETIC"; }
       if(dt_courant < min_dt) { min_dt = dt_courant; limiter = "COURANT"; }
       if(dt_hsml < min_dt) { min_dt = dt_hsml; limiter = "HSML"; }
-      
+
       // Print every 100 timesteps
       static long long last_print_step = -1;
       const int PRINT_EVERY_N_STEPS = 100;
-      
+
       if(All.NumCurrentTiStep - last_print_step >= PRINT_EVERY_N_STEPS || last_print_step < 0) {
         printf("TIMESTEP_DEBUG p=%d step=%lld: dt=%.3e limited by %s | pos=(%.1f,%.1f,%.1f)\n",
               p, (long long)All.NumCurrentTiStep, dt_actual, limiter, pos[0], pos[1], pos[2]);
         printf("               constraints: kinetic=%.3e courant=%.3e hsml=%.3e\n",
               dt_kin, dt_courant, dt_hsml);
-        
+
         // Only reset after we've printed all 3 particles (p=0,1,2)
         if(p == 2) {
           last_print_step = All.NumCurrentTiStep;

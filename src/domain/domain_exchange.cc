@@ -116,8 +116,20 @@ void domain<partset>::domain_coll_subfind_prepare_exchange(void)
 #endif
 }
 
-/* Added pieces for the dust array (DustP). Gadget uses a stack-based memory allocator that requires LIFO (last-in-first-out) 
-deallocation... so carefully deallocate in reverse order. */
+/* Added CosmicGrain support for the DustP sidecar array.
+ *
+ * IMPORTANT DESIGN RULE:
+ *   DustP[] follows P[] one-for-one.  We therefore exchange a full dust_data
+ *   sidecar buffer using EXACTLY the same counts and offsets as P[].
+ *
+ * For non-dust particles the corresponding dust_data entry is zeroed.
+ * This is intentionally a little more communication than a compressed
+ * dust-only stream, but it is much safer: P[] and DustP[] can never acquire
+ * different MPI ordering.
+ *
+ * Gadget's custom allocator is stack-like, so movable allocations are freed
+ * in strict reverse (LIFO) order.
+ */
 template <typename partset>
 void domain<partset>::domain_exchange(void)
 {
@@ -130,36 +142,29 @@ void domain<partset>::domain_exchange(void)
 
   domain_countToGo(toGoDM, toGoSph);
 
-#ifdef DUST
-  int *toGoDust  = (int *)Mem.mymalloc_movable(&toGoDust,  "toGoDust",  NTask * sizeof(int));
-  int *toGetDust = (int *)Mem.mymalloc_movable(&toGetDust, "toGetDust", NTask * sizeof(int));
-  memset(toGoDust, 0, NTask * sizeof(int));
-  for(int n = 0; n < Tp->NumPart; n++)
-    if(Tp->P[n].getType() == 6)
-      toGoDust[this->get_task_for_particle(n)]++;
-#endif
-
   int *toGo  = (int *)Mem.mymalloc("toGo",  2 * NTask * sizeof(int));
   int *toGet = (int *)Mem.mymalloc("toGet", 2 * NTask * sizeof(int));
-  for(int i = 0; i < NTask; ++i)
+
+  for(int i = 0; i < NTask; i++)
     {
       toGo[2 * i]     = toGoDM[i];
       toGo[2 * i + 1] = toGoSph[i];
     }
+
   myMPI_Alltoall(toGo, 2, MPI_INT, toGet, 2, MPI_INT, Communicator);
-  for(int i = 0; i < NTask; ++i)
+
+  for(int i = 0; i < NTask; i++)
     {
       toGetDM[i]  = toGet[2 * i];
       toGetSph[i] = toGet[2 * i + 1];
     }
+
   Mem.myfree(toGet);
   Mem.myfree(toGo);
 
-#ifdef DUST
-  myMPI_Alltoall(toGoDust, 1, MPI_INT, toGetDust, 1, MPI_INT, Communicator);
-#endif
+  int count_togo_dm = 0, count_togo_sph = 0;
+  int count_get_dm  = 0, count_get_sph  = 0;
 
-  int count_togo_dm = 0, count_togo_sph = 0, count_get_dm = 0, count_get_sph = 0;
   for(int i = 0; i < NTask; i++)
     {
       count_togo_dm  += toGoDM[i];
@@ -168,15 +173,6 @@ void domain<partset>::domain_exchange(void)
       count_get_sph  += toGetSph[i];
     }
 
-#ifdef DUST
-  int count_togo_dust = 0, count_get_dust = 0;
-  for(int i = 0; i < NTask; i++)
-    {
-      count_togo_dust += toGoDust[i];
-      count_get_dust  += toGetDust[i];
-    }
-#endif
-
   long long sumtogo = count_togo_dm;
   sumup_longs(1, &sumtogo, &sumtogo, Communicator);
   domain_printf("DOMAIN: exchange of %lld particles\n", sumtogo);
@@ -184,64 +180,57 @@ void domain<partset>::domain_exchange(void)
   if(Tp->NumPart != count_togo_dm + count_togo_sph)
     Terminate("NumPart != count_togo");
 
-  // ---- offset arrays ----
   int *send_sph_offset = (int *)Mem.mymalloc_movable(&send_sph_offset, "send_sph_offset", NTask * sizeof(int));
   int *send_dm_offset  = (int *)Mem.mymalloc_movable(&send_dm_offset,  "send_dm_offset",  NTask * sizeof(int));
   int *recv_sph_offset = (int *)Mem.mymalloc_movable(&recv_sph_offset, "recv_sph_offset", NTask * sizeof(int));
   int *recv_dm_offset  = (int *)Mem.mymalloc_movable(&recv_dm_offset,  "recv_dm_offset",  NTask * sizeof(int));
 
-#ifdef DUST
-  int *send_dust_offset = (int *)Mem.mymalloc_movable(&send_dust_offset, "send_dust_offset", NTask * sizeof(int));
-  int *recv_dust_offset = (int *)Mem.mymalloc_movable(&recv_dust_offset, "recv_dust_offset", NTask * sizeof(int));
-#endif
+  send_sph_offset[0] = 0;
+  send_dm_offset[0]  = 0;
+  recv_sph_offset[0] = 0;
+  recv_dm_offset[0]  = 0;
 
-  send_sph_offset[0] = send_dm_offset[0] = recv_sph_offset[0] = recv_dm_offset[0] = 0;
-#ifdef DUST
-  send_dust_offset[0] = recv_dust_offset[0] = 0;
-#endif
   for(int i = 1; i < NTask; i++)
     {
-      send_sph_offset[i] = send_sph_offset[i-1] + toGoSph[i-1];
-      send_dm_offset[i]  = send_dm_offset[i-1]  + toGoDM[i-1];
-      recv_sph_offset[i] = recv_sph_offset[i-1] + toGetSph[i-1];
-      recv_dm_offset[i]  = recv_dm_offset[i-1]  + toGetDM[i-1];
-#ifdef DUST
-      send_dust_offset[i] = send_dust_offset[i-1] + toGoDust[i-1];
-      recv_dust_offset[i] = recv_dust_offset[i-1] + toGetDust[i-1];
-#endif
+      send_sph_offset[i] = send_sph_offset[i - 1] + toGoSph[i - 1];
+      send_dm_offset[i]  = send_dm_offset[i - 1]  + toGoDM[i - 1];
+      recv_sph_offset[i] = recv_sph_offset[i - 1] + toGetSph[i - 1];
+      recv_dm_offset[i]  = recv_dm_offset[i - 1]  + toGetDM[i - 1];
     }
+
+  /* Keep gas first, then all non-gas particles. */
   for(int i = 0; i < NTask; i++)
     {
       send_dm_offset[i] += count_togo_sph;
       recv_dm_offset[i] += count_get_sph;
     }
 
-  // ---- send buffers ----
-  // Allocation order (LIFO must be freed in reverse): partBuf, sphBuf, keyBuf, dustBuf
+  const int count_togo_total = count_togo_sph + count_togo_dm;
+
   pdata *partBuf =
-    (typename partset::pdata *)Mem.mymalloc_movable_clear(&partBuf, "partBuf",
-        (count_togo_dm + count_togo_sph) * sizeof(pdata));
+      (typename partset::pdata *)Mem.mymalloc_movable_clear(
+          &partBuf, "partBuf", count_togo_total * sizeof(pdata));
+
   sph_particle_data *sphBuf =
-    (sph_particle_data *)Mem.mymalloc_movable_clear(&sphBuf, "sphBuf",
-        count_togo_sph * sizeof(sph_particle_data));
+      (sph_particle_data *)Mem.mymalloc_movable_clear(
+          &sphBuf, "sphBuf", count_togo_sph * sizeof(sph_particle_data));
+
   peanokey *keyBuf =
-    (peanokey *)Mem.mymalloc_movable_clear(&keyBuf, "keyBuf",
-        (count_togo_dm + count_togo_sph) * sizeof(peanokey));
+      (peanokey *)Mem.mymalloc_movable_clear(
+          &keyBuf, "keyBuf", count_togo_total * sizeof(peanokey));
 
 #ifdef DUST
-  // Allocate at least 1 element so the send pointer is always valid for the collective.
+  /* Full-layout sidecar: dustBuf[off] corresponds exactly to partBuf[off]. */
   dust_data *dustBuf =
-    (dust_data *)Mem.mymalloc_movable_clear(&dustBuf, "dustBuf",
-        std::max(1, count_togo_dust) * sizeof(dust_data));
+      (dust_data *)Mem.mymalloc_movable_clear(
+          &dustBuf, "dustBuf",
+          std::max(1, count_togo_total) * (int)sizeof(dust_data));
 #endif
 
-  // ---- pack loop ----
   for(int i = 0; i < NTask; i++)
     {
-      toGoSph[i] = toGoDM[i] = 0;
-#ifdef DUST
-      toGoDust[i] = 0;
-#endif
+      toGoSph[i] = 0;
+      toGoDM[i]  = 0;
     }
 
   for(int n = 0; n < Tp->NumPart; n++)
@@ -259,42 +248,43 @@ void domain<partset>::domain_exchange(void)
         {
           num = toGoDM[task]++;
           off = send_dm_offset[task] + num;
-#ifdef DUST
-          if(Tp->P[n].getType() == 6)
-            {
-              int dust_off = send_dust_offset[task] + toGoDust[task]++;
-              dustBuf[dust_off] = Tp->DustP[n];
-            }
-#endif
         }
+
       partBuf[off] = Tp->P[n];
       keyBuf[off]  = domain_key[n];
+
+#ifdef DUST
+      if(Tp->P[n].getType() == 6)
+        dustBuf[off] = Tp->DustP[n];
+      else
+        memset(&dustBuf[off], 0, sizeof(dust_data));
+#endif
     }
 
-  // ---- resize storage if needed ----
   domain_resize_storage(count_get_dm + count_get_sph, count_get_sph, 1);
 
-  // ---- big-message flag ----
   int flag_big = 0, flag_big_all;
+
   for(int i = 0; i < NTask; i++)
     {
       if(toGoSph[i] * sizeof(sph_particle_data) > MPI_MESSAGE_SIZELIMIT_IN_BYTES)
         flag_big = 1;
-      if(std::max<int>(toGoSph[i], toGoDM[i]) * sizeof(typename partset::pdata) > MPI_MESSAGE_SIZELIMIT_IN_BYTES)
+
+      if(std::max<int>(toGoSph[i], toGoDM[i]) * sizeof(typename partset::pdata) >
+         MPI_MESSAGE_SIZELIMIT_IN_BYTES)
         flag_big = 1;
+
 #ifdef DUST
-      if(toGoDust[i] * sizeof(dust_data) > MPI_MESSAGE_SIZELIMIT_IN_BYTES)
+      if(std::max<int>(toGoSph[i], toGoDM[i]) * sizeof(dust_data) >
+         MPI_MESSAGE_SIZELIMIT_IN_BYTES)
         flag_big = 1;
 #endif
     }
+
   MPI_Allreduce(&flag_big, &flag_big_all, 1, MPI_INT, MPI_MAX, Communicator);
 
-  // ====================================================================
-  // Exchange
-  // ====================================================================
-
 #if 1
-  // ---------- primary path: myMPI_Alltoallv_new ----------
+  /* Primary communication path: same layout for P, keys, and DustP. */
 #ifdef USE_MPIALLTOALLV_IN_DOMAINDECOMP
   int method = 0;
 #else
@@ -309,108 +299,88 @@ void domain<partset>::domain_exchange(void)
 
   MPI_Type_contiguous(sizeof(typename partset::pdata), MPI_CHAR, &tp);
   MPI_Type_commit(&tp);
-  myMPI_Alltoallv_new(partBuf, toGoSph, send_sph_offset, tp, Tp->P, toGetSph, recv_sph_offset, tp, Communicator, method);
-  myMPI_Alltoallv_new(partBuf, toGoDM,  send_dm_offset,  tp, Tp->P, toGetDM,  recv_dm_offset,  tp, Communicator, method);
+  myMPI_Alltoallv_new(partBuf, toGoSph, send_sph_offset, tp,
+                      Tp->P, toGetSph, recv_sph_offset, tp,
+                      Communicator, method);
+  myMPI_Alltoallv_new(partBuf, toGoDM, send_dm_offset, tp,
+                      Tp->P, toGetDM, recv_dm_offset, tp,
+                      Communicator, method);
   MPI_Type_free(&tp);
 
   MPI_Type_contiguous(sizeof(sph_particle_data), MPI_CHAR, &tp);
   MPI_Type_commit(&tp);
-  myMPI_Alltoallv_new(sphBuf, toGoSph, send_sph_offset, tp, Tp->SphP, toGetSph, recv_sph_offset, tp, Communicator, method);
-  MPI_Type_free(&tp);
-
-#ifdef DUST
-  // dustBuf_recv allocated AFTER dustBuf → must be freed BEFORE dustBuf (LIFO)
-  dust_data *dustBuf_recv =
-    (dust_data *)Mem.mymalloc("dustBuf_recv",
-        std::max(1, count_get_dust) * sizeof(dust_data));
-
-  // Unconditional collective — every task must call this regardless of local counts
-  MPI_Type_contiguous(sizeof(dust_data), MPI_CHAR, &tp);
-  MPI_Type_commit(&tp);
-  myMPI_Alltoallv_new(dustBuf, toGoDust, send_dust_offset, tp,
-                      dustBuf_recv, toGetDust, recv_dust_offset, tp,
+  myMPI_Alltoallv_new(sphBuf, toGoSph, send_sph_offset, tp,
+                      Tp->SphP, toGetSph, recv_sph_offset, tp,
                       Communicator, method);
   MPI_Type_free(&tp);
 
-  // Zero DustP for all incoming gas slots
-  for(int i = 0; i < count_get_sph; i++)
-    memset(&Tp->DustP[i], 0, sizeof(dust_data));
-
-  // Unpack: walk the DM/dust receive slots and assign DustP where type==6
-  {
-    int dust_recv_idx = 0;
-    for(int i = count_get_sph; i < count_get_sph + count_get_dm; i++)
-      {
-        if(Tp->P[i].getType() == 6)
-          Tp->DustP[i] = dustBuf_recv[dust_recv_idx++];
-        else
-          memset(&Tp->DustP[i], 0, sizeof(dust_data));
-      }
-    if(dust_recv_idx != count_get_dust)
-      Terminate("DUST domain_exchange: unpacked %d but expected %d",
-                dust_recv_idx, count_get_dust);
-  }
-
-  Mem.myfree(dustBuf_recv);  // LIFO: allocated after dustBuf, freed before dustBuf
+#ifdef DUST
+  MPI_Type_contiguous(sizeof(dust_data), MPI_CHAR, &tp);
+  MPI_Type_commit(&tp);
+  myMPI_Alltoallv_new(dustBuf, toGoSph, send_sph_offset, tp,
+                      Tp->DustP, toGetSph, recv_sph_offset, tp,
+                      Communicator, method);
+  myMPI_Alltoallv_new(dustBuf, toGoDM, send_dm_offset, tp,
+                      Tp->DustP, toGetDM, recv_dm_offset, tp,
+                      Communicator, method);
+  MPI_Type_free(&tp);
 #endif
 
   MPI_Type_contiguous(sizeof(peanokey), MPI_CHAR, &tp);
   MPI_Type_commit(&tp);
-  myMPI_Alltoallv_new(keyBuf, toGoSph, send_sph_offset, tp, domain_key, toGetSph, recv_sph_offset, tp, Communicator, method);
-  myMPI_Alltoallv_new(keyBuf, toGoDM,  send_dm_offset,  tp, domain_key, toGetDM,  recv_dm_offset,  tp, Communicator, method);
+  myMPI_Alltoallv_new(keyBuf, toGoSph, send_sph_offset, tp,
+                      domain_key, toGetSph, recv_sph_offset, tp,
+                      Communicator, method);
+  myMPI_Alltoallv_new(keyBuf, toGoDM, send_dm_offset, tp,
+                      domain_key, toGetDM, recv_dm_offset, tp,
+                      Communicator, method);
   MPI_Type_free(&tp);
 
 #else
-  // ---------- fallback path: my_int_MPI_Alltoallv ----------
-  my_int_MPI_Alltoallv(partBuf, toGoSph, send_sph_offset, Tp->P,    toGetSph, recv_sph_offset, sizeof(pdata),             flag_big_all, Communicator);
-  my_int_MPI_Alltoallv(sphBuf,  toGoSph, send_sph_offset, Tp->SphP, toGetSph, recv_sph_offset, sizeof(sph_particle_data), flag_big_all, Communicator);
+  /* Fallback path. */
+  my_int_MPI_Alltoallv(partBuf, toGoSph, send_sph_offset,
+                       Tp->P, toGetSph, recv_sph_offset,
+                       sizeof(pdata), flag_big_all, Communicator);
+
+  my_int_MPI_Alltoallv(sphBuf, toGoSph, send_sph_offset,
+                       Tp->SphP, toGetSph, recv_sph_offset,
+                       sizeof(sph_particle_data), flag_big_all, Communicator);
 
 #ifdef DUST
-  dust_data *dustBuf_recv =
-    (dust_data *)Mem.mymalloc("dustBuf_recv",
-        std::max(1, count_get_dust) * sizeof(dust_data));
-
-  // Unconditional collective
-  my_int_MPI_Alltoallv(dustBuf, toGoDust, send_dust_offset,
-                       dustBuf_recv, toGetDust, recv_dust_offset,
+  my_int_MPI_Alltoallv(dustBuf, toGoSph, send_sph_offset,
+                       Tp->DustP, toGetSph, recv_sph_offset,
                        sizeof(dust_data), flag_big_all, Communicator);
 #endif
 
-  my_int_MPI_Alltoallv(keyBuf, toGoSph, send_sph_offset, domain_key, toGetSph, recv_sph_offset, sizeof(peanokey), flag_big_all, Communicator);
-  my_int_MPI_Alltoallv(partBuf, toGoDM, send_dm_offset,  Tp->P,      toGetDM,  recv_dm_offset,  sizeof(pdata),    flag_big_all, Communicator);
-  my_int_MPI_Alltoallv(keyBuf,  toGoDM, send_dm_offset,  domain_key, toGetDM,  recv_dm_offset,  sizeof(peanokey), flag_big_all, Communicator);
+  my_int_MPI_Alltoallv(keyBuf, toGoSph, send_sph_offset,
+                       domain_key, toGetSph, recv_sph_offset,
+                       sizeof(peanokey), flag_big_all, Communicator);
+
+  my_int_MPI_Alltoallv(partBuf, toGoDM, send_dm_offset,
+                       Tp->P, toGetDM, recv_dm_offset,
+                       sizeof(pdata), flag_big_all, Communicator);
 
 #ifdef DUST
-  // Zero DustP for all incoming gas slots
-  for(int i = 0; i < count_get_sph; i++)
-    memset(&Tp->DustP[i], 0, sizeof(dust_data));
-
-  // Unpack
-  {
-    int dust_recv_idx = 0;
-    for(int i = count_get_sph; i < count_get_sph + count_get_dm; i++)
-      {
-        if(Tp->P[i].getType() == 6)
-          Tp->DustP[i] = dustBuf_recv[dust_recv_idx++];
-        else
-          memset(&Tp->DustP[i], 0, sizeof(dust_data));
-      }
-    if(dust_recv_idx != count_get_dust)
-      Terminate("DUST domain_exchange (fallback): unpacked %d but expected %d",
-                dust_recv_idx, count_get_dust);
-  }
-
-  Mem.myfree(dustBuf_recv);  // LIFO: allocated after dustBuf, freed before dustBuf
+  my_int_MPI_Alltoallv(dustBuf, toGoDM, send_dm_offset,
+                       Tp->DustP, toGetDM, recv_dm_offset,
+                       sizeof(dust_data), flag_big_all, Communicator);
 #endif
 
-#endif  // end primary/fallback branch
+  my_int_MPI_Alltoallv(keyBuf, toGoDM, send_dm_offset,
+                       domain_key, toGetDM, recv_dm_offset,
+                       sizeof(peanokey), flag_big_all, Communicator);
+#endif
 
   Tp->NumPart = count_get_dm + count_get_sph;
   Tp->NumGas  = count_get_sph;
 
-  // ---- free send buffers in REVERSE allocation order ----
-  // Allocation order was: partBuf, sphBuf, keyBuf, dustBuf
-  // Free order must be:   dustBuf, keyBuf, sphBuf, partBuf
+#ifdef DUST
+  /* Strong postcondition: only Type6 slots may carry non-zero DustP state. */
+  for(int i = 0; i < Tp->NumPart; i++)
+    if(Tp->P[i].getType() != 6)
+      memset(&Tp->DustP[i], 0, sizeof(dust_data));
+#endif
+
 #ifdef DUST
   Mem.myfree(dustBuf);
 #endif
@@ -418,28 +388,19 @@ void domain<partset>::domain_exchange(void)
   Mem.myfree(sphBuf);
   Mem.myfree(partBuf);
 
-  // ---- free offset arrays in REVERSE allocation order ----
-#ifdef DUST
-  Mem.myfree(recv_dust_offset);
-  Mem.myfree(send_dust_offset);
-#endif
   Mem.myfree(recv_dm_offset);
   Mem.myfree(recv_sph_offset);
   Mem.myfree(send_dm_offset);
   Mem.myfree(send_sph_offset);
 
-  // ---- free count arrays in REVERSE allocation order ----
-#ifdef DUST
-  Mem.myfree(toGetDust);
-  Mem.myfree(toGoDust);
-#endif
   Mem.myfree(toGetSph);
   Mem.myfree(toGetDM);
   Mem.myfree(toGoSph);
   Mem.myfree(toGoDM);
 
   double t1 = Logs.second();
-  domain_printf("DOMAIN: particle exchange done. (took %g sec)\n", Logs.timediff(t0, t1));
+  domain_printf("DOMAIN: particle exchange done. (took %g sec)\n",
+                Logs.timediff(t0, t1));
 }
 
 template <typename partset>
@@ -516,6 +477,9 @@ void domain<partset>::reorder_gas(int *Id)
 
               Tp->P[dest]    = Psource;
               Tp->SphP[dest] = SphPsource;
+#ifdef DUST
+              memset(&Tp->DustP[dest], 0, sizeof(dust_data));
+#endif
               Id[dest]       = idsource;
 
               if(dest == i)
@@ -552,44 +516,44 @@ void domain<partset>::reorder_particles(int *Id, int Nstart, int N)
       if(Id[i] != i)
         {
           pdata Psource = Tp->P[i];
-          
+
           #ifdef DUST
           auto DustPsource = Tp->DustP[i];
           #endif
-          
+
           int idsource  = Id[i];
           int dest = Id[i];
 
           do
             {
               pdata Psave = Tp->P[dest];
-              
+
               #ifdef DUST
               auto DustPsave = Tp->DustP[dest];
               #endif
-              
+
               int idsave  = Id[dest];
 
               Tp->P[dest] = Psource;
-              
+
               #ifdef DUST
               if(Psource.getType() == 6)
                 Tp->DustP[dest] = DustPsource;
               else
                 memset(&Tp->DustP[dest], 0, sizeof(dust_data));
               #endif
-              
+
               Id[dest] = idsource;
 
               if(dest == i)
                 break;
 
               Psource  = Psave;
-              
+
               #ifdef DUST
               DustPsource = DustPsave;
               #endif
-              
+
               idsource = idsave;
               dest = idsource;
             }
@@ -722,20 +686,31 @@ void domain<partset>::reorder_P_PS(int loc_numgas, int loc_numpart)
   Mem.myfree(mp);
 }
 
-/* This function redistributes the particles according to what is stored in
- * PS[].TargetTask, and PS[].TargetIndex.
+/* This function redistributes particles according to PS[].TargetTask and
+ * PS[].TargetIndex.
  *
- * DUST handling:
- *  - DustP[] is a sidecar array indexed like P[].
- *  - When exchanging P[], we also exchange a dust buffer with identical layout.
- *  - For non-dust particles, we send/receive a zero dust_data struct.
+ * CosmicGrain rule:
+ *   DustP[] is a strict one-for-one sidecar of P[].  Whenever P[] is copied,
+ *   compacted, memmoved, sent, or received, DustP[] undergoes the identical
+ *   operation.  Non-dust slots are zeroed.
  *
- * IMPORTANT: mymalloc stack allocator requires strict LIFO frees.
+ * IMPORTANT:
+ *   Keep Gadget's original two-pass selection semantics:
+ *
+ *     type_select == 0 : exchange gas only
+ *     type_select == 1 : process ALL particles
+ *
+ *   On the second pass, gas particles already have TargetTask equal to the
+ *   current task after the first pass, so they stay local while non-gas
+ *   particles are redistributed.  Selecting by array index instead of this
+ *   saved Ptype logic breaks the gas-first invariant and can trigger
+ *   Bummer1/Bummer2.
  */
 template <typename partset>
 void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 {
   int CommThisTask, CommNTask, CommPTask;
+
   MPI_Comm_size(Communicator, &CommNTask);
   MPI_Comm_rank(Communicator, &CommThisTask);
 
@@ -749,11 +724,15 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 
   int nimport = 0, nexport = 0, nstay = 0, nlocal = 0;
 
-  /* for type_select == 0, we process gas particles; otherwise all other particles */
   for(int type_select = 0; type_select < 2; type_select++)
     {
-      unsigned char *Ptype = (unsigned char *)Mem.mymalloc_movable(&Ptype, "Ptype", sizeof(unsigned char) * Tp->NumPart);
-      int *Ptask           = (int *)Mem.mymalloc_movable(&Ptask, "Ptask", sizeof(int) * Tp->NumPart);
+      unsigned char *Ptype =
+          (unsigned char *)Mem.mymalloc_movable(
+              &Ptype, "Ptype", sizeof(unsigned char) * Tp->NumPart);
+
+      int *Ptask =
+          (int *)Mem.mymalloc_movable(
+              &Ptask, "Ptask", sizeof(int) * Tp->NumPart);
 
       for(int i = 0; i < Tp->NumPart; i++)
         {
@@ -761,15 +740,23 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
           Ptask[i] = Tp->PS[i].TargetTask;
 
           if(Ptype[i] == 0 && i >= Tp->NumGas)
-            Terminate("Bummer1");
+            Terminate("particle_exchange_based_on_PS: gas particle outside gas block: i=%d NumGas=%d NumPart=%d type=%d",
+                      i, Tp->NumGas, Tp->NumPart, (int)Ptype[i]);
 
           if(Ptype[i] != 0 && i < Tp->NumGas)
-            Terminate("Bummer2");
+            Terminate("particle_exchange_based_on_PS: non-gas particle inside gas block: i=%d NumGas=%d NumPart=%d type=%d",
+                      i, Tp->NumGas, Tp->NumPart, (int)Ptype[i]);
+
+          if(Ptask[i] < 0 || Ptask[i] >= CommNTask)
+            Terminate("particle_exchange_based_on_PS: invalid TargetTask=%d for particle i=%d (CommNTask=%d)",
+                      Ptask[i], i, CommNTask);
         }
 
-      int NumPart_saved = Tp->NumPart;
+      const int NumPart_saved = Tp->NumPart;
 
-      /* ------------------ GAS: exchange SphP upfront ------------------ */
+      /* ------------------------------------------------------------
+       * GAS PASS: exchange SphP first.
+       * ------------------------------------------------------------ */
       if(type_select == 0)
         {
           sph_particle_data *sphBuf = NULL;
@@ -783,7 +770,7 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 
               for(int n = 0; n < Tp->NumGas; n++)
                 {
-                  int target = Ptask[n];
+                  const int target = Ptask[n];
 
                   if(rep == 0)
                     {
@@ -795,7 +782,8 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
                   else
                     {
                       if(target != CommThisTask)
-                        sphBuf[Send_offset[target] + Send_count[target]++] = Tp->SphP[n];
+                        sphBuf[Send_offset[target] + Send_count[target]++] =
+                            Tp->SphP[n];
                       else
                         Tp->SphP[nstay++] = Tp->SphP[n];
                     }
@@ -803,10 +791,15 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 
               if(rep == 0)
                 {
-                  myMPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, Communicator);
+                  myMPI_Alltoall(Send_count, 1, MPI_INT,
+                                 Recv_count, 1, MPI_INT,
+                                 Communicator);
 
-                  nimport = 0; nexport = 0;
-                  Recv_offset[0] = Send_offset[0] = 0;
+                  nimport = 0;
+                  nexport = 0;
+
+                  Recv_offset[0] = 0;
+                  Send_offset[0] = 0;
 
                   for(int j = 0; j < CommNTask; j++)
                     {
@@ -815,23 +808,32 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 
                       if(j > 0)
                         {
-                          Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                          Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
+                          Send_offset[j] =
+                              Send_offset[j - 1] + Send_count[j - 1];
+
+                          Recv_offset[j] =
+                              Recv_offset[j - 1] + Recv_count[j - 1];
                         }
                     }
 
-                  sphBuf = (sph_particle_data *)Mem.mymalloc_movable(&sphBuf, "sphBuf", nexport * sizeof(sph_particle_data));
+                  sphBuf =
+                      (sph_particle_data *)Mem.mymalloc_movable(
+                          &sphBuf, "sphBuf",
+                          std::max(1, nexport) *
+                              (int)sizeof(sph_particle_data));
                 }
               else
                 {
                   Tp->NumGas += (nimport - nexport);
 
                   int max_loadsph = Tp->NumGas;
-                  MPI_Allreduce(MPI_IN_PLACE, &max_loadsph, 1, MPI_INT, MPI_MAX, Communicator);
+                  MPI_Allreduce(MPI_IN_PLACE, &max_loadsph,
+                                1, MPI_INT, MPI_MAX, Communicator);
 
                   if(max_loadsph > (1.0 - ALLOC_TOLERANCE) * Tp->MaxPartSph ||
                      max_loadsph < (1.0 - 3 * ALLOC_TOLERANCE) * Tp->MaxPartSph)
-                    Tp->reallocate_memory_maxpartsph(max_loadsph / (1.0 - 2 * ALLOC_TOLERANCE));
+                    Tp->reallocate_memory_maxpartsph(
+                        max_loadsph / (1.0 - 2 * ALLOC_TOLERANCE));
 
                   for(int ngrp = 1; ngrp < (1 << CommPTask); ngrp++)
                     {
@@ -839,24 +841,31 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 
                       if(target < CommNTask)
                         {
-                          if(Send_count[target] > 0 || Recv_count[target] > 0)
+                          if(Send_count[target] > 0 ||
+                             Recv_count[target] > 0)
                             {
-                              myMPI_Sendrecv(sphBuf + Send_offset[target], Send_count[target] * sizeof(sph_particle_data), MPI_BYTE,
-                                             target, TAG_SPHDATA,
-                                             Tp->SphP + Recv_offset[target] + nstay,
-                                             Recv_count[target] * sizeof(sph_particle_data), MPI_BYTE,
-                                             target, TAG_SPHDATA,
-                                             Communicator, MPI_STATUS_IGNORE);
+                              myMPI_Sendrecv(
+                                  sphBuf + Send_offset[target],
+                                  Send_count[target] *
+                                      sizeof(sph_particle_data),
+                                  MPI_BYTE, target, TAG_SPHDATA,
+                                  Tp->SphP + Recv_offset[target] + nstay,
+                                  Recv_count[target] *
+                                      sizeof(sph_particle_data),
+                                  MPI_BYTE, target, TAG_SPHDATA,
+                                  Communicator, MPI_STATUS_IGNORE);
                             }
                         }
                     }
 
-                  Mem.myfree(sphBuf);  // LIFO within this rep-loop is fine (only buffer alive here)
+                  Mem.myfree(sphBuf);
                 }
             }
         }
 
-      /* ------------------ Exchange P[] (and DustP[] in parallel) ------------------ */
+      /* ------------------------------------------------------------
+       * Exchange P[] and DustP[] in exact lockstep.
+       * ------------------------------------------------------------ */
 
       pdata *partBuf = NULL;
 
@@ -874,11 +883,19 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 
           for(int n = 0; n < NumPart_saved; n++)
             {
-              const bool selected = (Ptype[n] == type_select) || (type_select != 0);
+              /*
+               * Original Gadget semantics:
+               *   pass 0 -> only type 0
+               *   pass 1 -> all particles
+               *
+               * Do NOT replace this by NumGas/index-based selection.
+               */
+              const bool selected =
+                  (Ptype[n] == type_select || type_select != 0);
 
               if(selected)
                 {
-                  int target = Ptask[n];
+                  const int target = Ptask[n];
 
                   if(rep == 0)
                     {
@@ -894,11 +911,13 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
                     {
                       if(target != CommThisTask)
                         {
-                          const int off = Send_offset[target] + Send_count[target]++;
+                          const int off =
+                              Send_offset[target] + Send_count[target]++;
+
                           partBuf[off] = Tp->P[n];
 
 #ifdef DUST
-                          if(Tp->P[n].getType() == 6)
+                          if(Ptype[n] == 6)
                             dustBuf[off] = Tp->DustP[n];
                           else
                             memset(&dustBuf[off], 0, sizeof(dust_data));
@@ -909,10 +928,11 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
                           Tp->P[nstay] = Tp->P[n];
 
 #ifdef DUST
-                          if(Tp->P[n].getType() == 6)
+                          if(Ptype[n] == 6)
                             Tp->DustP[nstay] = Tp->DustP[n];
                           else
-                            memset(&Tp->DustP[nstay], 0, sizeof(dust_data));
+                            memset(&Tp->DustP[nstay],
+                                   0, sizeof(dust_data));
 #endif
 
                           nstay++;
@@ -922,7 +942,10 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
                 }
               else
                 {
-                  // only relevant for type_select == 0 (we keep non-selected particles in place)
+                  /*
+                   * Only reached on the gas-only pass.  Preserve the
+                   * non-selected non-gas block while local gas is compacted.
+                   */
                   if(rep == 0)
                     nstay++;
                   else
@@ -930,10 +953,11 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
                       Tp->P[nstay] = Tp->P[n];
 
 #ifdef DUST
-                      if(Tp->P[n].getType() == 6)
+                      if(Ptype[n] == 6)
                         Tp->DustP[nstay] = Tp->DustP[n];
                       else
-                        memset(&Tp->DustP[nstay], 0, sizeof(dust_data));
+                        memset(&Tp->DustP[nstay],
+                               0, sizeof(dust_data));
 #endif
 
                       nstay++;
@@ -943,10 +967,15 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 
           if(rep == 0)
             {
-              myMPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, Communicator);
+              myMPI_Alltoall(Send_count, 1, MPI_INT,
+                             Recv_count, 1, MPI_INT,
+                             Communicator);
 
-              nimport = 0; nexport = 0;
-              Recv_offset[0] = Send_offset[0] = 0;
+              nimport = 0;
+              nexport = 0;
+
+              Recv_offset[0] = 0;
+              Send_offset[0] = 0;
 
               for(int j = 0; j < CommNTask; j++)
                 {
@@ -955,16 +984,24 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 
                   if(j > 0)
                     {
-                      Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                      Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
+                      Send_offset[j] =
+                          Send_offset[j - 1] + Send_count[j - 1];
+
+                      Recv_offset[j] =
+                          Recv_offset[j - 1] + Recv_count[j - 1];
                     }
                 }
 
-              partBuf = (pdata *)Mem.mymalloc_movable(&partBuf, "partBuf", nexport * sizeof(pdata));
+              partBuf =
+                  (pdata *)Mem.mymalloc_movable(
+                      &partBuf, "partBuf",
+                      std::max(1, nexport) * (int)sizeof(pdata));
 
 #ifdef DUST
-              // IMPORTANT: allocate AFTER partBuf, and free BEFORE partBuf (LIFO)
-              dustBuf = (dust_data *)Mem.mymalloc_movable(&dustBuf, "dustBuf", nexport * sizeof(dust_data));
+              dustBuf =
+                  (dust_data *)Mem.mymalloc_movable_clear(
+                      &dustBuf, "dustBuf",
+                      std::max(1, nexport) * (int)sizeof(dust_data));
 #endif
             }
           else
@@ -972,22 +1009,33 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
               Tp->NumPart += (nimport - nexport);
 
               int max_load = Tp->NumPart;
-              MPI_Allreduce(MPI_IN_PLACE, &max_load, 1, MPI_INT, MPI_MAX, Communicator);
+              MPI_Allreduce(MPI_IN_PLACE, &max_load,
+                            1, MPI_INT, MPI_MAX, Communicator);
 
-              if(max_load > (1.0 - ALLOC_TOLERANCE) * Tp->MaxPart || max_load < (1.0 - 3 * ALLOC_TOLERANCE) * Tp->MaxPart)
-                Tp->reallocate_memory_maxpart(max_load / (1.0 - 2 * ALLOC_TOLERANCE));
+              if(max_load > (1.0 - ALLOC_TOLERANCE) * Tp->MaxPart ||
+                 max_load < (1.0 - 3 * ALLOC_TOLERANCE) * Tp->MaxPart)
+                Tp->reallocate_memory_maxpart(
+                    max_load / (1.0 - 2 * ALLOC_TOLERANCE));
 
               if(type_select == 0)
                 {
-                  // create a gap for incoming particles after local gas
-                  memmove(static_cast<void *>(Tp->P + nlocal + nimport),
-                          static_cast<void *>(Tp->P + nlocal),
-                          (nstay - nlocal) * sizeof(pdata));
+                  /*
+                   * Before the gas exchange:
+                   *   [local gas][all non-gas]
+                   *
+                   * Open a gap after local gas for imported gas.
+                   * DustP must undergo the identical memmove.
+                   */
+                  memmove(
+                      static_cast<void *>(Tp->P + nlocal + nimport),
+                      static_cast<void *>(Tp->P + nlocal),
+                      (nstay - nlocal) * sizeof(pdata));
 
 #ifdef DUST
-                  memmove(static_cast<void *>(Tp->DustP + nlocal + nimport),
-                          static_cast<void *>(Tp->DustP + nlocal),
-                          (nstay - nlocal) * sizeof(dust_data));
+                  memmove(
+                      static_cast<void *>(Tp->DustP + nlocal + nimport),
+                      static_cast<void *>(Tp->DustP + nlocal),
+                      (nstay - nlocal) * sizeof(dust_data));
 #endif
                 }
 
@@ -997,46 +1045,50 @@ void domain<partset>::particle_exchange_based_on_PS(MPI_Comm Communicator)
 
                   if(target < CommNTask)
                     {
-                      if(Send_count[target] > 0 || Recv_count[target] > 0)
+                      if(Send_count[target] > 0 ||
+                         Recv_count[target] > 0)
                         {
-                          myMPI_Sendrecv(partBuf + Send_offset[target], Send_count[target] * sizeof(pdata), MPI_BYTE,
-                                         target, TAG_PDATA,
-                                         Tp->P + Recv_offset[target] + nlocal, Recv_count[target] * sizeof(pdata), MPI_BYTE,
-                                         target, TAG_PDATA,
-                                         Communicator, MPI_STATUS_IGNORE);
+                          myMPI_Sendrecv(
+                              partBuf + Send_offset[target],
+                              Send_count[target] * sizeof(pdata),
+                              MPI_BYTE, target, TAG_PDATA,
+                              Tp->P + Recv_offset[target] + nlocal,
+                              Recv_count[target] * sizeof(pdata),
+                              MPI_BYTE, target, TAG_PDATA,
+                              Communicator, MPI_STATUS_IGNORE);
 
 #ifdef DUST
-                          myMPI_Sendrecv(dustBuf + Send_offset[target], Send_count[target] * sizeof(dust_data), MPI_BYTE,
-                                         target, TAG_DUSTDATA,
-                                         Tp->DustP + Recv_offset[target] + nlocal, Recv_count[target] * sizeof(dust_data), MPI_BYTE,
-                                         target, TAG_DUSTDATA,
-                                         Communicator, MPI_STATUS_IGNORE);
+                          myMPI_Sendrecv(
+                              dustBuf + Send_offset[target],
+                              Send_count[target] * sizeof(dust_data),
+                              MPI_BYTE, target, TAG_DUSTDATA,
+                              Tp->DustP + Recv_offset[target] + nlocal,
+                              Recv_count[target] * sizeof(dust_data),
+                              MPI_BYTE, target, TAG_DUSTDATA,
+                              Communicator, MPI_STATUS_IGNORE);
 #endif
                         }
                     }
                 }
 
 #ifdef DUST
-// CRITICAL: Zero DustP for ALL gas particles first
-for(int i = 0; i < Tp->NumGas; i++)
-  memset(&Tp->DustP[i], 0, sizeof(dust_data));
+              /*
+               * Every destination has now been populated in the exact same
+               * layout as P[].  Keep non-dust sidecar entries clean.
+               */
+              for(int i = 0; i < Tp->NumPart; i++)
+                if(Tp->P[i].getType() != 6)
+                  memset(&Tp->DustP[i], 0, sizeof(dust_data));
 
-// sanitize received slots: DustP meaningful only for type 6
-for(int i = nlocal; i < nlocal + nimport; i++)
-  {
-    if(Tp->P[i].getType() != 6)
-      memset(&Tp->DustP[i], 0, sizeof(dust_data));
-  }
+              Mem.myfree(dustBuf);
 #endif
-
-#ifdef DUST
-              Mem.myfree(dustBuf);   // MUST free dustBuf first (last allocated)
-#endif
-              Mem.myfree(partBuf);   // then partBuf
+              Mem.myfree(partBuf);
             }
         }
 
-      /* ------------------ Exchange PS[] (subfind data) ------------------ */
+      /* ------------------------------------------------------------
+       * Exchange PS[] using EXACTLY the same selection semantics as P[].
+       * ------------------------------------------------------------ */
 
       subfind_data *subBuf = NULL;
 
@@ -1050,11 +1102,12 @@ for(int i = nlocal; i < nlocal + nimport; i++)
 
           for(int n = 0; n < NumPart_saved; n++)
             {
-              const bool selected = (Ptype[n] == type_select) || (type_select != 0);
+              const bool selected =
+                  (Ptype[n] == type_select || type_select != 0);
 
               if(selected)
                 {
-                  int target = Ptask[n];
+                  const int target = Ptask[n];
 
                   if(rep == 0)
                     {
@@ -1069,7 +1122,10 @@ for(int i = nlocal; i < nlocal + nimport; i++)
                   else
                     {
                       if(target != CommThisTask)
-                        subBuf[Send_offset[target] + Send_count[target]++] = Tp->PS[n];
+                        {
+                          subBuf[Send_offset[target] +
+                                 Send_count[target]++] = Tp->PS[n];
+                        }
                       else
                         {
                           Tp->PS[nstay++] = Tp->PS[n];
@@ -1088,10 +1144,15 @@ for(int i = nlocal; i < nlocal + nimport; i++)
 
           if(rep == 0)
             {
-              myMPI_Alltoall(Send_count, 1, MPI_INT, Recv_count, 1, MPI_INT, Communicator);
+              myMPI_Alltoall(Send_count, 1, MPI_INT,
+                             Recv_count, 1, MPI_INT,
+                             Communicator);
 
-              nimport = 0; nexport = 0;
-              Recv_offset[0] = Send_offset[0] = 0;
+              nimport = 0;
+              nexport = 0;
+
+              Recv_offset[0] = 0;
+              Send_offset[0] = 0;
 
               for(int j = 0; j < CommNTask; j++)
                 {
@@ -1100,22 +1161,32 @@ for(int i = nlocal; i < nlocal + nimport; i++)
 
                   if(j > 0)
                     {
-                      Send_offset[j] = Send_offset[j - 1] + Send_count[j - 1];
-                      Recv_offset[j] = Recv_offset[j - 1] + Recv_count[j - 1];
+                      Send_offset[j] =
+                          Send_offset[j - 1] + Send_count[j - 1];
+
+                      Recv_offset[j] =
+                          Recv_offset[j - 1] + Recv_count[j - 1];
                     }
                 }
 
-              subBuf = (subfind_data *)Mem.mymalloc_movable(&subBuf, "subBuf", nexport * sizeof(subfind_data));
+              subBuf =
+                  (subfind_data *)Mem.mymalloc_movable(
+                      &subBuf, "subBuf",
+                      std::max(1, nexport) *
+                          (int)sizeof(subfind_data));
             }
           else
             {
-              Tp->PS = (subfind_data *)Mem.myrealloc_movable(Tp->PS, Tp->NumPart * sizeof(subfind_data));
+              Tp->PS =
+                  (subfind_data *)Mem.myrealloc_movable(
+                      Tp->PS, Tp->NumPart * sizeof(subfind_data));
 
               if(type_select == 0)
                 {
-                  memmove(Tp->PS + nlocal + nimport,
-                          Tp->PS + nlocal,
-                          (nstay - nlocal) * sizeof(subfind_data));
+                  memmove(
+                      Tp->PS + nlocal + nimport,
+                      Tp->PS + nlocal,
+                      (nstay - nlocal) * sizeof(subfind_data));
                 }
 
               for(int ngrp = 1; ngrp < (1 << CommPTask); ngrp++)
@@ -1124,13 +1195,17 @@ for(int i = nlocal; i < nlocal + nimport; i++)
 
                   if(target < CommNTask)
                     {
-                      if(Send_count[target] > 0 || Recv_count[target] > 0)
+                      if(Send_count[target] > 0 ||
+                         Recv_count[target] > 0)
                         {
-                          myMPI_Sendrecv(subBuf + Send_offset[target], Send_count[target] * sizeof(subfind_data), MPI_BYTE,
-                                         target, TAG_KEY,
-                                         Tp->PS + Recv_offset[target] + nlocal, Recv_count[target] * sizeof(subfind_data), MPI_BYTE,
-                                         target, TAG_KEY,
-                                         Communicator, MPI_STATUS_IGNORE);
+                          myMPI_Sendrecv(
+                              subBuf + Send_offset[target],
+                              Send_count[target] * sizeof(subfind_data),
+                              MPI_BYTE, target, TAG_KEY,
+                              Tp->PS + Recv_offset[target] + nlocal,
+                              Recv_count[target] * sizeof(subfind_data),
+                              MPI_BYTE, target, TAG_KEY,
+                              Communicator, MPI_STATUS_IGNORE);
                         }
                     }
                 }
@@ -1139,23 +1214,28 @@ for(int i = nlocal; i < nlocal + nimport; i++)
             }
         }
 
-      // FREE in reverse order of allocation inside type_select loop:
       Mem.myfree(Ptask);
       Mem.myfree(Ptype);
     }
 
-  // top-level frees (reverse order of allocation):
   Mem.myfree(Recv_offset);
   Mem.myfree(Recv_count);
   Mem.myfree(Send_offset);
   Mem.myfree(Send_count);
 
-  /* finally, address desired local order according to PS[].TargetIndex */
+  /* ------------------------------------------------------------
+   * Restore requested TargetIndex ordering locally.
+   * ------------------------------------------------------------ */
 
   if(Tp->NumGas)
     {
-      local_sort_data *mp = (local_sort_data *)Mem.mymalloc("mp", sizeof(local_sort_data) * Tp->NumGas);
-      int *Id             = (int *)Mem.mymalloc("Id", sizeof(int) * Tp->NumGas);
+      local_sort_data *mp =
+          (local_sort_data *)Mem.mymalloc(
+              "mp", sizeof(local_sort_data) * Tp->NumGas);
+
+      int *Id =
+          (int *)Mem.mymalloc(
+              "Id", sizeof(int) * Tp->NumGas);
 
       for(int i = 0; i < Tp->NumGas; i++)
         {
@@ -1163,7 +1243,8 @@ for(int i = nlocal; i < nlocal + nimport; i++)
           mp[i].targetindex = Tp->PS[i].TargetIndex;
         }
 
-      mycxxsort(mp, mp + Tp->NumGas, compare_local_sort_data_targetindex);
+      mycxxsort(mp, mp + Tp->NumGas,
+                compare_local_sort_data_targetindex);
 
       for(int i = 0; i < Tp->NumGas; i++)
         Id[mp[i].index] = i;
@@ -1180,11 +1261,15 @@ for(int i = nlocal; i < nlocal + nimport; i++)
     }
 
   if(Tp->NumPart - Tp->NumGas > 0)
-    {
-      reorder_P_PS(Tp->NumGas, Tp->NumPart);
-    }
-}
+    reorder_P_PS(Tp->NumGas, Tp->NumPart);
 
+#ifdef DUST
+  /* Final sidecar cleanliness check. */
+  for(int i = 0; i < Tp->NumPart; i++)
+    if(Tp->P[i].getType() != 6)
+      memset(&Tp->DustP[i], 0, sizeof(dust_data));
+#endif
+}
 
 
 #include "../data/simparticles.h"

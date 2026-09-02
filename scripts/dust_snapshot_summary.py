@@ -80,7 +80,7 @@ MW_DTZ = 0.45
 
 
 DUST_FIELDS_6 = ["Coordinates", "Masses", "Velocities", "GrainRadius",
-                 "GrainType", "CarbonFraction", "DustTemperature",
+                 "GrainType", "CarbonMassFraction", "DustTemperature",
                  "DustFormationTime", "ParticleIDs"]
 GAS_FIELDS_0 = ["Coordinates", "Masses", "Metallicity"]
 
@@ -206,7 +206,7 @@ def main():
     dust_mass_msun = convert_code_mass_to_msun(dust["Masses"], h)
     grain_radius_nm = dust["GrainRadius"]
     grain_type = dust["GrainType"].astype(int) if "GrainType" in dust else None
-    carbon_frac = dust.get("CarbonFraction")
+    carbon_frac = dust.get("CarbonMassFraction")
     dust_temp = dust.get("DustTemperature")
 
     n_dust_total = len(dust_mass_msun)
@@ -304,7 +304,7 @@ def main():
         print("  (GrainType field not found)")
     if carbon_frac is not None:
         print()
-        print(fmt_stats(carbon_frac, "CarbonFraction (per-particle)"))
+        print(fmt_stats(carbon_frac, "CarbonMassFraction (per-particle)"))
     box_bottom()
 
     # -------------------------------------------------------------------
@@ -374,9 +374,9 @@ def main():
     if grain_type is not None:
         n_other = int(n_dust_total - int(np.sum(grain_type == 0)) - int(np.sum(grain_type == 1)))
         if n_other > 0:
-            issues.append(f"{n_other:,} particles have an unexpected GrainType value")
+            issues.append(f"{n_other:,} particles have an unexpected DustSource value")
         else:
-            successes.append("All particles have a valid GrainType (0=silicate, 1=carbon)")
+            successes.append("All particles have a valid DustSource (0=SNII, 1=AGB, 2=LRN)")
 
     if dust_temp is not None and np.mean(dust_temp) > 10000:
         issues.append("Mean dust temperature is implausibly high")

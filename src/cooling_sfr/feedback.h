@@ -27,14 +27,14 @@
 /* Initialize feedback system (called once at startup) */
 void init_stellar_feedback(void);
 
-/* Apply stellar feedback for current timestep 
- * 
+/* Apply stellar feedback for current timestep
+ *
  * This handles:
  *   - Aging stars and triggering SNII/AGB events
  *   - Energy reservoir management and release
  *   - Stochastic heating of neighboring gas
  */
-void apply_stellar_feedback(double current_time, simparticles *Sp, 
+void apply_stellar_feedback(double current_time, simparticles *Sp,
                            ngbtree *Tree, domain<simparticles> *D, MPI_Comm comm);
 
 /* Print feedback statistics (called at each output) */
@@ -54,13 +54,11 @@ struct FeedbackDiagLocal {
   double E_deposited_erg = 0.0;
   double E_to_reservoir_erg = 0.0;
   double E_from_reservoir_erg = 0.0;
-  double max_abs_dulog = 0.0;
 
   void reset() {
     n_SNII = n_AGB = 0;
     E_SN_erg = E_AGB_erg = 0.0;
     E_deposited_erg = E_to_reservoir_erg = E_from_reservoir_erg = 0.0;
-    max_abs_dulog = 0.0;
   }
 };
 

@@ -1,41 +1,34 @@
+# Dust Physics
 
-In this section, we summarize the treatment for each dust process in CosmicGrain.
+CosmicGrain represents dust with explicit **PartType6 superparticles** carrying individual mass, grain radius, carbon fraction, position, velocity, formation time, and stellar-source information.
 
-Here is a list of the primary research sources for the dust physics:
- 
- *  DUST CREATION
- *    Todini & Ferrara 2001        — SN dust yields
- *    Ferrarotti & Gail 2006       — AGB dust yields
- *    Nozawa et al. 2003           — Dust condensation in SN ejecta
- *
- *  GRAIN GROWTH (accretion)
- *    Hirashita & Kuo 2011 (HK11)  — Subgrid accretion timescales
- *    Asano et al. 2013            — Accretion + coagulation framework
- *
- *  THERMAL SPUTTERING
- *    Draine & Salpeter 1979       — Thermal sputtering physics
- *    McKinnon et al. 2017         — Sputtering timescale formula (Eq. 2)
- *    Tsai & Mathews 1995          — Sputtering in hot gas
- *
- *  SHOCK DESTRUCTION
- *    McKee & Ostriker 1977        — SN energetics (10^51 erg standard)
- *    Sedov 1959                   — Self-similar blast wave solution
- *    Jones et al. 1994, 1996      — Grain shattering threshold (~50 km/s)
- *    Bocchio et al. 2014          — Grain destruction efficiencies (Table 6)
- *
- *  DRAG COUPLING
- *    McKinnon et al. 2018         — Epstein drag (eqs. 8–9)
- *
- *  GRAIN TEMPERATURE
- *    Hollenbach & McKee 1979      — Gas-grain collisional coupling
- *    Draine & Lee 1984            — Modified blackbody Q_abs opacity law
- *    Mathis et al. 1983           — ISRF parametrisation
- *    Draine & Li 2007             — Grain opacity and composition
- *
- *  RADIATION PRESSURE
- *    Draine & Lee 1984            — Q_pr radiation pressure efficiency
- *    Draine & Li 2007             — Grain opacity and composition treatment
- *
- *  GENERAL FRAMEWORK
- *    Dwek 1998                    — Dust evolution in the ISM
- *    McKinnon et al. 2016         — Dust in cosmological simulations
+The current dust lifecycle includes:
+
+- stellar dust creation from **SNII, AGB stars, and luminous red novae (LRNe)**
+- dust cooling
+- gas-dust drag
+- astration
+- thermal sputtering and sublimation
+- ISM grain growth
+- subgrid clumping
+- SN shock destruction
+- coagulation
+- shattering
+- radiation pressure
+- evolving carbon/silicate composition
+
+The enrichment model additionally tracks C, N, O, Ne, Mg, Si, and Fe in the gas.
+
+## Primary physical foundations
+
+- **Dust creation:** Todini & Ferrara (2001); Nozawa et al. (2003); Ferrarotti & Gail (2006)
+- **Grain growth:** Hirashita & Kuo (2011); Asano et al. (2013)
+- **Thermal sputtering:** Draine & Salpeter (1979); Tsai & Mathews (1995); McKinnon et al. (2017)
+- **Shock destruction:** Jones et al. (1994, 1996); Bocchio et al. (2014)
+- **Drag coupling:** McKinnon et al. (2018)
+- **Grain temperature/opacity:** Draine & Lee (1984); Mathis et al. (1983); Draine & Li (2007)
+- **General framework:** Dwek (1998); McKinnon et al. (2016)
+
+## Model-status note
+
+Implementation does not imply final calibration. In particular, the **LRN source channel is operational but its absolute dust-yield normalization remains under active investigation**. Quantitative galaxy-scale dust distributions are also being tested for numerical convergence across the zoom-resolution ladder.

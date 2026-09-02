@@ -1,11 +1,11 @@
-/* 
+/*
 ******************************************************************************
  * \copyright   This file is part of the GADGET4 N-body/SPH code developed
  * \copyright   by Volker Springel. Copyright (C) 2014-2020 by Volker Springel
  * \copyright   (vspringel@mpa-garching.mpg.de) and all contributing authors.
- * 
+ *
  * This file is only lightly modified for CosmicGrain, in the following ways:
- * 
+ *
  *  * 1. DUST ASTRATION (make_star)
  *    When a gas particle forms a star — either by conversion or spawning —
  *    consume_dust_by_astration() is called to remove dust mass proportional
@@ -24,8 +24,8 @@
  * 4. STELLAR EVOLUTION DIAGNOSTICS (sfr_create_star_particles)
  *    Optional debug output: M*, M_halo, M*-to-M_halo logged when
  *    StarformationDebugLevel != 0.
- * 
- ****************************************************************************** 
+ *
+ ******************************************************************************
  */
 
 /*! \file starformation.cc
@@ -52,8 +52,6 @@
 #include "../logs/timer.h"
 #include "../system/system.h"
 #include "../time_integration/timestep.h"
-#include "../cooling_sfr/cooling.h"
-#include "../data/allvars.h"
 
 #ifdef DUST
 #include "../dust/dust.h"  // NEW: For consume_dust_by_astration()
@@ -115,9 +113,37 @@ void coolsfr::sfr_create_star_particles(simparticles *Sp)
 
               w = get_random_number();
 
-              Sp->SphP[target].Metallicity += w * METAL_YIELD * (1 - exp(-p));
-              Sp->SphP[target].MassMetallicity = Sp->SphP[target].Metallicity * Sp->P[target].getMass();
-              Sp->P[target].Metallicity        = Sp->SphP[target].Metallicity;
+// Instantaneous metal enrichment associated with star formation.
+// For the current plumbing test, partition newly produced metals
+// according to the AGSS21 solar heavy-element abundance pattern.
+double dZ = w * METAL_YIELD * (1.0 - exp(-p));
+
+Sp->SphP[target].Metallicity += dZ;
+
+// Element-resolved gas enrichment.
+// Each Gas*MassFraction is M_element / M_gas, so because this
+// enrichment changes composition but not gas mass here, we can
+// add the corresponding elemental mass fractions directly.
+Sp->SphP[target].GasCarbonMassFraction +=
+    dZ * SOLAR_METAL_FRAC_C;
+
+Sp->SphP[target].GasOxygenMassFraction +=
+    dZ * SOLAR_METAL_FRAC_O;
+
+Sp->SphP[target].GasMagnesiumMassFraction +=
+    dZ * SOLAR_METAL_FRAC_MG;
+
+Sp->SphP[target].GasSiliconMassFraction +=
+    dZ * SOLAR_METAL_FRAC_SI;
+
+Sp->SphP[target].GasIronMassFraction +=
+    dZ * SOLAR_METAL_FRAC_FE;
+
+Sp->SphP[target].MassMetallicity =
+    Sp->SphP[target].Metallicity * Sp->P[target].getMass();
+
+Sp->P[target].Metallicity =
+    Sp->SphP[target].Metallicity;
 
               mass_of_star = Sp->P[target].getMass();
 
@@ -140,8 +166,27 @@ void coolsfr::sfr_create_star_particles(simparticles *Sp)
             {
               if(Sp->P[target].getType() == 0) /* to protect using a particle that has been turned into a star */
                 {
-                  Sp->SphP[target].Metallicity += (1 - w) * METAL_YIELD * (1 - exp(-p));
-                  Sp->SphP[target].MassMetallicity = Sp->SphP[target].Metallicity * Sp->P[target].getMass();
+                  double dZ = (1.0 - w) * METAL_YIELD * (1.0 - exp(-p));
+
+                  Sp->SphP[target].Metallicity += dZ;
+
+                  Sp->SphP[target].GasCarbonMassFraction +=
+                      dZ * SOLAR_METAL_FRAC_C;
+
+                  Sp->SphP[target].GasOxygenMassFraction +=
+                      dZ * SOLAR_METAL_FRAC_O;
+
+                  Sp->SphP[target].GasMagnesiumMassFraction +=
+                      dZ * SOLAR_METAL_FRAC_MG;
+
+                  Sp->SphP[target].GasSiliconMassFraction +=
+                      dZ * SOLAR_METAL_FRAC_SI;
+
+                  Sp->SphP[target].GasIronMassFraction +=
+                      dZ * SOLAR_METAL_FRAC_FE;
+
+                  Sp->SphP[target].MassMetallicity =
+                      Sp->SphP[target].Metallicity * Sp->P[target].getMass();
                 }
             }
           Sp->P[target].Metallicity = Sp->SphP[target].Metallicity;
@@ -187,28 +232,28 @@ if(tot_stars_spawned > 0 || tot_stars_converted > 0)
         snprintf(fname, sizeof(fname), "%s/stellar_evolution.txt", All.OutputDir);
         FILE *fd = fopen(fname, "a");
         if(fd) {
-            fprintf(fd, "%.6e %.6e %.6e %.6e\n", 
+            fprintf(fd, "%.6e %.6e %.6e %.6e\n",
                     All.Time, stellar_mass_msun, dm_mass_msun, stellar_to_halo);
             fclose(fd);
         }
     }
     */
-   
+
     // Screen output - ONLY if debug is enabled
     if(All.StarformationDebugLevel != 0)
     {
         double time_since_last_print = All.Time - last_sf_print_time;
-        
+
         // Print if enough time has passed (0.01 in scale factor)
         if(ThisTask == 0 && (time_since_last_print > 0.01 || last_sf_print_time == 0.0))
         {
             long long total_this_step = tot_stars_spawned + tot_stars_converted;
-            
+
             SF_PRINT("SFR: spawned %d stars, converted %d gas particles into stars\n",
                     tot_stars_spawned, tot_stars_converted);
             SF_PRINT("     M*=%.3e Msun, M_halo=%.3e Msun, M*/M_halo=%.4e\n",
                     stellar_mass_msun, dm_mass_msun, stellar_to_halo);
-            
+
             last_sf_print_time = All.Time;
             last_print_total_stars = total_this_step;
         }
@@ -334,7 +379,9 @@ void coolsfr::convert_sph_particle_into_star(simparticles *Sp, int i, double bir
   Sp->TimeBinSfr[Sp->P[i].getTimeBinHydro()] -= Sp->SphP[i].Sfr;
 
   Sp->P[i].StellarAge = birthtime;
+  Sp->P[i].StellarBirthMass = Sp->P[i].getMass();
   Sp->P[i].FeedbackFlag = 0;
+  Sp->P[i].EnergyReservoir = 0.0;
 
   return;
 }
@@ -372,8 +419,10 @@ void coolsfr::spawn_star_from_sph_particle(simparticles *Sp, int igas, double bi
   Sp->P[istar].setMass(mass_of_star);
 
   Sp->P[istar].StellarAge = birthtime;
+  Sp->P[istar].StellarBirthMass = Sp->P[istar].getMass();
   Sp->P[istar].FeedbackFlag = 0;
-  
+  Sp->P[istar].EnergyReservoir = 0.0;
+
   /* now change the conserved quantities in the cell in proportion */
   double fac = (Sp->P[igas].getMass() - Sp->P[istar].getMass()) / Sp->P[igas].getMass();
 
@@ -435,7 +484,7 @@ void coolsfr::make_star(simparticles *Sp, int i, double prob, MyDouble mass_of_s
 
           *sum_mass_stars += mass_of_star;
           stars_spawned++;
-          
+
           // ============================================================
           // NEW: Consume dust by astration (gas → star locks up dust)
           // ============================================================

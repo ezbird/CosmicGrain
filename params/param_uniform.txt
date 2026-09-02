@@ -13,7 +13,7 @@ ICFormat             3
 SnapFormat           3
 
 %---- CPU-time limits
-TimeLimitCPU              1728000   
+TimeLimitCPU              1728000
 CpuTimeBetRestartFile     7200    % 2h,  in seconds
 
 %----- Memory allocation
@@ -71,14 +71,14 @@ UnitMass_in_g            1.989e43           ;  1.0e10 Msun
 UnitVelocity_in_cm_per_s 1e5                ;  1 km/sec
 GravityConstantInternal  0
 
-%---- SPH 
+%---- SPH
 DesNumNgb                        64      % Standard SPH neighbors; AGORA uses 128 ± 8
 MaxNumNgbDeviation               16       % Standard deviation
-#DesLinkNgb                       20 
+#DesLinkNgb                       20
 ArtBulkViscConst                 1.0        % Viscosity parameter
-MinGasHsml                       0.002    
-MaxGasHsml                       5         % maybe silly to keep this?      
-InitGasTemp                      10000       
+MinGasHsml                       0.002
+MaxGasHsml                       5         % maybe silly to keep this?
+InitGasTemp                      10000
 #MinGasTemp                       50         % Minimum temperature floor
 
 
@@ -120,7 +120,7 @@ SofteningClassOfPartType5   5   ; (unused / outer LR)
 
 %---- Velocity Limiter Parameters
 #LimitExtremeVelocities     1       % Prevent runaway particles
-#LimitVelocitiesOnlyForGas  0       
+#LimitVelocitiesOnlyForGas  0
 #MaxAllowedVelocity         1000    % Higher for zoom (km/s in code units)
 
 %----- Cooling and Star formation
@@ -137,7 +137,7 @@ MinEgySpec            0          % No minimum energy; 0.1 is 10-50,000K. Probabl
 
 %----- Debugging (REDUCE FOR PERFORMANCE)
 StarformationDebugLevel   1       % 0=off, 1=on
-FeedbackDebugLevel       1     
+FeedbackDebugLevel       1
 
 
 #TargetGasMass         1.0e5      % Target gas particle mass in code units
@@ -147,10 +147,10 @@ FeedbackDebugLevel       1
 #WindFreeTravelDensFac 0.1
 
 %---- Dust Model Parameters
-#DustCondensationEfficiency      0.3     
-#DustGrowthTimescaleNorm         1.0e8   
-#DustDestructionThresholdVelocity 50.0   
-#DustThermalSputteringTemp        1.0e6  
+#DustCondensationEfficiency      0.3
+#DustGrowthTimescaleNorm         1.0e8
+#DustDestructionThresholdVelocity 50.0
+#DustThermalSputteringTemp        1.0e6
 
 
 %---- NGENIC Parameters (used ONLY when compiled with NGENIC)

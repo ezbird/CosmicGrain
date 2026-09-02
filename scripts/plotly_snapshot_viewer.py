@@ -27,7 +27,9 @@ Examples:
       --center 25000 25000 25000 --rmax 3000
 
   # HALO MODE (extract target halo automatically via halo_utils):
-  python plotly_snapshot_viewer.py ../S10_output_1024/snapdir_047 --snap 47 --catalog --types 0 1 4 6 --rmax 200 --out my_halo.html
+  python plotly_snapshot_viewer.py ../S10_output_2048_cygnus_ISM_devoid/snapdir_049 \
+      --snap 49 --catalog \
+      --types 0 1 4 6 --rmax 200 --out my_halo.html
 """
 
 import argparse
@@ -472,8 +474,15 @@ def main():
         print(f"Snapshot:   {snap_num:03d}")
         print()
 
-        ref = get_halo569_reference(output_dir, verbose=True)
-        halo = get_halo569(groups_dir, snap_num, ref, verbose=True)
+        # refine_center=False: use the frozen FOF/catalog center, matching
+        # every other script in this pipeline. Without this, halo_utils'
+        # default shrinking-sphere refinement can wander a large offset from
+        # the true center on some snapshots, producing a spuriously small SO
+        # R200/M200 -- confirmed to actually happen on this halo at snap 047
+        # (172 ckpc/h offset, R200 dropped from 115.3 to 66.1 pkpc) while
+        # fixing the identical bug in plot_dust_histograms_agecoded.py.
+        ref = get_halo569_reference(output_dir, verbose=True, refine_center=False)
+        halo = get_halo569(groups_dir, snap_num, ref, verbose=True, refine_center=False)
         if halo is None:
             print(f"ERROR: could not identify the target halo at snap {snap_num:03d}.", file=sys.stderr)
             sys.exit(1)

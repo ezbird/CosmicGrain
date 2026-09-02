@@ -229,7 +229,7 @@ void sim::run(void)
           DustNeedsSynchronization = 0;
         }
         #endif
-        
+
       /* kicks particles by half a gravity step */
       find_timesteps_and_do_gravity_step_first_half();
 
@@ -262,7 +262,7 @@ void sim::run(void)
 
 
       /* Print timebin distribution for diagnostics */
-      print_timestep_distribution(); 
+      print_timestep_distribution();
 
       /* compute hydro-forces */
       do_hydro_step_first_half();
@@ -313,21 +313,17 @@ void sim::set_non_standard_physics_for_current_time(void)
  */
 void sim::calculate_non_standard_physics_end_of_step(void)
 {
-  MPI_CHECKPOINT("before cooling_and_starformation");
+
   #ifdef COOLING
   #ifdef STARFORMATION
     CoolSfr.cooling_and_starformation(&Sp);
-    MPI_CHECKPOINT("before sfr_create_star_particles");
     CoolSfr.sfr_create_star_particles(&Sp);
   #endif
   #endif
 
-  MPI_CHECKPOINT("before apply_stellar_feedback");
   #ifdef FEEDBACK
     apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain, Communicator);
-    MPI_CHECKPOINT("before feedback_diag_try_flush");
     feedback_diag_try_flush(Communicator, /*cadence=*/50);
-    MPI_CHECKPOINT("after feedback_diag_try_flush");
   #endif
 
   #ifdef MEASURE_TOTAL_MOMENTUM
@@ -641,10 +637,9 @@ void sim::create_snapshot_if_desired(void)
          * communicators without carrying DustP, corrupting grain data.
          * After the return exchange P[i] is back in its original slot;
          * we restore DustP[i] using this map. */
-        MPI_CHECKPOINT("before dust_backup build");
         std::unordered_map<MyIDType, dust_data> dust_backup;
         {
-          
+
           int ndust = 0;
           for(int i = 0; i < Sp.NumPart; i++)
             if(Sp.P[i].getType() == 6) ndust++;
@@ -653,11 +648,9 @@ void sim::create_snapshot_if_desired(void)
             if(Sp.P[i].getType() == 6)
               dust_backup[Sp.P[i].ID.get()] = Sp.DustP[i];
         }
-        MPI_CHECKPOINT("after dust_backup build");
         #endif
 
         FoF.fof_fof(All.SnapshotFileCount, "fof", "groups", 0);
-        MPI_CHECKPOINT("after fof_fof");
 
 #if defined(MERGERTREE) && defined(SUBFIND)
         MergerTree.CurrTotNsubhalos = FoF.TotNsubhalos;
@@ -685,28 +678,6 @@ void sim::create_snapshot_if_desired(void)
 #endif
 #endif
 
-        // ── Pre-snapshot DustP restore ─────────────────────────────────────
-        // Particles are currently in SUBFIND order.  Restore DustP by ID
-        // so the snapshot contains correct grain data, not stale slot values.
-        #ifdef DUST
-        for(int i = 0; i < Sp.NumPart; i++)
-          if(Sp.P[i].getType() == 6)
-            {
-              auto it = dust_backup.find(Sp.P[i].ID.get());
-              if(it != dust_backup.end())
-                Sp.DustP[i] = it->second;
-              // if not found: newly created particle, leave as-is
-            }
-        #endif
-        
-        if(All.DumpFlag_nextoutput)
-          {
-            snap_io Snap(&Sp, Communicator, All.SnapFormat);             /* get an I/O object */
-            MPI_CHECKPOINT("after pre-snapshot restore");
-            Snap.write_snapshot(All.SnapshotFileCount, NORMAL_SNAPSHOT); /* write snapshot file */
-            MPI_CHECKPOINT("after write_snapshot");
-          }
-
 #ifdef SUBFIND_ORPHAN_TREATMENT
         {
           snap_io Snap(&Sp, Communicator, All.SnapFormat);
@@ -716,7 +687,9 @@ void sim::create_snapshot_if_desired(void)
 
 #ifdef FOF
         // Track stellar evolution in target halo
+        #if defined(COOLING) && defined(STARFORMATION)
         CoolSfr.track_target_halo_evolution(&Sp, All.SnapshotFileCount);
+        #endif
 
         /* now revert from output order to the original order */
         for(int n = 0; n < Sp.NumPart; n++)
@@ -728,31 +701,71 @@ void sim::create_snapshot_if_desired(void)
         TIMER_START(CPU_FOF);
 
         Domain.particle_exchange_based_on_PS(Communicator);
-        MPI_CHECKPOINT("after particle_exchange_based_on_PS");
 
         TIMER_STOP(CPU_FOF);
 
         #ifdef DUST
-                /* Restore DustP now that particles are back in their original slots. */
-                for(int i = 0; i < Sp.NumPart; i++)
-                  if(Sp.P[i].getType() == 6)
-                    {
-                      auto it = dust_backup.find(Sp.P[i].ID.get());
-                      if(it != dust_backup.end())
-                        Sp.DustP[i] = it->second;
-                      else
-                        memset(&Sp.DustP[i], 0, sizeof(dust_data));
-                    }
-                dust_backup.clear();
-                /* cleanup_invalid call below is now just a sanity check, should find 0 */
+          /*
+           * SUBFIND can redistribute particles across MPI tasks through
+           * pathways that do not carry the CosmicGrain DustP sidecar.
+           * particle_exchange_based_on_PS() has now returned every particle
+           * to its recorded OriginTask/OriginIndex, so this task-local backup
+           * is authoritative again.
+           */
+          for(int i = 0; i < Sp.NumPart; i++)
+            if(Sp.P[i].getType() == 6)
+              {
+                auto it = dust_backup.find(Sp.P[i].ID.get());
+
+                if(it == dust_backup.end())
+                  Terminate("Dust particle missing from origin-task backup after SUBFIND return");
+
+                Sp.DustP[i] = it->second;
+              }
+
+          dust_backup.clear();
 
           cleanup_invalid_dust_particles(&Sp);
           gas_hash.is_built = false;
           star_hash.is_built = false;
-
-          MPI_CHECKPOINT("after post-exchange restore");
         #endif
 
+#endif
+
+        /*
+         * Write the normal snapshot only after any FOF/SUBFIND particle
+         * redistribution has been reversed and DustP has been restored on
+         * each particle's origin task. Particle ordering is not part of the
+         * physical snapshot state, while preserving the P/DustP association
+         * is essential.
+         */
+#ifdef DUST
+        for(int i = 0; i < Sp.NumPart; i++)
+          if(Sp.P[i].getType() == 6)
+            {
+              const double radius = Sp.DustP[i].GrainRadius;
+              const double cf     = Sp.DustP[i].CarbonMassFraction;
+              const double temp   = Sp.DustP[i].DustTemperature;
+
+              if(!isfinite(radius) || radius <= 0.0 ||
+                 !isfinite(cf) || cf < 0.0 || cf > 1.0 ||
+                 !isfinite(temp) || temp <= 0.0)
+                Terminate("Invalid DustP state immediately before normal snapshot write");
+            }
+#endif
+
+        if(All.DumpFlag_nextoutput)
+          {
+            snap_io Snap(&Sp, Communicator, All.SnapFormat);             /* get an I/O object */
+            Snap.write_snapshot(All.SnapshotFileCount, NORMAL_SNAPSHOT); /* write snapshot file */
+          }
+
+#ifdef FOF
+        /*
+         * Snapshot fields such as SubfindDensity are backed by Sp.PS.
+         * Keep this sidecar alive until the normal snapshot has finished,
+         * even though P and DustP have already been returned to origin order.
+         */
         Mem.myfree(Sp.PS);
 #endif
 
@@ -916,18 +929,18 @@ void sim::print_timestep_distribution(void)
   // Only print every 10 sync-points
   static int sync_count = 0;
   sync_count++;
-  
+
   if(sync_count % 10 != 0)
     return;
-  
+
   if(ThisTask != 0)
     return;
-  
+
   // Count particles on each timebin (gas only)
   int bin_counts[TIMEBINS];
   for(int i = 0; i < TIMEBINS; i++)
     bin_counts[i] = 0;
-  
+
   for(int i = 0; i < Sp.NumGas; i++)
   {
     if(Sp.P[i].getType() == 0)  // Gas particles
@@ -937,10 +950,10 @@ void sim::print_timestep_distribution(void)
         bin_counts[bin]++;
     }
   }
-  
+
   // Print compact summary showing only occupied bins
   mpi_printf("TIMEBIN_HYDRO [z=%.2f]:", 1.0/All.Time - 1.0);
-  
+
   for(int b = 0; b < TIMEBINS; b++)
   {
     if(bin_counts[b] > 0)

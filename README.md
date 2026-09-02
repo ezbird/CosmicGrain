@@ -12,7 +12,7 @@ For more information, visit: https://cosmicgrain.space
 
 CosmicGrain models the full dust lifecycle through:
 
-* **Dust creation** from SNII and AGB stars
+* **Dust creation** from SNII, AGB stars, and luminous red novae (LRNe)
 * **Astration** during star formation
 * **Gas-dust drag**
 * **Thermal sputtering** in hot gas
@@ -22,6 +22,8 @@ CosmicGrain models the full dust lifecycle through:
 * **Coagulation**
 * **Shattering**
 * **Radiation pressure**
+* **Evolving carbon/silicate grain composition**
+* **Element-resolved gas enrichment** (C, N, O, Ne, Mg, Si, Fe)
 
 ---
 
@@ -58,6 +60,29 @@ The primary CosmicGrain science run follows a Milky Way-mass zoom galaxy ("Halo 
 | h          | 0.6732                 |
 | Ωm         | 0.3158                 |
 | Ωb         | 0.0494                 |
+
+---
+
+## Validation and Numerical Status
+
+A complete dust-enabled **Halo 295 / 512** zoom validation run has evolved from **z = 98.10 to z = 0**, exercising star formation, enrichment, live PartType6 dust, domain decomposition, and FOF/SUBFIND.
+
+Whole-box bookkeeping gives:
+
+| Test | Result |
+| --- | ---: |
+| Fractional baryonic-mass drift | 7.747311 × 10⁻⁹ |
+| Fractional dark-matter mass drift | 7.375289 × 10⁻¹⁶ |
+| Dust carbon + silicate mass closure | 1.000000000000 |
+| Non-finite particle masses | 0 |
+| Negative particle masses | 0 |
+| Invalid dust carbon fractions | 0 |
+
+This is a **code-validation benchmark, not a physical-convergence claim**. The 512³-equivalent zoom level is used primarily for inexpensive validation; quantitative internal galaxy structure, dust morphology, D/G, D/Z, and dust transport are being convergence-tested at higher resolution.
+
+The LRN dust-production channel is implemented and operational, but its absolute yield normalization remains under active calibration.
+
+See `docs/validation/` for the detailed validation record.
 
 ---
 
@@ -144,7 +169,7 @@ Current applications include:
 * Evolution of the cosmic dust budget
 * Dust-to-gas and dust-to-metal ratios
 * Dust in galactic halos and the CGM
-* Dust production from stellar sources
+* Dust production from SNII, AGB stars, and LRNe
 * Synthetic observations for JWST and ALMA comparisons
 * Dusty high-redshift galaxies (z ≳ 6)
 
@@ -156,4 +181,3 @@ If you use CosmicGrain in scientific work, please cite:
 
 * The CosmicGrain code paper (in preparation)
 * Springel et al. (2021), GADGET-4
-

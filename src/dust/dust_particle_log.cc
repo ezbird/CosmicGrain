@@ -25,7 +25,7 @@
 //
 // ── SPUTTERING THROTTLE ──────────────────────────────────────────────────────
 //
-// AGB-carbon grains (GrainType==1) below AGB_SPUTTER_MASS_THRESH code units
+// AGB-carbon grains (DustSource==1) below AGB_SPUTTER_MASS_THRESH code units
 // are not logged. These grains are created at ~1e-15 code units and
 // immediately sputtered in hot CGM gas, contributing <0.01% of sputtered
 // mass but ~45% of log rows at 1024³ (and higher fractions at 2048³).
@@ -111,7 +111,7 @@
 // Number of events between explicit fflush calls (crash-safety checkpoint).
 static constexpr int FLUSH_INTERVAL = 10000;
 
-// AGB-carbon grains (GrainType==1) below this mass threshold are not logged
+// AGB-carbon grains (GraiDustSourcenType==1) below this mass threshold are not logged
 // when sputtered. They are created at ~1e-15 code units and immediately
 // destroyed in hot CGM gas — no transport information is lost by skipping them.
 // SNII-silicate (type 0) and mixed (type 2) grains are always logged.
@@ -372,7 +372,7 @@ void log_dust_particle_event(simparticles *Sp, int dust_idx,
     // sputtered mass. SNII and mixed grains are always logged.
     if(event_type == DUST_EVENT_THERMAL              &&
        AGB_SPUTTER_MASS_THRESH > 0.0                 &&
-       Sp->DustP[dust_idx].GrainType == 1            &&
+       Sp->DustP[dust_idx].DustSource == 1            &&
        Sp->P[dust_idx].getMass() < AGB_SPUTTER_MASS_THRESH)
         return;
 
@@ -433,9 +433,9 @@ void log_dust_particle_event(simparticles *Sp, int dust_idx,
         displacement,
         Sp->P[dust_idx].getMass(),
         (double)Sp->DustP[dust_idx].GrainRadius,
-        (double)Sp->DustP[dust_idx].CarbonFraction,
+        (double)Sp->DustP[dust_idx].CarbonMassFraction,
         gas_density,
-        (int)Sp->DustP[dust_idx].GrainType,
+        (int)Sp->DustP[dust_idx].DustSource,
         event_type);
 
     static int event_count = 0;

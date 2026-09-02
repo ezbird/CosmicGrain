@@ -124,7 +124,7 @@ void global_data_all_processes::register_parameters(void)
 
   add_param("SpatialHashDebugLevel", &SpatialHashDebugLevel, PARAM_INT, PARAM_FIXED);
   add_param("CheckpointDebugLevel", &CheckpointDebugLevel, PARAM_INT, PARAM_FIXED);
-  
+
   for(int i = 0; i < NSOFTCLASSES; i++)
     {
       char buf_l[MAXLEN_PARAM_TAG];
@@ -199,7 +199,11 @@ void global_data_all_processes::register_parameters(void)
 
 #ifdef FEEDBACK
   add_param("FeedbackDebugLevel", &FeedbackDebugLevel, PARAM_INT, PARAM_FIXED);
-  add_param("AGByieldFile", AGByieldFile, PARAM_STRING, PARAM_CHANGEABLE);
+  add_param("AGBYieldFile", AGBYieldFile, PARAM_STRING, PARAM_CHANGEABLE);
+  add_param("SNIIYieldFile", SNIIYieldFile, PARAM_STRING, PARAM_CHANGEABLE);
+  add_param("HypernovaYieldFile", HypernovaYieldFile, PARAM_STRING, PARAM_CHANGEABLE);
+  add_param("HypernovaFraction", &HypernovaFraction, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("SNEfficiency", &SNEfficiency, PARAM_DOUBLE, PARAM_FIXED);
 #endif
 
 #ifdef DUST
@@ -222,11 +226,15 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustDebugLevel", &DustDebugLevel, PARAM_INT, PARAM_FIXED);
   add_param("DustParticlesPerSNII", &DustParticlesPerSNII, PARAM_INT, PARAM_FIXED);
   add_param("DustParticlesPerAGB", &DustParticlesPerAGB, PARAM_INT, PARAM_FIXED);
+  add_param("DustParticlesPerLRN", &DustParticlesPerLRN, PARAM_INT, PARAM_FIXED);
   add_param("DustThermalSputteringTemp", &DustThermalSputteringTemp, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustVelocitySNII", &DustVelocitySNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustVelocityAGB", &DustVelocityAGB, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustVelocityLRN", &DustVelocityLRN, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustYieldSNII", &DustYieldSNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustYieldAGB", &DustYieldAGB, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustLRNRatePerCCSN", &DustLRNRatePerCCSN, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustLRNDustMassMsun", &DustLRNDustMassMsun, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustGrowthCalibration", &DustGrowthCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustAstrationCalibration", &DustAstrationCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustAccommodationCoeff", &DustAccommodationCoeff, PARAM_DOUBLE, PARAM_FIXED);
@@ -236,6 +244,8 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustOffsetMaxSNII", &DustOffsetMaxSNII, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMinAGB", &DustOffsetMinAGB, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustOffsetMaxAGB", &DustOffsetMaxAGB, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustOffsetMinLRN", &DustOffsetMinLRN, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustOffsetMaxLRN", &DustOffsetMaxLRN, PARAM_DOUBLE, PARAM_FIXED);
 #endif
 
 #ifdef NGENIC

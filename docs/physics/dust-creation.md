@@ -31,7 +31,7 @@ where
 - \(f_{\rm cond}\) is the condensation efficiency,
 - \(M_{\rm dust}\) is the newly created dust mass.
 
-Separate condensation efficiencies are adopted for SNII and AGB stars.
+Separate source prescriptions are used for SNII and AGB stars, with an additional implemented luminous-red-nova (LRN) dust channel. The absolute LRN normalization remains under active calibration.
 
 ### Assumptions
 
@@ -64,7 +64,7 @@ Both are silent no-ops — low-yield feedback events simply produce no dust, whi
 ### Algorithm
 
 1. **A stellar feedback event occurs.**
-2. **The stellar source is identified** as either SNII or AGB.
+2. **The stellar source channel is identified** (SNII, AGB, or LRN where applicable).
 3. **The dust yield is computed** using the corresponding condensation efficiency, and checked against the total-mass floor.
 4. **The number of dust superparticles is determined** and the per-particle mass is checked against the per-particle floor.
 5. **The nearest gas cell is located** (within a 2.0 kpc search radius) and condensed metals are removed from its mass and metallicity, subject to a safety floor.
@@ -127,6 +127,10 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
   - Invokes the dust creation routines following SNII or AGB feedback events.
 
 </div>
+
+## Current Calibration Status
+
+The SNII and AGB channels are part of the established CosmicGrain stellar-dust model. An LRN source channel is also implemented and produces explicitly tagged dust particles, but its integrated dust-yield normalization is still being investigated. Quantitative LRN dust-budget predictions should therefore be treated as provisional.
 
 ## Primary References
 

@@ -23,6 +23,16 @@
 #include "../data/macros.h"
 #include "../io/parameters.h"
 
+// AGSS21 solar heavy-element mass partition.
+// Each value is M_element / M_total_metals.
+static constexpr double SOLAR_METAL_FRAC_C  = 0.1854;
+static constexpr double SOLAR_METAL_FRAC_N  = 0.0523;
+static constexpr double SOLAR_METAL_FRAC_O  = 0.4193;
+static constexpr double SOLAR_METAL_FRAC_NE = 0.0964;
+static constexpr double SOLAR_METAL_FRAC_MG = 0.0461;
+static constexpr double SOLAR_METAL_FRAC_SI = 0.0486;
+static constexpr double SOLAR_METAL_FRAC_FE = 0.0862;
+
 /** Data which is the SAME for all tasks (mostly code parameters read
  * from the parameter file).  Holding this data in a structure is
  * convenient for writing/reading the restart file, and it allows the
@@ -42,15 +52,18 @@ int CheckpointDebugLevel;   // 0=off, 1=detailed output
 
 #ifdef FEEDBACK
   int FeedbackDebugLevel;  // 0=off, 1=detailed output
-  char AGByieldFile[255];
+  char AGBYieldFile[MAXLEN_PATH];
+  char SNIIYieldFile[MAXLEN_PATH];
+  char HypernovaYieldFile[MAXLEN_PATH];
+  double HypernovaFraction;  // Fraction of massive stars that explode as hypernovae
+  double SNEfficiency;       // Fraction of SN energy that couples to the ISM
 #endif
 
 #ifdef DUST
-
   // Dust physics switches (1=on, 0=off)
   int DustEnableSputtering;      // Thermal erosion
   int DustEnableShattering;
-  int DustEnableShockDestruction; // SN shock destruction/erosion  
+  int DustEnableShockDestruction; // SN shock destruction/erosion
   int DustEnableDrag;            // Gas-dust drag coupling
   int DustEnableGrowth;          // Grain growth (accretion)
   int DustEnableCreation;        // Dust creation from stellar feedback
@@ -63,9 +76,13 @@ int CheckpointDebugLevel;   // 0=off, 1=detailed output
   int DustDebugLevel;               // 0=off, 1=detailed output
   int DustParticlesPerSNII;         // Number of dust particles to spawn per SNII event
   int DustParticlesPerAGB;          // Number of dust particles to spawn per AGB event
+  int DustParticlesPerLRN;          // Number of dust particles to spawn per LRN event
+  double DustLRNRatePerCCSN;        // LRN rate as a fraction of the CCSN rate (dimensionless)
+  double DustLRNDustMassMsun;       // Dust mass produced per LRN event [Msun]
   double DustThermalSputteringTemp; // Temperature for thermal sputtering [K]
   double DustVelocitySNII;          // Ejection velocity for Type II SN dust [km/s]
   double DustVelocityAGB;           // Ejection velocity for AGB wind dust [km/s]
+  double DustVelocityLRN;           // Ejection velocity for LRN dust [km/s]
   double DustYieldSNII;             // Dust mass fraction from Type II SN
   double DustYieldAGB;              // Dust mass fraction from AGB stars
   double DustGrowthCalibration;     // Grain growth calibration factor
@@ -74,10 +91,12 @@ int CheckpointDebugLevel;   // 0=off, 1=detailed output
   double DustOffsetMaxSNII;         // Maximum of sphere around SN to spawn dust particles [kpc]
   double DustOffsetMinAGB;          // Minimum of sphere around AGB to spawn dust particles [kpc]
   double DustOffsetMaxAGB;          // Maximum of sphere around AGB to spawn dust particles [kpc]
+  double DustOffsetMinLRN;          // Minimum of sphere around LRN to spawn dust particles [kpc]
+  double DustOffsetMaxLRN;          // Maximum of sphere around LRN to spawn dust particles [kpc]
   double DustAccommodationCoeff;    // Thermal accommodation coefficient for gas-grain collisions (alpha in Hollenbach & McKee 1979, ApJS 41 555)
   double DustRadiationPressureEfficiency; // Efficiency of radiation pressure on dust grains
   double DustShockAmbientDensity;   // Ambient density for shock destruction calculations (g/cm^3)
-  double DustCollisionDensityThresh; // Threshold density for collision calculations    
+  double DustCollisionDensityThresh; // Threshold density for collision calculations
   double DustCoagulationCalibration;
   double DustShatteringCalibration;
   double DustMinGrainSize;          // Minimum grain size for dust particles [nm]

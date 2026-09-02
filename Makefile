@@ -167,7 +167,7 @@ include buildsystem/Makefile.comp.freya
 include buildsystem/Makefile.path.freya
 endif
 
-#module load  gcc/7.2    gsl/2.2  hdf5-serial/gcc/1.8.18   fftw/gcc/3.3.6   
+#module load  gcc/7.2    gsl/2.2  hdf5-serial/gcc/1.8.18   fftw/gcc/3.3.6
 ifeq ($(SYSTYPE),"FreyaOpenMPI")
 include buildsystem/Makefile.comp.freyaopenmpi
 include buildsystem/Makefile.path.freya
@@ -264,7 +264,7 @@ INCL    += gitversion/version.h
 SUBDIRS += mpi_utils
 OBJS    += mpi_utils/hypercube_allgatherv.o mpi_utils/mpi_types.o mpi_utils/mpi_vars.o mpi_utils/sums_and_minmax.o \
            mpi_utils/sizelimited_sendrecv.o mpi_utils/myalltoall.o mpi_utils/allreduce_sparse_double_sum.o mpi_utils/healthtest.o \
-           mpi_utils/allreduce_debugcheck.o mpi_utils/shared_mem_handler.o 
+           mpi_utils/allreduce_debugcheck.o mpi_utils/shared_mem_handler.o
 INCL    += mpi_utils/mpi_utils.h mpi_utils/generic_comm.h mpi_utils/shared_mem_handler.h
 
 
@@ -310,11 +310,11 @@ INCL    += tree/tree.h
 
 SUBDIRS += gravtree
 OBJS    += gravtree/gravtree_build.o gravtree/gravtree.o gravtree/gwalk.o
-INCL    += gravtree/gravtree.h  gravtree/gwalk.h  
+INCL    += gravtree/gravtree.h  gravtree/gwalk.h
 
 
 SUBDIRS += ngbtree
-OBJS    += ngbtree/ngbtree_build.o 
+OBJS    += ngbtree/ngbtree_build.o
 INCL    += ngbtree/ngbtree.h
 
 
@@ -326,14 +326,14 @@ endif
 
 
 ifeq (COOLING,$(findstring COOLING,$(CONFIGVARS)))
-OBJS    += cooling_sfr/cooling.o cooling_sfr/sfr_eos.o cooling_sfr/starformation.o cooling_sfr/feedback.o cooling_sfr/agb_yields.o
-INCL    += cooling_sfr/cooling.h cooling_sfr/agb_yields.h
+OBJS    += cooling_sfr/cooling.o cooling_sfr/sfr_eos.o cooling_sfr/starformation.o cooling_sfr/feedback.o cooling_sfr/agb_yields.o cooling_sfr/snii_yields.o
+INCL    += cooling_sfr/cooling.h cooling_sfr/agb_yields.h cooling_sfr/snii_yields.h
 SUBDIRS += cooling_sfr
 endif
 
 ifeq (DUST,$(findstring DUST,$(CONFIGVARS)))
 OBJS    += dust/dust.o dust/dust_particle_log.o
-INCL    += dust/dust.h 
+INCL    += dust/dust.h
 SUBDIRS += dust
 endif
 
@@ -349,7 +349,7 @@ ifeq (SUBFIND,$(findstring SUBFIND,$(CONFIGVARS)))
 OBJS	+= subfind/subfind.o subfind/subfind_treepotential.o \
            subfind/subfind_processing.o subfind/subfind_density.o subfind/subfind_distribute.o subfind/subfind_findlinkngb.o \
            subfind/subfind_nearesttwo.o subfind/subfind_properties.o subfind/subfind_unbind.o subfind/subfind_history.o \
-           subfind/subfind_so.o subfind/subfind_readid_io.o subfind/subfind_orphanids.o subfind/subfind_excursionset.o 
+           subfind/subfind_so.o subfind/subfind_readid_io.o subfind/subfind_orphanids.o subfind/subfind_excursionset.o
 INCL	+= subfind/subfind.h subfind/subfind_readid_io.h
 SUBDIRS += subfind
 endif
@@ -376,8 +376,8 @@ endif
 
 ifeq (LIGHTCONE,$(findstring LIGHTCONE,$(CONFIGVARS)))
 SUBDIRS += lightcone
-OBJS    += lightcone/lightcone.o lightcone/lightcone_particle_io.o lightcone/lightcone_massmap_io.o      
-INCL    += lightcone/lightcone.h lightcone/lightcone_particle_io.h lightcone/lightcone_massmap_io.h 
+OBJS    += lightcone/lightcone.o lightcone/lightcone_particle_io.o lightcone/lightcone_massmap_io.o
+INCL    += lightcone/lightcone.h lightcone/lightcone_particle_io.h lightcone/lightcone_massmap_io.h
 endif
 
 

@@ -41,7 +41,7 @@ AGE_BIN_ALPHA = 0.55
 # DustFormationTime, which this script needs for the age panel, so it's
 # requested explicitly here rather than relying on the default.
 DUST_FIELDS = ["Coordinates", "Masses", "Velocities", "GrainRadius",
-               "GrainType", "CarbonFraction", "DustTemperature",
+               "DustSource", "CarbonMassFraction", "DustTemperature",
                "DustFormationTime", "ParticleIDs"]
 
 
@@ -203,8 +203,18 @@ def main():
     output_dir = snapdir_path.parent
     groups_dir = output_dir / f"groups_{snap_num:03d}"
 
-    ref = get_halo569_reference(output_dir, verbose=True)
-    halo = get_halo569(groups_dir, snap_num, ref, verbose=True)
+    # refine_center=False: use the frozen FOF/catalog center, matching every
+    # other script in this pipeline (run_radial_evolution.py,
+    # plot_mdust_mstar_all_halos.py, plot_gsd_comparison.py,
+    # plot_radial_dgr.py all do the same). Without this, halo_utils' default
+    # shrinking-sphere refinement can wander a large offset from the true
+    # center on some snapshots, producing a spuriously small SO R200/M200 --
+    # this is exactly what happened here: a 172 ckpc/h refined-center offset
+    # at snap 047 dropped R200 from 115.3 pkpc to 66.1 pkpc and M200 from
+    # 1.6e11 to 3.0e10 Msun, disagreeing with every other script's value for
+    # the same halo at the same snapshot.
+    ref = get_halo569_reference(output_dir, verbose=True, refine_center=False)
+    halo = get_halo569(groups_dir, snap_num, ref, verbose=True, refine_center=False)
     if halo is None:
         print(f"ERROR: could not identify the target halo at snap {snap_num:03d}")
         return
@@ -230,7 +240,7 @@ def main():
 
     # ── Extract fields ───────────────────────────────────────────────────────
     grain_radius = dust_data['GrainRadius']
-    carbon_frac  = dust_data['CarbonFraction']
+    carbon_frac  = dust_data['CarbonMassFraction']
     # FIX: the previous version did `dust_data['Masses'] * 1e10`, converting
     # code mass units to Msun but omitting the /h factor -- every mass value
     # (including the M200 shown in the figure subtitle) was off by a factor
