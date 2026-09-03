@@ -38,7 +38,9 @@ The cube-root form follows from volume conservation of the swept mass — treati
 
 - The 3000 K temperature ceiling used to gate coagulation is deliberately far more permissive than the true physical regime for grain-grain sticking (~10–50 K in real molecular clouds). This is an intentional compensation for SPH kernel averaging smoothing out sharp temperature contrasts at finite resolution, not a claim that coagulation is physically active up to 3000 K.
 - Coagulation is modeled as a continuous, deterministic process (rather than the stochastic, catastrophic treatment used for shattering) because many grain-grain collisions are assumed to occur per timestep in sufficiently dense gas.
-- No partner grain is identified, tracked, or removed — coagulation acts on a single superparticle's own radius in response to ambient density and grain size, approximating the aggregate effect of many collisions within the population the superparticle represents.
+- No partner superparticle is consumed. Nearby dust inside the associated gas
+  smoothing length supplies a mass-weighted composition toward which the
+  particle can mix.
 - No mass or metals are exchanged with the surrounding gas; coagulation is a closed process entirely internal to the existing dust population.
 - The per-call radius growth is capped at 1.2× to prevent unphysical single-step jumps when the timestep greatly exceeds the coagulation timescale.
 
@@ -49,6 +51,11 @@ The cube-root form follows from volume conservation of the swept mass — treati
 <div class="cg-card implementation" markdown="1">
 
 Coagulation is gated by density first, then temperature, then grain size, before the timescale and radius update are computed. It shares the same clumping-boosted effective density (`dust_clumping_factor()`) used by grain growth and shattering.
+
+The actually applied fractional volume growth is also used as a mixing weight
+toward the mass-weighted `CarbonMassFraction` of neighboring dust inside the
+associated gas smoothing length. Coagulation can therefore move CF upward or
+downward while keeping the superparticle's total mass fixed.
 
 ### Shared density threshold with shattering
 
@@ -72,7 +79,8 @@ The file-level constant `DUST_MAX_GRAIN_SIZE` (200 nm, a compile-time `#define`)
 4. **Gate on grain validity and current size** — invalid grains are skipped; grains already at the maximum coagulation size are excluded.
 5. **Compute the coagulation timescale** from `n_eff` and grain radius, calibrated and clamped.
 6. **Compute the new radius** via the cube-root, mass-conserving size update, capped at 1.2× per call and at `DustCoagulationMaxSize`.
-7. **Update the grain radius only** — mass is left untouched.
+7. **Update the grain radius and mix carbon fraction toward the local
+   mass-weighted dust composition** — total superparticle mass is unchanged.
 8. **Record the event** for diagnostics and update bookkeeping counters.
 
 </div>
@@ -96,7 +104,9 @@ The 10 Myr / 100 cm⁻³ / 0.1 µm reference scaling in the timescale formula, t
 
 - **Coagulation routine**
   - `dust_grain_coagulation()`
-    - Applies the density, temperature, and size gates; computes the coagulation timescale and updates grain radius via the mass-conserving cube-root relation.
+    - Applies the density, temperature, and size gates; computes the
+      coagulation timescale, updates radius, and mixes carbon fraction using
+      nearby dust.
   - `dust_clumping_factor()`
     - Supplies the shared clumping-boosted effective density (documented separately).
   - `record_coagulation_event()`
@@ -106,7 +116,9 @@ The 10 Myr / 100 cm⁻³ / 0.1 µm reference scaling in the timescale formula, t
 ### `src/dust/update_dust_dynamics()`
 
 - **Caller**
-  - Invokes `dust_grain_coagulation()` for each live dust particle within 2 kpc of its nearest gas neighbor, alongside growth and shattering, on the same physics cadence.
+  - Invokes `dust_grain_coagulation()` using the Hsml-aware association radius
+    \(\max(2\,{\rm kpc},\min(H_{\rm sml},10\,{\rm kpc}))\), alongside growth
+    and shattering.
 
 </div>
 

@@ -61,6 +61,12 @@ Thermal sputtering is evaluated for every dust particle whose nearest gas neighb
 
 For grains that survive sublimation and clear the gas-temperature gate, the exact exponential erosion form is used rather than a linear approximation — required because dust physics runs on a cadence of every 10 gravity steps with a correspondingly scaled Δt, and the linear form would over-erode grains when Δt approaches τ_sp.
 
+Carbonaceous and silicate material are eroded separately. Carbon erodes
+faster in the adopted model, so surviving mass is used to recompute both grain
+radius and `CarbonMassFraction`; prolonged hot-gas exposure can drive CF below
+its birth value. The lost component masses are returned to their corresponding
+gas-phase element reservoirs.
+
 ### Numerical floors and destruction thresholds
 
 - The sputtering timescale is clamped to [1 Myr, 1 Gyr], preventing runaway erosion in extremely hot, dense gas and vanishing erosion in marginal conditions.
@@ -80,7 +86,9 @@ In the partial-erosion path, the grain radius is updated before the correspondin
 4. **The Tsai & Mathews (1995) sputtering timescale is computed**, including the composition correction, and clamped to [1 Myr, 1 Gyr].
 5. **The new grain radius is computed** via the exact exponential erosion form.
 6. **If the grain has eroded below the minimum size** (or the erosion fraction reaches unity), it is fully destroyed and its remaining mass returned to gas.
-7. **Otherwise, the grain radius and mass are updated** according to \(m \propto a^3\), and the eroded mass is returned to the nearest gas particle as metals, updating its metallicity.
+7. **Otherwise, carbon and silicate survival are applied separately**; grain
+   radius, total mass, and carbon fraction are updated, and the eroded
+   components are returned to gas.
 8. **Dust diagnostics and bookkeeping are updated.**
 
 </div>

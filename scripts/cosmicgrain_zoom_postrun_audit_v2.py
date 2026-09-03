@@ -4,7 +4,7 @@ cosmicgrain_zoom_postrun_audit.py
 
 Post-run audit for the CosmicGrain zoom suite.
 
-Uses zoom_halo_utils.py for a generic, particle-based halo definition and
+Uses halo_utils.py for a generic, particle-based halo definition and
 prints catalog and particle-SO M200c/R200c side-by-side.
 
 Apertures are specified in physical kpc and converted correctly to ckpc/h.

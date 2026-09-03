@@ -4,7 +4,7 @@ plotly_zoom_halo_viewer.py
 
 Interactive 3-D Plotly viewer for the CosmicGrain zoom suite.
 
-Uses zoom_halo_utils.py to:
+Uses halo_utils.py to:
 - identify the target FOF halo,
 - optionally refine the center conservatively,
 - recompute M200c and R200c from the particles,

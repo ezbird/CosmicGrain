@@ -25,10 +25,23 @@ CosmicGrain uses the HK11 accretion timescale,
 where
 
 - \(a\) is the grain radius, \(Z\) the gas metallicity, \(n_H\) the (clumping-boosted) hydrogen number density, \(T\) an assumed effective grain surface temperature, and \(S\) the sticking coefficient,
-- \(\tau_0\) is a species-dependent prefactor: \(6.30\times10^7\) yr for silicates, \(5.59\times10^7\) yr for carbonaceous grains,
-- species is assigned by a hard threshold on carbon fraction (CF ≥ 0.5 → carbon, otherwise silicate), rather than a continuous compositional blend.
+- \(\tau_0\) is a species-dependent prefactor: \(6.30\times10^7\) yr for
+  silicates and \(5.59\times10^7\) yr for carbonaceous material.
 
-Grain radius grows continuously,
+The current implementation evolves the carbonaceous and silicate components
+independently. Their requested growth increments scale as
+
+\[
+\Delta M_i \propto M_i
+\left[\exp\!\left(\frac{3 f_{\rm mol}\Delta t}{\tau_i}\right)-1\right],
+\]
+
+and are limited by the corresponding gas-phase element reservoirs. Growth can
+therefore change `CarbonMassFraction`; it is no longer a binary species choice
+based on whether CF lies above or below 0.5.
+
+For a pure component, the mass-growth expression corresponds to the familiar
+radius update
 
 <div class="cg-equation" markdown="1">
 
@@ -38,7 +51,12 @@ a_{\rm new} = a \times \exp\!\left(\frac{f_{\rm mol}\,\Delta t}{\tau_{\rm acc}}\
 
 </div>
 
-where \(f_{\rm mol}\) is an effective molecular-gas fraction that boosts accretion in denser, colder, more metal-rich environments where the gas is more molecular. The corresponding mass change is computed from the exact cubic relation \(dm = M_{\rm dust}\times[(a_{\rm new}/a)^3 - 1]\), not the linear approximation \(dm \approx 3M_{\rm dust}(da/a)\) — the linear form was found to overestimate growth when \(da/a\) is not small, previously producing a spurious dust mass leak during peak star formation.
+where \(f_{\rm mol}\) is an effective molecular-gas fraction. For a mixed
+particle, the code first applies the separately limited carbon and silicate
+mass increments, then reconstructs one characteristic radius from the final
+total mass using the exact cubic relation. This avoids the linear
+\(dm\approx3M_{\rm dust}(da/a)\) approximation that previously produced a
+spurious mass leak during rapid growth.
 
 Growth is bounded by a redshift-dependent maximum dust-to-metal ratio,
 
@@ -57,7 +75,7 @@ which interpolates from ~0.05 at high redshift (z ≈ 6) to 0.5 at z = 0, preven
 - Growth is evaluated per dust particle against its already-paired nearest gas neighbor (established by the caller); no independent grain–grain or grain–gas search occurs inside this routine.
 - The effective grain surface temperature used in the accretion timescale is a fixed 20 K, independent of the particle's actual tracked dust temperature (`DustTemperature`, computed elsewhere via radiative equilibrium).
 - Sticking coefficient is a fixed 0.3, independent of grain size or composition.
-- Composition is treated as a binary switch (silicate vs. carbon) at CF = 0.5 for the purpose of selecting the HK11 prefactor, unlike sputtering and shattering, which blend composition continuously.
+- Carbon and silicate accretion use separate timescales and element budgets.
 - The molecular fraction \(f_{\rm mol}\) is an observationally-motivated proxy binned by density/star-formation state, not a computed H₂ fraction.
 - Accreted metal mass is removed from the gas particle's metallicity, conserving total metal mass between gas and dust phases.
 
@@ -77,10 +95,6 @@ Before computing the redshift-dependent cap, a cheap early-exit check compares d
 
 The low-\(f_{\rm mol}\) failure branch (`f_mol < 0.01`) can never currently fire: \(f_{\rm mol}\) is initialized at a 0.05 floor and is only ever multiplied upward by the metal-rich boost, never downward. The associated diagnostic counter will always read zero in practice.
 
-### A known inconsistency in the D/Z-capped growth path
-
-The general growth update uses the exact cubic mass relation described above, fixing a previously identified mass-leak bug. However, the fine-grained clipping applied when a grain's growth would overshoot the D/Z cap mid-timestep still recomputes the radius using the older linear approximation (\(da/a \approx dm/(3M_{\rm dust})\)) rather than the exact cubic inverse. This means grains that hit the D/Z cap exactly mid-step are still subject to the same small inaccuracy the cubic-form fix was meant to eliminate elsewhere — worth revisiting alongside any future growth-path changes.
-
 ### Numerical floors
 
 - Accretion timescale is clamped to [10⁶, 5×10⁹] yr.
@@ -98,10 +112,14 @@ The general growth update uses the exact cubic mass relation described above, fi
 4. **Apply the cheap D/Z pre-filter**, then the exact redshift-dependent D/Z cap.
 5. **Determine the molecular fraction** \(f_{\rm mol}\) from local density, star-forming state, and metallicity.
 6. **Validate the dust particle's state**, removing corrupted particles if found.
-7. **Compute the HK11 accretion timescale** from grain size, density, metallicity, and composition-dependent prefactor.
-8. **Compute a candidate grain radius and mass change** via the exponential growth form and the exact cubic mass relation.
-9. **Apply the D/Z cap, metals-availability cap, and 20%-per-step cap to the mass change, in sequence**, then derive the final grain radius exactly from whichever mass survives all three caps.
-10. **Apply the mass and metallicity updates** to the dust and gas particles, and update diagnostics.
+7. **Compute separate HK11 accretion requests** for the carbonaceous and
+   silicate components.
+8. **Apply the D/Z and 20%-per-call total-growth caps** while preserving the
+   requested component ratio.
+9. **Remove the requested elements from gas**, allowing the element-resolved
+   helper to impose the final physical availability limits.
+10. **Update dust mass, radius, and carbon fraction together**, resynchronize
+    the gas mass/metallicity fields, and update diagnostics.
 
 </div>
 
@@ -114,7 +132,10 @@ The general growth update uses the exact cubic mass relation described above, fi
 | `DustMinGrainSize` | Minimum grain radius (shared across all dust physics modules). |
 | `DustMaxGrainSize` | Maximum grain radius reachable via growth (shared across all dust physics modules). |
 
-The HK11 prefactors (6.30×10⁷ / 5.59×10⁷ yr), the effective grain surface temperature (20 K), the sticking coefficient (0.3), the CF = 0.5 composition threshold, the molecular-fraction density bins, and the D/Z cap's functional form and floor (0.05) are hardcoded and not currently exposed as parameters.
+The HK11 prefactors (6.30×10⁷ / 5.59×10⁷ yr), the effective grain surface
+temperature (20 K), the sticking coefficient (0.3), the molecular-fraction
+density bins, and the D/Z cap's functional form and floor (0.05) are hardcoded
+and not currently exposed as parameters.
 
 ## Where in the Code?
 
@@ -124,7 +145,9 @@ The HK11 prefactors (6.30×10⁷ / 5.59×10⁷ yr), the effective grain surface 
 
 - **Growth routine**
   - `dust_grain_growth_subgrid()`
-    - Applies all gating checks, computes the HK11 accretion timescale, updates grain radius and mass via the exact cubic relation, and enforces the D/Z cap.
+    - Applies all gating checks, evolves carbon and silicate accretion
+      separately, updates grain radius/mass/composition, and enforces the D/Z
+      and availability caps.
   - `tau_acc_yr_HK11()`
     - Evaluates the HK11 accretion timescale formula for a given density, temperature, metallicity, grain size, sticking coefficient, and species.
   - `dust_clumping_factor()`
@@ -134,7 +157,9 @@ The HK11 prefactors (6.30×10⁷ / 5.59×10⁷ yr), the effective grain surface 
 ### `src/dust/update_dust_dynamics()`
 
 - **Caller**
-  - Invokes `dust_grain_growth_subgrid()` for each live dust particle within 2 kpc of its nearest gas neighbor, on the same cadence as drag, sputtering, and other dust physics.
+  - Invokes `dust_grain_growth_subgrid()` using the Hsml-aware association
+    radius \(\max(2\,{\rm kpc},\min(H_{\rm sml},10\,{\rm kpc}))\), on the same
+    cadence as coagulation and shattering.
 
 </div>
 

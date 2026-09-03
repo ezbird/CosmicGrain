@@ -1,22 +1,44 @@
- *  At 2048³, the dust population grows to ~15M superparticles by z~3. To
- *  avoid these dominating the gravity tree, newly spawned dust is assigned a gravity timebin of
-    max(DUST_MIN_TIMEBIN, HighestActiveTimeBin), ensuring it lands
-    on a bin that is synchronized with the current hierarchy.
-    At late times HighestActiveTimeBin ≤ 15 so DUST_MIN_TIMEBIN
-    dominates; at early times (z > 10) HighestActiveTimeBin can be
-    21+, and without the clamp dust would spawn on an unsynchronized
-    bin causing a collective gravity hang on multi-node runs.
- *
- *  IMPORTANT: spawn_dust_particle caps the timebin at birth, but Gadget's
- *  ongoing timestep criterion (timestep.cc: get_timestep_grav) can migrate
- *  dust back to short bins after the first gravity force evaluation.
- *  get_timestep_grav() in timestep.cc returns TIMEBASE-1 for all dust particles,
- *  causing timebins_get_bin_and_do_validity_checks to assign the highest
- *  currently-synchronized bin. Dust migrates upward naturally from DUST_MIN_TIMEBIN
- *  within a few sync-points after spawning.
- *
- *  Dust physics (drag, growth, sputtering, etc.) runs every 10 gravity steps
- *  via the cadence guard in update_dust_dynamics(), with dt scaled by 10
- *  to compensate. All routines that receive this scaled dt use the exact
- *  analytical form (1 − exp(−dt/τ)) rather than linear approximations,
- *  so the result is independent of step size as long as τ is well resolved.
+# Performance and Scaling
+
+CosmicGrain cost is governed by both the initial zoom geometry and the dust
+population spawned during evolution. Nominal resolution alone is therefore
+not a sufficient resource estimate.
+
+## Initial-condition size
+
+The accepted suite ranges from 2.12 million particles for halo 3879 at
+\(512^3\) to 517.54 million for halo 1534 at \(4096^3\). Measure each file
+directly before choosing MPI tasks, memory limits, or storage allocations.
+
+## Dust time bins
+
+At high resolution, newly spawned dust can become a substantial fraction of
+the gravity tree. `spawn_dust_particle()` assigns a synchronized birth
+timebin. The ongoing gravity timestep criterion then allows dust to migrate
+toward appropriately long synchronized bins after its first force evaluation.
+This prevents a newly created particle from entering an unsynchronized bin and
+causing a collective gravity hang.
+
+## Dust-physics cadence
+
+The expensive dust update is cadence controlled rather than called on every
+gravity step. Processes using the scaled interval employ exact exponential
+updates where applicable, such as \(1-\exp(-\Delta t/\tau)\), rather than
+unstable linear approximations.
+
+## FOF and SUBFIND
+
+FOF/SUBFIND can dominate runtime when executed frequently. Snapshot cadence
+and group-finding cadence are separate scientific choices: retain enough halo
+catalogs to follow the target, but avoid invoking SUBFIND at every fine output
+unless the analysis requires it.
+
+## Before a production launch
+
+1. run through the first domain decomposition and force calculation;
+2. record peak resident memory per rank;
+3. check particle imbalance and top-level tree balance;
+4. estimate output size using the actual HDF5 IC;
+5. confirm restart writing; and
+6. repeat the test when changing resolution, halo, MPI layout, or major
+   particle-creation parameters.

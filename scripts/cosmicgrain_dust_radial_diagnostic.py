@@ -4,7 +4,7 @@ cosmicgrain_dust_radial_diagnostic.py
 
 Radial dust diagnostic for the CosmicGrain zoom suite.
 
-Uses zoom_halo_utils.py for:
+Uses halo_utils.py for:
 - generic target-halo identification
 - conservative center refinement
 - particle-based SO M200c/R200c

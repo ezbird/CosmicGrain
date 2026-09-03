@@ -18,6 +18,9 @@ The current dust lifecycle includes:
 - evolving carbon/silicate composition
 
 The enrichment model additionally tracks C, N, O, Ne, Mg, Si, and Fe in the gas.
+See [Stellar Enrichment and Feedback](stellar-enrichment-feedback.md) for the
+delayed SNII/hypernova tranches, MESA AGB yields, stochastic heating, and the
+connection between element availability and dust creation.
 
 ## Primary physical foundations
 

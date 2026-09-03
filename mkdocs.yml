@@ -8,7 +8,6 @@ repo_url: https://github.com/ezbird/CosmicGrain
 theme:
   name: material
   logo: assets/cosmicgrain-logo.svg
-  favicon: assets/favicon.png
 
   palette:
     scheme: slate
@@ -73,6 +72,8 @@ nav:
 
   - Dust Physics:
       - Overview: physics/index.md
+      - Physics Ladder: physics/physics-ladder.md
+      - Enrichment & Feedback: physics/stellar-enrichment-feedback.md
       - Dust Creation: physics/dust-creation.md
       - Astration: physics/astration.md
       - Gas-Dust Drag: physics/gas-dust-drag.md
@@ -83,6 +84,26 @@ nav:
       - Coagulation: physics/coagulation.md
       - Shattering: physics/shattering.md
       - Radiation Pressure: physics/radiation-pressure.md
+
+  - Analysis:
+      - Overview: analysis/index.md
+      - Snapshots: analysis/snapshots.md
+      - Halo Catalogs: analysis/halo-catalogs.md
+      - Python Scripts: analysis/python-scripts.md
+      - Dust Distributions: analysis/dust-distributions.md
+      - Radial Profiles: analysis/radial-profiles.md
+      - Figures & SKIRT: analysis/figures.md
+
+  - Validation:
+      - Overview: validation/index.md
+      - MUSIC2 IC Suite: validation/ic-suite.md
+
+  - Reference:
+      - Overview: reference/index.md
+      - Particle Types: developer/particle-types.md
+      - Compile Flags: reference/compile-flags.md
+      - Parameters: reference/parameters.md
+      - Units: reference/units.md
 
 #  - Developer Guide:
 #      - Overview: developer/index.md

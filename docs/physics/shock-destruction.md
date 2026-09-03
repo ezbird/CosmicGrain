@@ -57,14 +57,12 @@ Grain destruction efficiency as a function of shock velocity and composition fol
 
 Shock destruction is triggered once per SN feedback event via `destroy_dust_from_sn_shocks()`, which implements the subgrid, volume-corrected, size-weighted treatment described above. It computes the physical shock radius and velocity from the local gas density and the true event energy, sets an effective search radius (at least twice the dust hash cell size, capped at 3 kpc), and finds all dust particles within that radius. The expected destroyed mass is distributed across those particles in proportion to their size-adjusted share of the local dust mass; grains that would be eroded below the minimum grain size are fully destroyed, and survivors have their radius reduced according to mass-conserving scaling.
 
-### A related per-grain kernel (still unused)
-
-The codebase also contains `erode_dust_grain_shock()`, a separate per-grain routine confirmed to be dead code — it is never called from `feedback.cc` or anywhere else, verified via both a full-source grep and empty `SHOCK_DESTROY`/`SHOCK_ERODE` log output across a full production run. Its grain-size vulnerability weighting has since been ported into `destroy_dust_from_sn_shocks()` directly (see above), so that piece of its physics is now active. Two pieces remain unported and inactive:
-
-- **Stochastic outright shattering** for grains exposed to shock velocities above 50 km/s (Jones et al. 1994), applied as a discrete probabilistic event rather than smooth mass loss.
-- **Per-grain distance attenuation of shock velocity** within the shock radius, rather than every grain in the search volume sharing one velocity evaluated at the physical radius.
-
-Both would need to be re-derived against the current volume-corrected framework rather than reintroduced as-is: the old per-grain function attenuated velocity using the (often much larger) *search* radius rather than the true physical shock radius, which — combined with resolution-dependent search-volume inflation — is suspected to be why it was abandoned in the current implementation's favor. Reviving either piece is deferred for now.
+Carbon and silicate destruction budgets are evaluated separately and
+distributed using the corresponding component mass and grain-size weighting.
+Survivors receive updated mass, radius, and carbon fraction. The obsolete
+standalone `erode_dust_grain_shock()` path has been replaced by the unified
+volume-corrected implementation and shared
+`destroy_dust_particle_to_gas()` cleanup path.
 
 ### Numerical floors
 
@@ -84,7 +82,10 @@ Both would need to be re-derived against the current volume-corrected framework 
 6. **Dust particles within the search radius are located** via the spatial hash.
 7. **The volume correction factor is computed** from the ratio of the physical shock volume to the search volume.
 8. **The expected destroyed mass is calculated** from the local dust mass, the volume correction, and the Bocchio et al. (2014) destruction efficiency at the physical shock velocity.
-9. **Destroyed mass is distributed across the found dust particles, weighted by grain-size vulnerability**; particles reduced below the minimum grain size are fully destroyed, survivors are eroded and their mass returned to the nearest gas particle as metals.
+9. **Carbon and silicate destruction are distributed separately**, weighted
+   by species mass and grain-size vulnerability; particles reduced below the
+   minimum size are destroyed, while survivors receive updated mass, radius,
+   and CF.
 10. **Dust diagnostics and bookkeeping are updated.**
 
 </div>
@@ -117,15 +118,11 @@ The characteristic evaluation time (0.3 Myr), the Sedov constant (ξ = 1.033), t
   - `shock_size_factor()`
     - Shared grain-size vulnerability weight (1.5× / 1.2× / 1.0 / 0.7× by grain radius), used to bias per-grain mass-loss distribution toward smaller, more vulnerable grains.
 
-- **Related per-grain kernel (confirmed dead code)**
-  - `erode_dust_grain_shock()`
-    - Implements stochastic catastrophic shattering above 50 km/s and per-grain distance-attenuated velocity, in addition to the now-ported size-vulnerability weighting. Never called; verified via source grep and empty diagnostic log output. Left in place pending a decision on reviving the remaining physics.
-
 - **Shared destruction path**
   - `destroy_dust_particle_to_gas()` — invoked for grains eroded below the minimum grain size; returns remaining mass to the nearest gas particle as metals.
   - Bookkeeping: `NDustDestroyedByShock`, `TotalMassDestroyedByShock`, `TotalMassErodedByShock`.
 
-### `src/starformation/feedback.cc`
+### `src/cooling_sfr/feedback.cc`
 
 - **Stellar feedback interface**
   - Invokes `destroy_dust_from_sn_shocks(Sp, p, E_code, comm)` following SNII feedback events, passing the true per-event energy in code units.
@@ -170,7 +167,9 @@ Establishes the canonical 10⁵¹ erg single-supernova energy scale used as a fa
 **Jones, A. P., Tielens, A. G. G. M., Hollenbach, D. J., & McKee, C. F. (1994). *Grain Destruction in Shocks in the Interstellar Medium.* The Astrophysical Journal, 433, 797.**
 
 <p class="reference-note">
-Source of the ~50 km/s velocity threshold for the stochastic catastrophic-shattering step in the still-dormant `erode_dust_grain_shock()`.
+Foundational motivation for the grain-size and composition dependence of
+shock processing; the active CosmicGrain destruction efficiencies are taken
+from the Bocchio et al. prescription described above.
 </p>
 
 <div class="reference-links">

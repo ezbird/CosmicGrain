@@ -99,7 +99,7 @@ If no dust particles are found within the search radius, the function exits with
     - `NDustDestroyedByAstration`
     - `TotalDustMassAstrated`
 
-### `src/starformation/feedback.cc`
+### `src/cooling_sfr/feedback.cc`
 
 - **Star formation interface**
   - Invokes `consume_dust_by_astration()` when gas is converted into stars.

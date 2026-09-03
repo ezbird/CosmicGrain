@@ -18,6 +18,9 @@ CosmicGrain's physics modules are enabled at compile time via `Config.sh`. The f
 | `FEEDBACK` | Enables stellar feedback (Type II SNe and AGB winds). |
 | `STARFORMATION` | Required for metallicity- and SFR-dependent dust gating (e.g. molecular fraction, clumping). |
 | `IDS_64BIT` | **Required.** 32-bit particle IDs silently overflow once dust superparticle counts grow large — this does not raise a compile or runtime error, it just corrupts particle bookkeeping. Always enable this for dust-enabled runs. |
+| `NTYPES=7` | **Required.** Reserves PartType6 for live dust. |
+| `METALS` | Enables metallicity and element-resolved enrichment. |
+| `COOLING` | Enables the adopted gas-cooling model. |
 
 Optional flags, useful for debugging stellar feedback energy deposition:
 
@@ -26,8 +29,9 @@ Optional flags, useful for debugging stellar feedback energy deposition:
 | `FEEDBACK_LIMIT_DULOG` | Clamps \|Δlog₁₀ u\| per heating event — useful when diagnosing runaway temperatures from feedback. |
 | `FEEDBACK_T_CAP` | Applies a soft temperature cap for debugging; not intended for production runs. |
 
-<!-- TODO: list any other Config.sh flags relevant to a first build
-     (e.g. resolution-related toggles, MPI decomposition options) -->
+The current zoom build also uses `PERIODIC`, `DOUBLEPRECISION=1`,
+`ADAPTIVE_HYDRO_SOFTENING`, `WENDLAND_C4`, `PM_ZOOM_OPTIMIZED`,
+`TREEPM_NOTIMESPLIT`, and resolution-appropriate `PMGRID`/`HRPMGRID`.
 
 </div>
 
@@ -51,10 +55,12 @@ mpicxx -std=c++11 -O3 -march=native -mtune=native \
 In practice you won't invoke this directly — the top-level `make` handles it for every source file:
 
 ```bash
-make -j <!-- TODO: recommended parallelism, e.g. 8 -->
+make -j8
 ```
 
-The executable is produced at `<!-- TODO: path, e.g. build/Gadget4 -->`.
+The executable name and location follow the target configured by the current
+top-level Makefile. Record `sha256sum` of the production executable with the
+run metadata rather than assuming its name proves which source was compiled.
 
 **Optimization flag note:** `-ffast-math`, `-fno-math-errno`, and `-fno-trapping-math` relax IEEE floating-point compliance for speed. This is standard practice for production N-body/hydro codes and shouldn't affect the dust physics (which relies on exact exponential/analytical forms rather than delicate floating-point edge cases), but keep it in mind if you're ever debugging a numerical discrepancy that seems to depend on compiler flags.
 
@@ -64,11 +70,14 @@ The executable is produced at `<!-- TODO: path, e.g. build/Gadget4 -->`.
 
 <div class="cg-card implementation" markdown="1">
 
-On startup, a successful build with dust physics enabled prints a one-time flag summary confirming the parameter file was read correctly:
+On startup, a successful build with dust physics enabled prints a one-time
+flag summary confirming the parameter file was read correctly:
 
+```text
 [DUST_FLAGS|Step=0] Creation=1 Drag=1 Growth=1 Coagulation=1
 Sputtering=1 ShockDestruction=1 Astration=1 RadPressure=1
 Clumping=1 Cooling=1
+```
 
 Check that these flags match what you set in your `.param` file — a `0` where you expected `1` usually means a parameter name mismatch (e.g. a typo in `DustEnableGrowth`) rather than a compilation problem.
 

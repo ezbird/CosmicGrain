@@ -72,7 +72,10 @@ A quick orientation before diving into `Config.sh`:
 
 - `src/dust/` — CosmicGrain's dust physics module (`dust.cc`, `dust.h`)
 - `src/cooling_sfr/` — stellar feedback and spatial hashing (`feedback.cc`, `spatial_hash_zoom.h`)
-- <!-- TODO: fill in other top-level directories worth knowing about early -->
+- `configs/` — compile-time configurations
+- `ICs/` — MUSIC2 configurations and local initial-condition products
+- `scripts/` — zoom preparation, validation, analysis, and SKIRT utilities
+- `docs/` — this MkDocs documentation
 
 </div>
 

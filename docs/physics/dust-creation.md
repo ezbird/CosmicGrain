@@ -31,11 +31,17 @@ where
 - \(f_{\rm cond}\) is the condensation efficiency,
 - \(M_{\rm dust}\) is the newly created dust mass.
 
-Separate source prescriptions are used for SNII and AGB stars, with an additional implemented luminous-red-nova (LRN) dust channel. The absolute LRN normalization remains under active calibration.
+Separate source prescriptions are used for SNII, AGB stars, and luminous red
+novae (LRNe). SNII/hypernova feedback is delayed over eight tranches rather
+than injected in a single instantaneous event. LRN dust is created once with
+the first SNII tranche; SNII dust sampling is divided across the tranche
+sequence so the requested particle count is not multiplied by eight. The
+absolute LRN normalization remains under active calibration.
 
 ### Assumptions
 
-- Dust forms immediately following stellar feedback.
+- Dust forms when the relevant delayed stellar-feedback channel releases its
+  ejecta.
 - Condensation efficiencies are fixed for each stellar source.
 - Dust is represented by superparticles rather than individual grains.
 - Each superparticle represents an ensemble of physical grains.
@@ -48,7 +54,11 @@ Separate source prescriptions are used for SNII and AGB stars, with an additiona
 
 <div class="cg-card implementation" markdown="1">
 
-When stellar feedback occurs, CosmicGrain computes the metal ejecta from the stellar particle and converts a prescribed fraction into dust. The total dust mass is divided equally among a fixed number of superparticles per event.
+When stellar feedback occurs, CosmicGrain computes element-resolved ejecta
+from the stellar particle and converts an allowed fraction into dust. The
+condensed mass is limited by the available carbon and silicate-forming
+material. The requested number of dust superparticles is distributed across
+the full source event.
 
 Rather than storing dust as an abundance field on nearby gas cells, the code creates entirely new **PartType6** particles. The single nearest gas cell (within a 2.0 kpc search radius) is updated simultaneously so that metals incorporated into dust are removed from the gas phase, preserving mass conservation. A safety floor prevents the gas particle's mass from being driven to zero or negative if the condensed dust mass would otherwise exceed it.
 
@@ -76,12 +86,17 @@ Both are silent no-ops — low-yield feedback events simply produce no dust, whi
 
 Grain radius, carbon fraction, and grain type are hardcoded per feedback channel and are not adjustable via the parameter file. Initial velocity is parameter-driven and is applied as an isotropic random **kick added to the parent star's velocity**, not an absolute velocity.
 
-| Quantity | SNII | AGB | Configurable? |
-|-----------|------:|------:|:------:|
-| Grain radius | 10 nm | 100 nm | No (hardcoded) |
-| Carbon fraction | 0.10 | 0.60 | No (hardcoded) |
-| Grain type | 0 | 1 | No (hardcoded) |
-| Initial velocity kick | 100 km s⁻¹ | 10 km s⁻¹ | Yes (`DustVelocitySNII` / `DustVelocityAGB`) |
+| Quantity | SNII | AGB | LRN | Configurable? |
+|-----------|------:|------:|------:|:------:|
+| Grain radius | 10 nm | 100 nm | 10 nm | No (hardcoded) |
+| Carbon fraction | 0.10 | 0.60 target | 0.10 | No (hardcoded) |
+| `DustSource` | 0 | 1 | 2 | No |
+| Initial velocity kick | `DustVelocitySNII` | `DustVelocityAGB` | source prescription | Partly |
+
+The current AGB target is 60% carbon and 40% silicate, subject to the
+available carbon and total-metal budget. LRN dust is 10% carbon and 90%
+silicate. Subsequent processing can evolve carbon fraction away from its birth
+value.
 
 Newly spawned particles also receive an initial dust temperature at the CMB floor, \(T_{\rm CMB} = 2.7 / a\).
 
@@ -97,6 +112,9 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
 | `DustVelocityAGB` | Initial AGB velocity kick |
 | `DustParticlesPerSNII` | Number of particles created per SNII event |
 | `DustParticlesPerAGB` | Number of particles created per AGB event |
+| `DustParticlesPerLRN` | Number of particles created per LRN event |
+| `DustLRNRatePerCCSN` | LRN event-rate normalization relative to CCSNe |
+| `DustLRNDustMassMsun` | Adopted dust mass per LRN event |
 | `DustOffsetMinSNII` | Minimum SNII birth offset |
 | `DustOffsetMaxSNII` | Maximum SNII birth offset |
 | `DustOffsetMinAGB` | Minimum AGB birth offset |
@@ -120,7 +138,7 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
   - Particle bookkeeping
     - Updates particle arrays, timestep bins, softening classes, and diagnostic counters.
 
-### `src/starformation/feedback.cc`
+### `src/cooling_sfr/feedback.cc`
 
 - **Stellar feedback interface**
   - Computes stellar ejecta.
@@ -130,7 +148,12 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
 
 ## Current Calibration Status
 
-The SNII and AGB channels are part of the established CosmicGrain stellar-dust model. An LRN source channel is also implemented and produces explicitly tagged dust particles, but its integrated dust-yield normalization is still being investigated. Quantitative LRN dust-budget predictions should therefore be treated as provisional.
+The current controlled configuration requests four SNII, six AGB, and one LRN
+dust superparticle per complete source event. These are sampling controls, not
+physical event rates or dust yields. The LRN source channel is implemented and
+produces explicitly tagged particles, but its integrated yield normalization
+is still being investigated; quantitative LRN dust-budget predictions remain
+provisional.
 
 ## Primary References
 

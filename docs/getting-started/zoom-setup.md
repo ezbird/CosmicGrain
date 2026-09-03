@@ -1,142 +1,201 @@
-# Setting Up the Halo 569 Zoom Simulation
+# Building the CosmicGrain Zoom Suite
 
-This documents how the CosmicGrain zoom region (Halo 569, in a 50 Mpc parent
-box) was originally selected and built. It's based on contemporaneous notes
-from November, cross-checked line-by-line against the actual scripts to
-confirm they match what was really run.
+This page records the current production workflow for selecting target halos
+from the 50 \(h^{-1}\,\mathrm{Mpc}\) dark-matter-only parent run and generating
+CosmicGrain-ready MUSIC2 initial conditions. The older Halo 569 workflow was
+useful during development, but the current science suite consists of 12 halos
+at four resolution levels.
 
-**The entire pipeline only needed three Python scripts.** A much larger
-number of similarly-named scripts exist in this folder (`get_best_halo*.py`,
-`find_good_zoom_halo.py`, `trace_ids_to_lagrangian*.py`,
-`find_lagrangian_center.py`, `extract_halo_particles.py`, and others) —
-those were exploratory alternatives written along the way and are **not**
-part of the documented, actually-used pipeline below. See
-[Scripts not used](#scripts-not-used-in-the-final-pipeline) at the bottom.
+## Current suite
 
-## 1. Run a parent simulation
+The selected parent-catalog halo IDs are:
 
-- 128³ particles, 50 Mpc box, dark matter only.
-- Initial conditions generated with MUSIC2: `./MUSIC make_parent.conf`
-- Transfer functions (how density fluctuations evolve — encodes baryon
-  physics, dark matter behavior, and cosmic evolution turning primordial
-  fluctuations into galaxy seeds) generated with CAMB: `./camb mycamb.ini`
-- **FOF and SUBFIND must be enabled** in the parent run — the next step reads
-  the resulting halo catalog directly.
+```text
+295  308  441  859  1481  1534
+3352  3879  3886  5834  7723  9235
+```
 
-Config files: `mycamb.ini`, `make_parent.conf` (kept alongside this doc /
-in the ICs directory).
+Each halo has ICs at nominal effective resolutions \(512^3\), \(1024^3\),
+\(2048^3\), and \(4096^3\), for 48 files in total. The canonical filename is:
 
-## 2. Choose the target halo
+```text
+ICs/halo<HALO>/IC_halo<HALO>_zoom_<RES>.hdf5
+```
+
+The suite spans dwarf through super-Milky-Way halo masses. Candidate selection
+also considers isolation, distance from the periodic box boundary, particle
+count, and suitability of the traced Lagrangian region.
+
+## 1. Run and catalog the parent volume
+
+Run the \(512^3\) dark-matter-only parent calculation through \(z=0\), with
+FOF and SUBFIND enabled at the output used for selection. The parent and zoom
+calculations use:
+
+| Quantity | Value |
+| --- | ---: |
+| Box size | \(50\,h^{-1}\,\mathrm{Mpc}\) comoving |
+| \(\Omega_{\rm m}\) | 0.3158 |
+| \(\Omega_\Lambda\) | 0.6842 |
+| \(\Omega_{\rm b}\) for baryonic zoom ICs | 0.04936 |
+| \(h\) | 0.6732 |
+| \(n_s\) | 0.965 |
+| \(\sigma_8\) | 0.811 |
+| Initial scale factor | 0.01 (\(z=99\)) |
+
+The parent run itself has `OmegaBaryon 0.0` because it contains only dark
+matter. MUSIC2 must use the physical baryon density when splitting the
+high-resolution matter into gas and dark matter.
+
+## 2. Build and rank the halo census
+
+From `scripts/`:
 
 ```bash
-python choose_halo.py
+python3 parent_halo_census.py
+python3 select_zoom_halo_candidates_v2.py
 ```
 
-Reads the parent run's z=0 SUBFIND catalog
-(`fof_subhalo_tab_049.hdf5`) and selects candidates with:
-- Mass 2–5 × 10¹² Msun/h
-- More than 500 particles (well-resolved)
+The census and ranking products are:
 
-For each candidate it reports mass, particle count, distance from the box
-edge, and distance to the nearest neighboring halo — so you can pick one
-that's both Milky Way-mass and reasonably isolated (avoiding both edge
-effects and contamination from nearby massive structures). **Halo 569** in
-this catalog was the one selected.
+```text
+parent_50Mpc_halo_census.csv
+zoom_halo_candidates_all_ranked.csv
+zoom_halo_candidates_selected.csv
+zoom_halo_candidates_selected.txt
+```
 
-> This script has the SUBFIND file path and mass-cut thresholds hardcoded
-> at the top — edit those directly for a different box/halo search rather
-> than passing CLI arguments.
+Selection should not be based on mass alone. Inspect the isolation metrics,
+edge distance, particle count, and neighboring massive halos before accepting
+a target.
 
-## 3. Extract the halo's particle IDs
+## 3. Prepare and trace the Lagrangian regions
+
+Prepare the selected parent-halo particle sets:
 
 ```bash
-python extract_zoom_ids.py
+python3 prepare_lagrangian_particle_sets_v2.py
 ```
 
-Reads `Subhalo/SubhaloLenType` and `Subhalo/SubhaloOffsetType` for the
-chosen halo (edit `halo_id = 569` at the top of the script for a different
-target) from the same SUBFIND catalog, then pulls the corresponding
-contiguous block of dark matter particle IDs from the z=0 snapshot
-(`PartType1/ParticleIDs`).
-
-Output: `halo_569_particles.txt` — one particle ID per line.
-
-## 4. Trace those particles back to the initial conditions
+Then trace those particle IDs to the parent initial conditions:
 
 ```bash
-python get_zoom_id_positions.py
+python3 trace_lagrangian_regions_to_initial.py
 ```
 
-This is the key step. It takes the particle ID list from step 3 and looks
-those same IDs up directly in the **parent IC file**
-(`ICs/IC_parent_50Mpc_128_music.hdf5`) — since Gadget particle IDs are
-conserved from the initial conditions through the entire simulation, this
-is a direct ID-matched lookup, not a fitted or approximate trace-back. The
-resulting positions are exactly where those particles started out at the
-beginning of the simulation — the Lagrangian region that will collapse into
-Halo 569 by z=0.
+The corresponding utilities and outputs live under:
 
-Positions are then normalized to the unit cube `[0, 1]`, which is the
-coordinate convention MUSIC2 expects for its `region_point_file` /
-particle-based region definitions.
-
-Output: `halo_569_IC_positions_normalized.txt`
-
-> Like `extract_zoom_ids.py`, the halo ID, input file, and parent IC path
-> are hardcoded at the top of the script rather than passed as arguments.
-
-## 5. Generate the zoom initial conditions
-
-Add the normalized position file to the zoom MUSIC2 config:
-
-```
-# in make_zoom.conf
-region_point_file = halo_569_IC_positions_normalized.txt
+```text
+scripts/lagrangian_particle_sets/
+scripts/lagrangian_regions_initial/
+scripts/lagrangian_regions_minimal/
 ```
 
-Then run:
+Before generating expensive ICs, inspect the traced extents:
 
 ```bash
-./MUSIC make_zoom.conf
+python3 diagnose_lagrangian_region_extents.py
 ```
 
-This produces the actual zoom initial conditions — high resolution in the
-Lagrangian region that collapses into Halo 569, progressively lower
-resolution further away — ready to hand to Gadget-4/CosmicGrain.
+## 4. Generate the MUSIC2 configuration files
 
-Config file: `make_zoom.conf` (kept alongside this doc / in the ICs
-directory).
+Generate all halo/resolution configurations with:
 
----
+```bash
+python3 make_music2_zoom_config_v2.py
+```
 
-## Scripts not used in the final pipeline
+Review at least one configuration from every resolution level. In particular,
+confirm the output filename, region file, cosmology, transfer-function input,
+box length, random seed/noise settings, refinement levels, and baryon split.
 
-These were written at various points while exploring halo selection and
-zoom-region definition, but the actual pipeline above didn't end up using
-them. Kept for reference/history rather than as a maintained interface;
-safe to move to an archive subfolder if you want to tidy the scripts
-directory further.
+## 5. Generate and post-process all ICs
 
-**Alternative halo-ranking approaches** (superseded by the simpler
-`choose_halo.py` mass+isolation cut): `get_best_halo.py`,
-`get_best_halo_newer.py`, `find_good_zoom_halo.py`, `find_zoom_candidates.py`
+From the IC directory, run the canonical suite driver:
 
-**Alternative particle-ID / Lagrangian-tracing approaches** (superseded by
-the simpler direct-ID-lookup method in `get_zoom_id_positions.py`):
-`extract_halo_particles.py`, `extract_halo_ids_for_zoom.py`,
-`save_particleids_for_desired_halo.py`, `trace_ids_to_lagrangian.py`,
-`trace_ids_to_lagrangian_fixed.py`, `find_lagrangian_center.py`
+```bash
+cd ~/gadget4/ICs
+bash run_music2_suite.sh
+```
 
-**IC/zoom quality-check tools** (not part of the core pipeline, but
-potentially still useful if you want to sanity-check a future zoom setup —
-worth deciding case by case whether to keep): `check_parent_run.py`,
-`debug_ic_positions.py`, `check_ic_particles.py`, `ic_slice_viewer.py`,
-`ic_visualizer.py`, `check_zoom_quality.py`, `verify_halos.py`,
-`test_zoom_viability.py`, `extract_halo_manual.py` (byte-identical
-duplicate of `test_zoom_viability.py`)
+For every configuration, the driver:
 
-**Ongoing zoom-run visualization/tracking** (used throughout later
-development, not part of initial setup — see the main `scripts/README.md`
-for the confirmed paper-figure scripts instead): `studyzoom.py`,
-`view_zoom.py`, `zoom_halo_report.py`, `zoom_halo_track.py`,
-`find_halo_center.py`, `find_zoom_halos.py`
+1. runs MUSIC2;
+2. writes the canonical HDF5 IC;
+3. extends the GADGET header arrays from six to seven particle types;
+4. creates the intentionally empty `PartType6` datasets required by
+   CosmicGrain; and
+5. performs the per-file readiness check.
+
+The empty dust group is deliberate: dust particles are created later by
+stellar feedback, not placed in the initial conditions.
+
+## 6. Validate the complete suite
+
+Run the independent suite validator before deleting MUSIC2 intermediates or
+starting production simulations:
+
+```bash
+python3 ~/gadget4/scripts/validate_music2_ic_suite.py \
+    --ic-root ~/gadget4/ICs
+```
+
+For a long unattended run:
+
+```bash
+mkdir -p ~/gadget4/ICs/MUSIC2_logs
+nohup python3 ~/gadget4/scripts/validate_music2_ic_suite.py \
+    --ic-root ~/gadget4/ICs \
+    > ~/gadget4/ICs/MUSIC2_logs/validate_ic_suite.log 2>&1 &
+```
+
+The detailed checklist, result interpretation, and September 2026 suite
+result are recorded in [IC-suite validation](../validation/ic-suite.md).
+
+Do not remove `wnoise_*.bin` files until the validator reports:
+
+```text
+Files: 48 PASS, 0 WARN, 0 FAIL (48 total)
+FINAL STATUS: PASS
+```
+
+After a clean result, first review the exact deletion set:
+
+```bash
+find ~/gadget4/ICs -type f -name 'wnoise_*.bin' -print
+```
+
+Then remove only those MUSIC2 intermediates:
+
+```bash
+find ~/gadget4/ICs -type f -name 'wnoise_*.bin' -delete
+```
+
+Keep the MUSIC2 configurations, selected-halo tables, Lagrangian-region
+inputs, logs, validation CSV, and final HDF5 ICs as the reproducibility record.
+
+## 7. Run a GADGET startup test
+
+IC validation establishes structural and numerical consistency; it does not
+prove that a production configuration has enough memory or that the final
+zoom remains contamination-free at \(z=0\). Before committing to a long run:
+
+1. start each intended IC with the actual CosmicGrain executable and parameter
+   file;
+2. confirm that all seven particle types are accepted;
+3. confirm domain decomposition and the first force/hydrodynamic steps;
+4. inspect memory use and particle balance; and
+5. after evolution, measure low-resolution contamination within the target
+   halo and its analysis aperture.
+
+The \(4096^3\) IC particle counts vary greatly with Lagrangian-region geometry.
+Halo 1534 contains 517,537,024 initial particles, so validity alone does not
+make every highest-resolution run equally practical.
+
+## Historical note: Halo 569
+
+Halo 569 was the original single-halo development target. Its earlier
+three-script workflow established the direct particle-ID trace-back approach,
+but its hardcoded filenames and one-halo selection cuts are not the maintained
+interface for the new suite. Use the versioned scripts listed above for new
+targets.

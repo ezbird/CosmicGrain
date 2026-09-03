@@ -47,15 +47,18 @@ Runs S0–S10 progressively activate additional dust processes:
 
 ---
 
-## Example Simulation
+## Current Zoom Program
 
-The primary CosmicGrain science run follows a Milky Way-mass zoom galaxy ("Halo 569") selected from a 50 Mpc cosmological volume.
+The current CosmicGrain program follows 12 isolated targets selected from a
+50 \(h^{-1}\) Mpc dark-matter-only parent volume. The sample spans dwarf
+through super-Milky-Way halo masses. Halo 569 remains the historical
+single-halo development target.
 
 | Property   | Value                  |
 | ---------- | ---------------------- |
 | Parent Box | 50 Mpc (comoving)      |
-| Halo       | Halo 569               |
-| Resolution | Up to 4096³ equivalent |
+| Halos      | 12 selected targets    |
+| Resolution | 512³–4096³ equivalent  |
 | Cosmology  | Planck 2015            |
 | h          | 0.6732                 |
 | Ωm         | 0.3158                 |
@@ -83,6 +86,9 @@ This is a **code-validation benchmark, not a physical-convergence claim**. The 5
 The LRN dust-production channel is implemented and operational, but its absolute yield normalization remains under active calibration.
 
 See `docs/validation/` for the detailed validation record.
+
+The separate MUSIC2 initial-condition audit also reports **48 PASS, 0 WARN,
+0 FAIL** for the 12-halo × four-resolution production suite.
 
 ---
 
@@ -130,7 +136,9 @@ Included datasets:
 * 50 Mpc parent volume
 * Halo 569 zoom-in initial conditions (512^3-resolution)
 
-Higher-resolution zoom initial conditions are omitted from the repository because of file size limitations.
+The 48 production zoom initial conditions are omitted from the repository
+because of file size. Their MUSIC2 configurations, Lagrangian-region inputs,
+and validation records should be retained with the project data.
 
 ---
 

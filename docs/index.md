@@ -18,6 +18,14 @@ CosmicGrain follows explicit PartType6 dust superparticles alongside gas, stars,
 
 A complete dust-enabled cosmological zoom validation run has evolved from z≈98 to z=0 with whole-box baryonic mass conserved to a fractional drift of 7.75×10⁻⁹ and exact carbon+silicate closure of the surviving dust mass.
 
-The 512³-equivalent zoom level is treated as a **validation resolution rather than a physically converged galaxy calculation**. Convergence testing is proceeding through 1024³, 2048³, and 4096³-equivalent zooms.
+The current science program expands the original single-halo development run
+into a 12-halo sample spanning dwarf through super-Milky-Way systems. Four
+MUSIC2 zoom levels per halo provide 48 initial conditions for validation and
+convergence work. All 48 passed the September 2026 suite-level IC audit.
+
+The 512³-equivalent zoom level is treated as a **validation resolution rather
+than a physically converged galaxy calculation**. Convergence testing proceeds
+through 1024³, 2048³, and 4096³-equivalent zooms where computationally
+practical.
 
 The LRN dust-production channel is implemented, but its absolute normalization remains under active calibration.

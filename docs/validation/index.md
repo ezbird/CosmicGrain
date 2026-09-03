@@ -1,5 +1,16 @@
 # Validation and Numerical Status
 
+Validation is divided into three distinct layers:
+
+1. **Initial-condition integrity** — the complete 12-halo, 48-file MUSIC2
+   suite is tested before simulation; see [MUSIC2 IC-suite
+   validation](ic-suite.md).
+2. **End-to-end code integrity** — a dust-enabled zoom is evolved from the
+   initial conditions to \(z=0\), with whole-box conservation and particle
+   fields audited.
+3. **Physical convergence** — scientific observables are compared across
+   resolution levels. A successful code or IC test is not a convergence claim.
+
 ## End-to-end validation run
 
 A dust-enabled **Halo 295 / 512** zoom completed from \(z=98.1046\) to \(z=0\). The run exercises star formation, stellar enrichment, explicit PartType6 creation and evolution, domain decomposition, FOF/SUBFIND, and particle exchange.

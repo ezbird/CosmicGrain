@@ -46,7 +46,8 @@ When an event fires, the grain radius is reduced to \(a_{\rm new} = 0.33\,a\), c
 ### Assumptions
 
 - Sound speed is used as a proxy for turbulent velocity, since per-particle turbulent velocity is not directly tracked.
-- The velocity threshold blends linearly and continuously between silicate and carbon endpoints by carbon fraction, unlike grain growth's binary species classification.
+- The velocity threshold blends linearly and continuously between silicate
+  and carbon endpoints using the particle's current carbon fraction.
 - Shattering is treated as a genuinely catastrophic, discrete event (Poisson-gated), not a continuous erosion process — physically appropriate since real shattering is triggered by individual high-velocity collisions rather than gradual wear.
 - If the fragmented radius would fall below the minimum grain size, the fragment population is deemed too small to survive as a distinct entity and the entire superparticle dissolves into the gas phase as metals, rather than being clamped at the floor.
 - Grain-grain shattering physics in the diffuse ISM (Hirashita & Yan 2009) and shock-driven shattering physics (Jones et al. 1994, 1996) are both drawn on here — the threshold velocities and fragment-size relation come from the shock literature, while the overall timescale scaling follows the turbulence-driven treatment.
@@ -62,10 +63,6 @@ Shattering is gated by turbulent velocity, then the shared clumping-boosted effe
 ### Shared density threshold with coagulation
 
 Shattering requires `n_eff` to be *below* `DustCollisionDensityThresh`; coagulation requires it to be *above* the same threshold (documented in the coagulation page). The two are mutually exclusive by construction for a given gas cell at a given timestep, matching the intended physical picture — turbulence-driven fragmentation dominates diffuse gas, sticking dominates dense gas.
-
-### A bookkeeping quirk worth knowing about
-
-When a fragmenting grain would drop below the minimum grain size and dissolves entirely, that destruction is booked under the **shock destruction** counters (`NDustDestroyedByShock`, `TotalMassDestroyedByShock`), not a shattering-specific counter. `NShatteringEvents` and `TotalSizeReductionShattering` only track successful fragmentation events that *don't* trigger full dissolution. This means the "Shock destruction" totals reported in `print_dust_statistics()` are actually shock-destroyed **plus** shatter-dissolved mass combined — worth keeping in mind when interpreting per-mechanism destruction statistics or writing up the methods, since a reader could reasonably assume "shock destruction" events came only from SN shocks.
 
 ### A possible citation error worth verifying
 
@@ -84,7 +81,9 @@ The source code attributes the shattering timescale formula to "Hirashita & Kuo 
 4. **Compute the shattering timescale** from local dust-to-gas ratio, grain size, and velocity excess above threshold.
 5. **Draw a Poisson event** for this timestep; if no event occurs, the grain is left unchanged.
 6. **If an event occurs, compute the fragment radius** as 0.33× the current radius.
-7. **If the fragment radius would fall below the minimum grain size**, dissolve the entire superparticle, returning its mass to the nearest gas particle as metals (booked as shock destruction).
+7. **If the fragment radius would fall below the minimum grain size**,
+   dissolve the entire superparticle through the shared dust-to-gas transfer
+   path.
 8. **Otherwise, update the grain radius only** — mass is conserved — and record the event.
 
 </div>
@@ -112,13 +111,16 @@ The 10⁸ yr / 0.1 µm reference scaling in the timescale formula, the 1–2 km/
   - `dust_clumping_factor()`
     - Supplies the shared clumping-boosted effective density (documented separately).
   - Shared destruction path
-    - `destroy_dust_particle_to_gas()` — invoked when a fragment would fall below the minimum grain size; returns mass to gas as metals and is booked under shock destruction counters.
+    - `destroy_dust_particle_to_gas()` — invoked when a fragment would fall
+      below the minimum grain size and returns its component masses to gas.
   - Bookkeeping: `NShatteringEvents`, `TotalSizeReductionShattering`.
 
 ### `src/dust/update_dust_dynamics()`
 
 - **Caller**
-  - Invokes `dust_grain_shattering()` for each live dust particle within 2 kpc of its nearest gas neighbor, alongside growth and coagulation, on the same physics cadence.
+  - Invokes `dust_grain_shattering()` using the Hsml-aware association radius
+    \(\max(2\,{\rm kpc},\min(H_{\rm sml},10\,{\rm kpc}))\), alongside growth
+    and coagulation.
 
 </div>
 
