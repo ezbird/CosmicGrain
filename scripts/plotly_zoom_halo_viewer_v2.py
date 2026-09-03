@@ -24,12 +24,11 @@ import h5py
 import numpy as np
 import plotly.graph_objects as go
 
-from zoom_halo_utils import (
+from halo_utils import (
     find_snapshot_and_group_files,
     get_zoom_halo,
     periodic_delta,
 )
-
 
 def _piece_key(fn):
     try:

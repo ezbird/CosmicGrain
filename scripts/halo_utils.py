@@ -1,7 +1,7 @@
 """
 halo_utils.py
 =============
-Clean shared utilities for CosmicGrain Halo 569 analysis.
+Canonical shared halo utilities for CosmicGrain analyses.
 
 Core philosophy
 ---------------
@@ -11,11 +11,11 @@ Core philosophy
    spherical-overdensity calculation.
 3. Keep units explicit everywhere.
 4. Detect (not just document) FOF bridging.
-5. Track Halo 569's MAIN PROGENITOR backward from the true final snapshot
+5. Track any explicitly anchored zoom target backward from the final snapshot
    with a conserved dark-matter CORE ParticleID set. FOF position is not used
    to discover identity; exact DM IDs are located globally in the earlier
    snapshot and their densest spatial cluster defines the progenitor center.
-   get_halo569_series() deliberately walks through EVERY available intervening
+   get_zoom_halo_series() deliberately walks through every intervening
    snapshot, even when the caller requests only a sparse subset. This prevents
    merger/bridging epochs from jumping between nearby FOF structures.
 
@@ -39,18 +39,17 @@ Returned halo['likely_bridged']        : bool, True if that ratio is large
 
 Primary API
 -----------
-    ref = get_halo569_reference(output_dir)
+    # One explicitly identified target at one snapshot:
+    ref = get_zoom_halo(output_dir, snap, group_index=group_index)
 
-    # Recommended for all multi-snapshot work. Main-progenitor identity is
-    # determined by DM ParticleID continuity, not nearest-position matching:
-    halos = get_halo569_series(output_dir, snap_nums, ref)
+    # Recommended for the 12-halo suite. group_index identifies the target
+    # only at the final/reference snapshot; earlier identity follows HRDM IDs:
+    halos = get_zoom_halo_series(
+        output_dir, snap_nums, group_index=group_index
+    )
 
-    # Safe convenience helper for ONE historical snapshot. It still anchors at
-    # the final snapshot and walks through every intervening snapshot:
-    halo = get_halo569_at_snapshot(output_dir, snap_num, ref=ref)
-
-    # get_halo569(...) remains available as a legacy position-based helper,
-    # but should not be used to build merger histories.
+Legacy Halo 569 APIs remain available for existing analysis scripts. New suite
+code should use get_zoom_halo() and get_zoom_halo_series().
 
 Optional particle loader:
     pdata = load_particles_within_radius(snapdir, halo['center'], halo['r200_ckpch'])
@@ -81,8 +80,11 @@ from __future__ import annotations
 
 import re
 import glob as _glob
+import glob
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import h5py
 import numpy as np
@@ -1634,3 +1636,590 @@ def extract_dust_spatially(snapshot_base, halo_center, radius_kpc=None, verbose=
     if verbose and result and "Coordinates" in result:
         print(f"  Extracted {len(result['Coordinates']):,} dust particles")
     return result if result else None
+
+
+# =============================================================================
+# Generic multi-halo zoom API
+# =============================================================================
+
+@dataclass
+class HaloReference:
+    """Single-snapshot halo definition used by the generic zoom-suite tools."""
+
+    group_index: int
+    catalog_center_ckpch: np.ndarray
+    catalog_m200_code: float
+    catalog_r200_ckpch: float
+    chosen_center_ckpch: np.ndarray
+    refined_center_ckpch: np.ndarray
+    refinement_shift_ckpch: float
+    refinement_accepted: bool
+    so_m200_code: float
+    so_r200_ckpch: float
+    boxsize_ckpch: float
+    a: float
+    z: float
+    h: float
+    omega_m: float
+    omega_lambda: float
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+
+
+def _piece_key(filename: str):
+    base = os.path.basename(filename)
+    try:
+        return int(base.split(".")[-2])
+    except Exception:
+        return base
+
+
+def find_snapshot_and_group_files(
+    output_dir: str | Path,
+    snap: int,
+) -> Tuple[List[str], List[str]]:
+    """Return numerically sorted snapshot and FOF/SUBFIND catalog chunks."""
+    output_dir = str(output_dir)
+    s = f"{int(snap):03d}"
+    snap_files = sorted(
+        glob.glob(os.path.join(output_dir, f"snapdir_{s}", f"snapshot_{s}.*.hdf5"))
+        + glob.glob(os.path.join(output_dir, f"snapshot_{s}.*.hdf5"))
+        + glob.glob(os.path.join(output_dir, f"snapdir_{s}", f"snapshot_{s}.hdf5"))
+        + glob.glob(os.path.join(output_dir, f"snapshot_{s}.hdf5")),
+        key=_piece_key,
+    )
+
+    group_files: List[str] = []
+    for prefix in _CATALOG_PREFIXES:
+        found = sorted(
+            glob.glob(
+                os.path.join(
+                    output_dir,
+                    f"groups_{s}",
+                    f"{prefix}_{s}.*.hdf5",
+                )
+            )
+            + glob.glob(
+                os.path.join(
+                    output_dir,
+                    f"groups_{s}",
+                    f"{prefix}_{s}.hdf5",
+                )
+            ),
+            key=_piece_key,
+        )
+        if found:
+            group_files = found
+            break
+
+    if not snap_files:
+        raise FileNotFoundError(
+            f"No snapshot files found for snap {s} in {output_dir}"
+        )
+    if not group_files:
+        raise FileNotFoundError(
+            f"No FOF/SUBFIND catalog files found for snap {s} in {output_dir}"
+        )
+    return snap_files, group_files
+
+
+def read_header(snapshot_file: str | Path) -> Dict[str, float]:
+    """Read expansion state, box size, and cosmology from one snapshot chunk."""
+    with h5py.File(snapshot_file, "r") as f:
+        header = f["Header"].attrs
+        params = f["Parameters"].attrs if "Parameters" in f else {}
+        a = float(np.asarray(header["Time"]).squeeze())
+        z = float(np.asarray(header.get("Redshift", 1.0 / a - 1.0)).squeeze())
+
+        def get_param(name: str) -> float:
+            if name in params:
+                return float(np.asarray(params[name]).squeeze())
+            if name in header:
+                return float(np.asarray(header[name]).squeeze())
+            raise KeyError(
+                f"Required cosmology parameter {name!r} is absent from "
+                f"/Parameters and /Header of {snapshot_file}"
+            )
+
+        return {
+            "box": float(np.asarray(header["BoxSize"]).squeeze()),
+            "a": a,
+            "z": z,
+            "h": get_param("HubbleParam"),
+            "omega_m": get_param("Omega0"),
+            "omega_lambda": get_param("OmegaLambda"),
+        }
+
+
+def concat_group_dataset(
+    group_files: Sequence[str | Path],
+    dataset: str,
+) -> np.ndarray:
+    arrays = []
+    for filename in group_files:
+        with h5py.File(filename, "r") as f:
+            if "Group" in f and dataset in f["Group"]:
+                arrays.append(f["Group"][dataset][()])
+    if not arrays:
+        raise KeyError(f"Group/{dataset} not found")
+    return np.concatenate(arrays, axis=0)
+
+
+def read_catalog_halos(
+    group_files: Sequence[str | Path],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    pos = np.asarray(
+        concat_group_dataset(group_files, "GroupPos"), dtype=np.float64
+    )
+    m200 = np.asarray(
+        concat_group_dataset(group_files, "Group_M_Crit200"), dtype=np.float64
+    )
+    r200 = np.asarray(
+        concat_group_dataset(group_files, "Group_R_Crit200"), dtype=np.float64
+    )
+    return pos, m200, r200
+
+
+def periodic_delta(
+    coords: np.ndarray,
+    center: np.ndarray,
+    box: float,
+) -> np.ndarray:
+    """Minimum-image displacement from center in a periodic box."""
+    return _periodic_delta(
+        np.asarray(coords, dtype=np.float64),
+        np.asarray(center, dtype=np.float64),
+        float(box),
+    )
+
+
+def wrap_position(position: np.ndarray, box: float) -> np.ndarray:
+    return np.mod(np.asarray(position, dtype=np.float64), float(box))
+
+
+def read_particles_within(
+    snapshot_files: Sequence[str | Path],
+    center_ckpch: np.ndarray,
+    radius_ckpch: float,
+    part_types: Iterable[int],
+    box_ckpch: float,
+) -> Dict[int, Dict[str, np.ndarray]]:
+    """Load coordinates, masses, and IDs inside one periodic sphere."""
+    requested = tuple(int(pt) for pt in part_types)
+    buffers: Dict[int, Dict[str, list[np.ndarray]]] = {
+        pt: {"Coordinates": [], "Masses": [], "ParticleIDs": []}
+        for pt in requested
+    }
+
+    for filename in snapshot_files:
+        with h5py.File(filename, "r") as f:
+            mass_table = np.asarray(
+                f["Header"].attrs.get("MassTable", np.zeros(7)),
+                dtype=np.float64,
+            )
+            for pt in requested:
+                name = f"PartType{pt}"
+                if name not in f or "Coordinates" not in f[name]:
+                    continue
+                group = f[name]
+                coords = np.asarray(group["Coordinates"], dtype=np.float64)
+                delta = periodic_delta(coords, center_ckpch, box_ckpch)
+                radius2 = np.einsum("ij,ij->i", delta, delta)
+                selected = radius2 <= float(radius_ckpch) ** 2
+                if not np.any(selected):
+                    continue
+
+                buffers[pt]["Coordinates"].append(coords[selected])
+                if "Masses" in group:
+                    buffers[pt]["Masses"].append(
+                        np.asarray(group["Masses"], dtype=np.float64)[selected]
+                    )
+                elif pt < len(mass_table) and mass_table[pt] > 0:
+                    buffers[pt]["Masses"].append(
+                        np.full(np.count_nonzero(selected), mass_table[pt])
+                    )
+                if "ParticleIDs" in group:
+                    buffers[pt]["ParticleIDs"].append(
+                        np.asarray(group["ParticleIDs"])[selected]
+                    )
+
+    packed: Dict[int, Dict[str, np.ndarray]] = {}
+    for pt in requested:
+        if not buffers[pt]["Coordinates"]:
+            continue
+        packed[pt] = {
+            "Coordinates": np.concatenate(buffers[pt]["Coordinates"]),
+            "Masses": np.concatenate(buffers[pt]["Masses"]),
+        }
+        if buffers[pt]["ParticleIDs"]:
+            packed[pt]["ParticleIDs"] = np.concatenate(
+                buffers[pt]["ParticleIDs"]
+            )
+    return packed
+
+
+def combine_particle_sets(
+    data: Dict[int, Dict[str, np.ndarray]],
+    part_types: Iterable[int],
+) -> Tuple[np.ndarray, np.ndarray]:
+    coords, masses = [], []
+    for pt in part_types:
+        if pt in data:
+            coords.append(data[pt]["Coordinates"])
+            masses.append(data[pt]["Masses"])
+    if not coords:
+        return np.empty((0, 3)), np.empty(0)
+    return np.concatenate(coords), np.concatenate(masses)
+
+
+def shrinking_sphere_center(
+    coords: np.ndarray,
+    masses: np.ndarray,
+    initial_center: np.ndarray,
+    initial_radius: float,
+    box: float,
+    shrink_factor: float = 0.85,
+    min_particles: int = 500,
+    min_radius_fraction: float = 0.03,
+    max_iter: int = 64,
+) -> np.ndarray:
+    """Conservative mass-weighted shrinking-sphere candidate center."""
+    center = np.asarray(initial_center, dtype=np.float64).copy()
+    radius = float(initial_radius)
+    min_radius = radius * float(min_radius_fraction)
+
+    for _ in range(max_iter):
+        delta = periodic_delta(coords, center, box)
+        radius2 = np.einsum("ij,ij->i", delta, delta)
+        selected = radius2 <= radius * radius
+        if np.count_nonzero(selected) < min_particles or radius <= min_radius:
+            break
+        weights = masses[selected]
+        if not np.all(np.isfinite(weights)) or np.sum(weights) <= 0:
+            break
+        center = wrap_position(
+            center + np.average(delta[selected], axis=0, weights=weights),
+            box,
+        )
+        radius *= shrink_factor
+    return center
+
+
+def critical_density_msun_pkpc3(
+    a: float,
+    h: float,
+    omega_m: float,
+    omega_lambda: float,
+) -> float:
+    """Critical density in Msun/pkpc^3."""
+    omega_k = 1.0 - omega_m - omega_lambda
+    e2 = omega_m / a**3 + omega_k / a**2 + omega_lambda
+    hubble_km_s_kpc = 100.0 * h * np.sqrt(e2) / 1000.0
+    g_kpc_kms2_msun = 4.30091e-6
+    return 3.0 * hubble_km_s_kpc**2 / (
+        8.0 * np.pi * g_kpc_kms2_msun
+    )
+
+
+def spherical_overdensity_200c(
+    coords: np.ndarray,
+    masses_code: np.ndarray,
+    center_ckpch: np.ndarray,
+    box_ckpch: float,
+    a: float,
+    h: float,
+    omega_m: float,
+    omega_lambda: float,
+) -> Tuple[float, float]:
+    """Return ``(M200c_code, R200c_ckpch)`` from loaded particle data."""
+    delta = periodic_delta(coords, center_ckpch, box_ckpch)
+    radii = np.linalg.norm(delta, axis=1)
+    good = (
+        np.isfinite(radii)
+        & np.isfinite(masses_code)
+        & (masses_code >= 0)
+        & (radii > 0)
+    )
+    radii = radii[good]
+    masses = np.asarray(masses_code, dtype=float)[good]
+    if len(radii) < 10:
+        raise RuntimeError("Too few particles for the SO calculation")
+
+    order = np.argsort(radii)
+    radii = radii[order]
+    mass_enclosed_code = np.cumsum(masses[order])
+    radii_pkpc = radii * a / h
+    mass_enclosed_msun = mass_enclosed_code * MSUN_PER_CODE / h
+    mean_density = mass_enclosed_msun / (
+        (4.0 / 3.0) * np.pi * radii_pkpc**3
+    )
+    target = 200.0 * critical_density_msun_pkpc3(
+        a, h, omega_m, omega_lambda
+    )
+    above = np.where(mean_density >= target)[0]
+    if len(above) == 0:
+        raise RuntimeError(
+            "Mean enclosed density is below 200 rho_crit at the innermost particle"
+        )
+    i = int(above[-1])
+    if i >= len(radii) - 1:
+        raise RuntimeError(
+            "SO crossing lies beyond loaded radius; enlarge the search region"
+        )
+
+    x1, x2 = np.log(radii_pkpc[i]), np.log(radii_pkpc[i + 1])
+    y1, y2 = np.log(mean_density[i]), np.log(mean_density[i + 1])
+    yt = np.log(target)
+    fraction = 0.0 if y2 == y1 else np.clip((yt-y1)/(y2-y1), 0.0, 1.0)
+    r200_pkpc = float(np.exp(x1 + fraction * (x2 - x1)))
+    r200_ckpch = r200_pkpc * h / a
+    m200_msun = (4.0 / 3.0) * np.pi * r200_pkpc**3 * target
+    return float(m200_msun * h / MSUN_PER_CODE), float(r200_ckpch)
+
+
+def get_zoom_halo(
+    output_dir: str | Path,
+    snap: int,
+    group_index: Optional[int] = None,
+    refine_center: bool = True,
+    max_refine_shift_r200: float = 0.10,
+    refine_types: Sequence[int] = (0, 1, 4),
+    so_types: Sequence[int] = (0, 1, 2, 3, 4, 5, 6),
+    verbose: bool = True,
+) -> HaloReference:
+    """Define one explicitly selected zoom halo and recompute particle SO values.
+
+    ``group_index`` is deliberately required.  FOF indices are local to an
+    output and snapshot; a parent halo ID is not a valid substitute.  This
+    prevents a dwarf analysis from silently selecting the largest halo in the
+    periodic volume.
+    """
+    if group_index is None:
+        raise ValueError(
+            "group_index is required for get_zoom_halo(); identify the final "
+            "target from its MUSIC2-shifted parent position and expected mass"
+        )
+
+    snapshot_files, group_files = find_snapshot_and_group_files(output_dir, snap)
+    header = read_header(snapshot_files[0])
+    positions, catalog_m200, catalog_r200 = read_catalog_halos(group_files)
+    index = int(group_index)
+    if index < 0 or index >= len(catalog_m200):
+        raise IndexError(
+            f"group_index={index} outside 0..{len(catalog_m200)-1}"
+        )
+
+    catalog_center = np.asarray(positions[index], dtype=np.float64)
+    catalog_mass = float(catalog_m200[index])
+    catalog_radius = float(catalog_r200[index])
+    if catalog_mass <= 0 or catalog_radius <= 0:
+        raise RuntimeError(
+            f"Group {index} has invalid catalog M200c/R200c"
+        )
+
+    centering_data = read_particles_within(
+        snapshot_files,
+        catalog_center,
+        1.25 * catalog_radius,
+        refine_types,
+        header["box"],
+    )
+    center_coords, center_masses = combine_particle_sets(
+        centering_data, refine_types
+    )
+    refined = catalog_center.copy()
+    shift = 0.0
+    accepted = False
+    if refine_center and len(center_coords) >= 500:
+        refined = shrinking_sphere_center(
+            center_coords,
+            center_masses,
+            catalog_center,
+            catalog_radius,
+            header["box"],
+        )
+        shift = float(
+            np.linalg.norm(
+                periodic_delta(
+                    refined[None, :], catalog_center, header["box"]
+                )[0]
+            )
+        )
+        accepted = shift <= max_refine_shift_r200 * catalog_radius
+    chosen = refined if accepted else catalog_center
+
+    last_error: Optional[Exception] = None
+    so_mass = so_radius = np.nan
+    for factor in (2.5, 4.0):
+        so_data = read_particles_within(
+            snapshot_files,
+            chosen,
+            factor * catalog_radius,
+            so_types,
+            header["box"],
+        )
+        so_coords, so_masses = combine_particle_sets(so_data, so_types)
+        try:
+            so_mass, so_radius = spherical_overdensity_200c(
+                so_coords,
+                so_masses,
+                chosen,
+                header["box"],
+                header["a"],
+                header["h"],
+                header["omega_m"],
+                header["omega_lambda"],
+            )
+            last_error = None
+            break
+        except RuntimeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+
+    reference = HaloReference(
+        group_index=index,
+        catalog_center_ckpch=catalog_center,
+        catalog_m200_code=catalog_mass,
+        catalog_r200_ckpch=catalog_radius,
+        chosen_center_ckpch=chosen,
+        refined_center_ckpch=refined,
+        refinement_shift_ckpch=shift,
+        refinement_accepted=accepted,
+        so_m200_code=float(so_mass),
+        so_r200_ckpch=float(so_radius),
+        boxsize_ckpch=header["box"],
+        a=header["a"],
+        z=header["z"],
+        h=header["h"],
+        omega_m=header["omega_m"],
+        omega_lambda=header["omega_lambda"],
+    )
+    if verbose:
+        print(f"[halo_utils] snap={snap:03d} target group={index}")
+        print(
+            f"  M200c={so_mass*MSUN_PER_CODE/header['h']:.6e} Msun  "
+            f"R200c={so_radius*header['a']/header['h']:.3f} pkpc"
+        )
+        print(
+            f"  center shift={shift:.3f} ckpc/h; accepted={accepted}"
+        )
+    return reference
+
+
+def _zoom_reference_to_tracking_dict(
+    reference: HaloReference,
+    snap_num: int,
+) -> dict:
+    """Adapt the public dataclass to the established DM-core tracker."""
+    h = reference.h
+    a = reference.a
+    return {
+        "center": reference.chosen_center_ckpch.copy(),
+        "center_ckpch": reference.chosen_center_ckpch.copy(),
+        "center_fof": reference.catalog_center_ckpch.copy(),
+        "r200_ckpch": reference.so_r200_ckpch,
+        "r200_pkpc": reference.so_r200_ckpch * a / h,
+        "m200_code": reference.so_m200_code,
+        "m200_msun": reference.so_m200_code * MSUN_PER_CODE / h,
+        "group_idx": reference.group_index,
+        "catalog_r200_ckpch": reference.catalog_r200_ckpch,
+        "catalog_r200_pkpc": reference.catalog_r200_ckpch * a / h,
+        "catalog_m200_code": reference.catalog_m200_code,
+        "catalog_m200_msun": reference.catalog_m200_code * MSUN_PER_CODE / h,
+        "box_ckpch": reference.boxsize_ckpch,
+        "snap_num_z0": int(snap_num),
+        "h": h,
+        "a": a,
+        "z": reference.z,
+        "selection": "explicit final target group",
+        "refine_center": True,
+    }
+
+
+def get_zoom_halo_series(
+    output_dir: str | Path,
+    snap_nums: Sequence[int],
+    group_index: int,
+    reference_snap: Optional[int] = None,
+    verbose: bool = True,
+    refine_reference_center: bool = True,
+    refine_historical_centers: bool = False,
+) -> Dict[int, Optional[dict]]:
+    """Track an explicitly anchored zoom target backward with HRDM core IDs.
+
+    ``group_index`` identifies the target only at ``reference_snap`` (normally
+    the final snapshot).  Earlier FOF indices are discovered from conserved
+    PartType1 IDs and must never be assumed equal to the final index.
+    """
+    output_dir = Path(output_dir)
+    requested = sorted(set(int(value) for value in snap_nums))
+    if not requested:
+        return {}
+
+    if reference_snap is None:
+        reference_snap = find_last_snap_num(output_dir)
+    if reference_snap is None:
+        raise RuntimeError(f"No complete snapshot/catalog pair in {output_dir}")
+    reference_snap = int(reference_snap)
+    if max(requested) > reference_snap:
+        raise ValueError(
+            f"Requested snapshot {max(requested)} is later than reference "
+            f"snapshot {reference_snap}"
+        )
+
+    public_reference = get_zoom_halo(
+        output_dir,
+        reference_snap,
+        group_index=int(group_index),
+        refine_center=refine_reference_center,
+        verbose=verbose,
+    )
+    reference = _zoom_reference_to_tracking_dict(
+        public_reference, reference_snap
+    )
+
+    available = [snap for snap, _, _ in find_snapshots(output_dir)]
+    available_set = set(available)
+    minimum = min(requested)
+    chain = sorted(
+        [snap for snap in available if minimum <= snap <= reference_snap],
+        reverse=True,
+    )
+    if reference_snap not in chain:
+        chain.insert(0, reference_snap)
+
+    tracked: Dict[int, Optional[dict]] = {reference_snap: reference}
+    trusted_snap = reference_snap
+    trusted_halo = reference
+
+    if verbose:
+        print(
+            f"[halo-track] conserved-HRDM-core history: "
+            f"{reference_snap:03d} -> {minimum:03d}"
+        )
+
+    for earlier_snap in chain:
+        if earlier_snap == reference_snap:
+            continue
+        halo = _select_dm_main_progenitor(
+            output_dir,
+            earlier_snap=earlier_snap,
+            later_snap=trusted_snap,
+            later_halo=trusted_halo,
+            refine_center=refine_historical_centers,
+            verbose=verbose,
+        )
+        tracked[earlier_snap] = halo
+        if halo is not None:
+            trusted_snap = earlier_snap
+            trusted_halo = halo
+
+    missing = [
+        snap for snap in requested
+        if snap not in available_set and snap != reference_snap
+    ]
+    if missing and verbose:
+        print(
+            f"[halo-track] requested snapshots without complete catalogs: {missing}"
+        )
+    return {snap: tracked.get(snap) for snap in requested}

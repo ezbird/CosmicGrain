@@ -41,7 +41,7 @@ try:
 except ImportError:
     go = None
 
-from zoom_halo_utils import (
+from halo_utils import (
     find_snapshot_and_group_files,
     get_zoom_halo,
     periodic_delta,
