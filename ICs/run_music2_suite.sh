@@ -151,7 +151,7 @@ cleanup_music2_workfiles() {
 
     # Use nullglob so an unmatched pattern does not become a literal filename.
     shopt -s nullglob
-    local white_noise_files=( "$halo_dir"/white_noise_*.bin )
+    local white_noise_files=("$halo_dir"/wnoise_*.bin)
     shopt -u nullglob
 
     if [ "${#white_noise_files[@]}" -gt 0 ]; then
