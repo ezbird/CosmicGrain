@@ -82,39 +82,67 @@ void simparticles::assign_hydro_timesteps(void)
         {
           integertime ti_step = get_timestep_hydro(target);
 
-          int bin;
-          timebins_get_bin_and_do_validity_checks(ti_step, &bin, P[target].getTimeBinHydro());
+          int hydro_bin;
+          timebins_get_bin_and_do_validity_checks(ti_step, &hydro_bin, P[target].getTimeBinHydro());
+
+          int bin = hydro_bin;
 
 #ifdef SELFGRAVITY
-          if(bin > P[target].TimeBinGrav)
-            bin = P[target].TimeBinGrav;
+          const int grav_bin = P[target].TimeBinGrav;
+#else
+          const int grav_bin = -1;
+#endif
+
+#ifdef SELFGRAVITY
+          if(bin > grav_bin)
+            bin = grav_bin;
 #endif
 
           TimeBinsHydro.timebin_move_particle(target, P[target].getTimeBinHydro(), bin);
 
-          /* ---- BIN_FLOOR diagnostic ---- */
-          if(bin <= 10) {
-            double u_cgs = get_utherm_from_entropy(target)
-               * All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s;
-            double T = u_cgs / (1.5 * BOLTZMANN / (0.62 * PROTONMASS));
-            double nH = SphP[target].Density * All.cf_a3inv
-                        * All.UnitDensity_in_cgs * HYDROGEN_MASSFRAC / PROTONMASS;
-            static long long bin_floor_hits = 0;
-            ++bin_floor_hits;
-            // Added task number and particle ID so this is directly joinable
-            // by ID against [FEEDBACK_HIGH_T]/[RESERVOIR_OVERFLOW] lines,
-            // rather than only inferred from coincident step numbers. Also
-            // dropped the ThisTask==0 restriction since the actual crash was
-            // on tasks 3/12/17, not task 0.
-            #ifdef STARFORMATION
-            printf("[BIN_FLOOR|task=%d|Step=%d] bin=%d ID=%lld T=%.2e K nH=%.2e cm^-3 "
-                   "h=%.3f kpc SFR=%.2e count=%lld\n",
-                   All.ThisTask, All.NumCurrentTiStep, bin,
-                   (long long)P[target].ID.get(), T, nH,
-                   SphP[target].Hsml, SphP[target].Sfr, bin_floor_hits);
-            #endif
-          }
-          /* ------------------------------ */
+          /*
+           * Diagnose short assigned hydro bins without changing timestep
+           * selection.  Keep the hydro-requested, gravity, and final bins
+           * separate: otherwise a gravity cap can be mistaken for a short
+           * timestep requested by the hydrodynamic criteria.
+           *
+           * Output is rate-limited independently on each MPI task.  The old
+           * diagnostic printed every qualifying particle and produced nearly
+           * half a million lines in a single run.  Skip the terminal timeline
+           * synchronization, where timebins are deliberately collapsed to 0.
+           */
+          if(All.Ti_Current < TIMEBASE && bin <= 10)
+            {
+              static long long short_assignment_count = 0;
+              static long long hydro_short_count       = 0;
+              static long long gravity_capped_count    = 0;
+
+              short_assignment_count++;
+              if(hydro_bin <= 10)
+                hydro_short_count++;
+              if(grav_bin >= 0 && grav_bin < hydro_bin)
+                gravity_capped_count++;
+
+              if(short_assignment_count <= 20 || short_assignment_count % 10000 == 0)
+                {
+                  double u_cgs = get_utherm_from_entropy(target) * All.UnitVelocity_in_cm_per_s *
+                                 All.UnitVelocity_in_cm_per_s;
+                  double temp_mu062 = u_cgs / (1.5 * BOLTZMANN / (0.62 * PROTONMASS));
+                  double nH = SphP[target].Density * All.cf_a3inv * All.UnitDensity_in_cgs * HYDROGEN_MASSFRAC /
+                              PROTONMASS;
+                  double sfr = 0.0;
+#ifdef STARFORMATION
+                  sfr = SphP[target].Sfr;
+#endif
+
+                  printf("[HYDRO_BIN_ASSIGN|task=%d|step=%d] ID=%lld hydro_bin=%d grav_bin=%d final_bin=%d "
+                         "Tmu062=%.3e_K nH=%.3e_cm^-3 Hsml=%.6g SFR=%.3e "
+                         "count=%lld hydro_short=%lld gravity_capped=%lld\n",
+                         All.ThisTask, All.NumCurrentTiStep, (long long)P[target].ID.get(), hydro_bin, grav_bin, bin,
+                         temp_mu062, nH, SphP[target].Hsml, sfr, short_assignment_count, hydro_short_count,
+                         gravity_capped_count);
+                }
+            }
 
           P[target].setTimeBinHydro(bin);
         }
@@ -212,55 +240,57 @@ int simparticles::test_if_grav_timestep_is_too_large(int p, int bin)
  */
 integertime simparticles::get_timestep_grav(int p /*!< particle index */)
 {
-
-    // Why dust particles need special treatment here:
-    //
-    // DUST TIMEBINS
-    // Dust particles do not need acceleration-based gravity timesteps — Epstein
-    // drag handles sub-step momentum exchange, and dust gravity is not the
-    // limiting physics. Returning TIMEBASE-1 requests the longest possible
-    // integer timestep; timebins_get_bin_and_do_validity_checks then assigns
-    // dust to the highest currently-synchronized bin (typically bin 18/19),
-    // keeping dust out of the short-bin gravity tree that dominates runtime.
-    //
-    // SNAPSHOT OUTPUT PROTECTION
-    // Without the cap below, dust on bin 18/19 causes find_next_sync_point()
-    // to return Ti_Current + 2^19 — a value that can jump over Ti_nextoutput,
-    // causing snapshot output times to be permanently missed. This was the
-    // original behavior of "dust on bin 15 as accidental safety net": the
-    // short bin 15 step (2^15 << output gap) fired so frequently that output
-    // times were always caught. The fix explicitly caps ti_max so that the
-    // next sync-point never overshoots the next scheduled output time.
-    //
-    // FLOOR AT DUST_MIN_TIMEBIN
-    // When Ti_nextoutput is imminent, the halving loop can reduce ti_max
-    // below 2^DUST_MIN_TIMEBIN, which would place dust on an extremely short
-    // bin and trigger a "timestep too small" crash. The floor prevents this:
-    // dust never goes below bin DUST_MIN_TIMEBIN (i.e. bin 15) regardless of how
-    // close the next output is. The snapshot will still be caught because
-    // gas and DM particles near active star formation are already on short
-    // bins and will trigger the required sync-point.
-  #ifdef DUST
-    if(P[p].getType() == DUST_PARTICLE_TYPE)
+#ifdef DUST
+  if(P[p].getType() == DUST_PARTICLE_TYPE)
     {
-      integertime ti_max = (integertime)(TIMEBASE - 1);
-      if(All.Ti_nextoutput > All.Ti_Current)
-      {
-        integertime ti_to_output = All.Ti_nextoutput - All.Ti_Current;
-        while(ti_max > ti_to_output)
-          ti_max >>= 1;
-      }
-      // Floor: never go below max(DUST_MIN_TIMEBIN, HighestActiveTimeBin).
-      // At early times (z>10) HighestActiveTimeBin can be 21+; without this
-      // clamp dust migrates back to bin 15 after first gravity evaluation,
-      // landing on an unsynchronized bin and causing a multi-node gravity hang.
-      integertime ti_floor = ((integertime)1) << std::max(DUST_MIN_TIMEBIN,
-                                                          (int)All.HighestActiveTimeBin);
-      if(ti_max < ti_floor)
-          ti_max = ti_floor;
-      return ti_max;
+      /*
+       * DUST GRAVITY TIMESTEP
+       *
+       * Dust gravity itself is not the timestep-limiting physics; Epstein
+       * drag handles the sub-step momentum coupling. We therefore give dust
+       * the longest gravity timestep permitted by the simulation-wide
+       * MaxSizeTimestep.
+       *
+       * Dust must still obey MaxSizeTimestep. Synchronized snapshot times
+       * are constructed on this power-of-two timestep grid. Allowing dust
+       * onto longer bins can make HighestOccupiedTimeBin exceed the output
+       * synchronization grid and delay requested snapshots until a later
+       * top-level synchronization.
+       */
+
+      integertime ti_max =
+          (integertime)(All.MaxSizeTimestep / All.Timebase_interval);
+
+      /*
+       * Convert MaxSizeTimestep to the largest allowed power-of-two integer
+       * timestep, matching GADGET's normal timebin hierarchy.
+       */
+      integertime ti_step = TIMEBASE;
+      while(ti_step > ti_max)
+        ti_step >>= 1;
+
+      /*
+       * DUST_MIN_TIMEBIN remains a safety constraint. If a future parameter
+       * set makes it incompatible with MaxSizeTimestep, fail explicitly
+       * rather than silently violating the global timestep ceiling.
+       */
+      integertime ti_floor =
+          ((integertime)1) << DUST_MIN_TIMEBIN;
+
+      if(ti_step < ti_floor)
+        Terminate(
+            "Dust timestep conflict: MaxSizeTimestep=%g gives integer "
+            "timestep=%lld below DUST_MIN_TIMEBIN=%d (2^%d=%lld). "
+            "Increase MaxSizeTimestep or lower DUST_MIN_TIMEBIN.\n",
+            All.MaxSizeTimestep,
+            (long long)ti_step,
+            DUST_MIN_TIMEBIN,
+            DUST_MIN_TIMEBIN,
+            (long long)ti_floor);
+
+      return ti_step;
     }
-  #endif
+#endif
 
   double ax = All.cf_a2inv * P[p].GravAccel[0];
   double ay = All.cf_a2inv * P[p].GravAccel[1];
@@ -394,54 +424,59 @@ integertime simparticles::get_timestep_hydro(int p /*!< particle index */)
    */
   double dt_hsml = All.cf_atime2 * All.CourantFac * fabs(SphP[p].Hsml / (SphP[p].DtHsml + MIN_FLOAT_NUMBER));
 
-  /* now take the smallest of these four criteria */
-  double dt = dt_kin;
+  /* Select the shortest physical-time criterion and retain its identity for
+   * diagnostics.  This bookkeeping does not alter timestep selection. */
+  enum hydro_timestep_limiter
+  {
+    HYDRO_LIMIT_KINEMATIC = 0,
+    HYDRO_LIMIT_COURANT,
+    HYDRO_LIMIT_TREE,
+    HYDRO_LIMIT_HSML,
+    HYDRO_LIMIT_SFR,
+    HYDRO_LIMIT_MAXSIZE,
+    HYDRO_LIMIT_DISPLACEMENT,
+    HYDRO_LIMIT_COUNT
+  };
+
+  const char *limiter_names[HYDRO_LIMIT_COUNT] = {
+      "KINEMATIC", "COURANT", "TREE", "HSML", "SFR", "MAXSIZE", "DISPLACEMENT"};
+
+  int limiter = HYDRO_LIMIT_KINEMATIC;
+  double dt   = dt_kin;
+
   if(dt > dt_courant)
-    dt = dt_courant;
-  if(dt > dt_treebased)
-    dt = dt_treebased;
-  if(dt > dt_hsml)
-    dt = dt_hsml;
-
-  if(p < 3 && ThisTask == 0) {
-      double pos[3];
-      intpos_to_pos(P[p].IntPos, pos);
-
-      // Determine which constraint is limiting
-      double dt_actual = dt;
-      const char* limiter = "UNKNOWN";
-      double min_dt = 1e30;
-
-      if(dt_kin < min_dt) { min_dt = dt_kin; limiter = "KINETIC"; }
-      if(dt_courant < min_dt) { min_dt = dt_courant; limiter = "COURANT"; }
-      if(dt_hsml < min_dt) { min_dt = dt_hsml; limiter = "HSML"; }
-
-      // Print every 100 timesteps
-      static long long last_print_step = -1;
-      const int PRINT_EVERY_N_STEPS = 100;
-
-      if(All.NumCurrentTiStep - last_print_step >= PRINT_EVERY_N_STEPS || last_print_step < 0) {
-        printf("TIMESTEP_DEBUG p=%d step=%lld: dt=%.3e limited by %s | pos=(%.1f,%.1f,%.1f)\n",
-              p, (long long)All.NumCurrentTiStep, dt_actual, limiter, pos[0], pos[1], pos[2]);
-        printf("               constraints: kinetic=%.3e courant=%.3e hsml=%.3e\n",
-              dt_kin, dt_courant, dt_hsml);
-
-        // Only reset after we've printed all 3 particles (p=0,1,2)
-        if(p == 2) {
-          last_print_step = All.NumCurrentTiStep;
-        }
-      }
+    {
+      dt      = dt_courant;
+      limiter = HYDRO_LIMIT_COURANT;
     }
+  if(dt > dt_treebased)
+    {
+      dt      = dt_treebased;
+      limiter = HYDRO_LIMIT_TREE;
+    }
+  if(dt > dt_hsml)
+    {
+      dt      = dt_hsml;
+      limiter = HYDRO_LIMIT_HSML;
+    }
+
+  /* A negative value means that the SFR limiter is inactive.  Keeping an
+   * explicit sentinel avoids printing or multiplying an enormous floating
+   * point value in diagnostic-only code. */
+  double dt_sfr = -1.0;
 
 #ifdef STARFORMATION
   if(P[p].getType() == 0) /* to protect using a particle that has been turned into a star */
     {
       if(SphP[p].Sfr > 0)
         {
-          double dt_sfr =
-              0.1 * P[p].getMass() / (SphP[p].Sfr / ((All.UnitMass_in_g / SOLAR_MASS) / (All.UnitTime_in_s / SEC_PER_YEAR)));
+          dt_sfr = 0.1 * P[p].getMass() /
+                   (SphP[p].Sfr / ((All.UnitMass_in_g / SOLAR_MASS) / (All.UnitTime_in_s / SEC_PER_YEAR)));
           if(dt_sfr < dt)
-            dt = dt_sfr;
+            {
+              dt      = dt_sfr;
+              limiter = HYDRO_LIMIT_SFR;
+            }
         }
     }
 #endif
@@ -452,11 +487,17 @@ integertime simparticles::get_timestep_hydro(int p /*!< particle index */)
   dt *= All.cf_hubble_a;
 
   if(dt >= All.MaxSizeTimestep)
-    dt = All.MaxSizeTimestep;
+    {
+      dt      = All.MaxSizeTimestep;
+      limiter = HYDRO_LIMIT_MAXSIZE;
+    }
 
 #if defined(PMGRID) && !defined(TREEPM_NOTIMESPLIT)
   if(dt >= All.DtDisplacement)
-    dt = All.DtDisplacement;
+    {
+      dt      = All.DtDisplacement;
+      limiter = HYDRO_LIMIT_DISPLACEMENT;
+    }
 #endif
 
   if(dt < All.MinSizeTimestep)
@@ -471,28 +512,73 @@ integertime simparticles::get_timestep_hydro(int p /*!< particle index */)
 
   integertime ti_step = (integertime)(dt / All.Timebase_interval);
 
-    // Original gate only covered the first 50 steps (startup transients).
-    // Widened so any future near-floor event is caught regardless of when it
-    // happens, not just at startup. ti_step<=1 is the exact condition that
-    // leads to "time-step of integer size 1 not allowed" in
-    // timebins_get_bin_and_do_validity_checks(), so that case always prints
-    // and includes the particle ID/mass needed to trace it to a feedback or
-    // dust event via [DUST_SN]/[FEEDBACK] logs at the same a/z.
-    bool tiny_dt_startup  = (ti_step <= 2 && All.NumCurrentTiStep < 50);
-    bool tiny_dt_critical = (ti_step <= 1);
+  /*
+   * Report the physical criterion responsible for genuinely short hydro
+   * requests.  This is deliberately evaluated before assign_hydro_timesteps()
+   * can cap the requested bin to the particle's gravity bin.
+   *
+   * Counts are exact per MPI task, while detailed output is limited to the
+   * first 20 occurrences and then one line per 10000 occurrences.  The final
+   * timeline synchronization is excluded because it does not represent a
+   * normal timestep request.
+   */
+  if(All.Ti_Current < TIMEBASE && ti_step > 1 && ti_step < TIMEBASE)
+    {
+      int requested_bin = get_timestep_bin(ti_step);
 
-    if(tiny_dt_startup || tiny_dt_critical)
-      printf("[TINY_DT|task=%d|step=%d] p=%d ID=%lld mass=%.3e ti_step=%lld dt=%.3e "
-            "dt_kin=%.3e dt_courant=%.3e dt_hsml=%.3e dt_tree=%.3e "
-            "Hsml=%.3e DtHsml=%.3e MaxSignalVel=%.3e a=%.6g z=%.3f%s\n",
-            ThisTask, All.NumCurrentTiStep, p,
-            (long long)P[p].ID.get(), P[p].getMass(),
-            (long long)ti_step, dt,
-            dt_kin*All.cf_hubble_a, dt_courant*All.cf_hubble_a,
-            dt_hsml*All.cf_hubble_a, dt_treebased*All.cf_hubble_a,
-            SphP[p].Hsml, SphP[p].DtHsml, SphP[p].MaxSignalVel,
-            All.Time, 1.0/All.Time - 1.0,
-            tiny_dt_critical ? "  <-- CRITICAL (ti_step<=1)" : "");
+      if(requested_bin <= 10)
+        {
+          static long long short_request_count = 0;
+          static long long limiter_counts[HYDRO_LIMIT_COUNT] = {0, 0, 0, 0, 0, 0, 0};
+
+          short_request_count++;
+          limiter_counts[limiter]++;
+
+          if(short_request_count <= 20 || short_request_count % 10000 == 0)
+            {
+              double u_cgs = get_utherm_from_entropy(p) * All.UnitVelocity_in_cm_per_s *
+                             All.UnitVelocity_in_cm_per_s;
+              double temp_mu062 = u_cgs / (1.5 * BOLTZMANN / (0.62 * PROTONMASS));
+              double nH = SphP[p].Density * All.cf_a3inv * All.UnitDensity_in_cgs * HYDROGEN_MASSFRAC /
+                          PROTONMASS;
+              double sfr = 0.0;
+#ifdef STARFORMATION
+              sfr = SphP[p].Sfr;
+#endif
+
+              printf("[HYDRO_SHORT_STEP|task=%d|step=%d] ID=%lld requested_bin=%d limiter=%s "
+                     "dt=%.6e dtkin=%.6e dtcourant=%.6e dttree=%.6e dthsml=%.6e dtsfr=%.6e "
+                     "Hsml=%.6g DtHsml=%.6e MaxSignalVel=%.6e ac=%.6e "
+                     "Tmu062=%.3e_K nH=%.3e_cm^-3 SFR=%.3e count=%lld "
+                     "counts[KIN=%lld COUR=%lld TREE=%lld HSML=%lld SFR=%lld MAX=%lld DISP=%lld]\n",
+                     ThisTask, All.NumCurrentTiStep, (long long)P[p].ID.get(), requested_bin,
+                     limiter_names[limiter], dt, dt_kin * All.cf_hubble_a, dt_courant * All.cf_hubble_a,
+                     dt_treebased * All.cf_hubble_a, dt_hsml * All.cf_hubble_a,
+                     dt_sfr > 0 ? dt_sfr * All.cf_hubble_a : -1.0,
+                     SphP[p].Hsml, SphP[p].DtHsml, SphP[p].MaxSignalVel, ac, temp_mu062, nH, sfr,
+                     short_request_count, limiter_counts[HYDRO_LIMIT_KINEMATIC], limiter_counts[HYDRO_LIMIT_COURANT],
+                     limiter_counts[HYDRO_LIMIT_TREE], limiter_counts[HYDRO_LIMIT_HSML],
+                     limiter_counts[HYDRO_LIMIT_SFR], limiter_counts[HYDRO_LIMIT_MAXSIZE],
+                     limiter_counts[HYDRO_LIMIT_DISPLACEMENT]);
+            }
+        }
+    }
+
+  /* Always retain detailed diagnostics for a timestep that is close to the
+   * integer timeline floor, since the next validity check may terminate. */
+  bool tiny_dt_startup  = (ti_step <= 2 && All.NumCurrentTiStep < 50);
+  bool tiny_dt_critical = (ti_step <= 1);
+
+  if(tiny_dt_startup || tiny_dt_critical)
+    printf("[TINY_DT|task=%d|step=%d] p=%d ID=%lld mass=%.3e ti_step=%lld limiter=%s dt=%.3e "
+           "dt_kin=%.3e dt_courant=%.3e dt_tree=%.3e dt_hsml=%.3e dt_sfr=%.3e "
+           "Hsml=%.3e DtHsml=%.3e MaxSignalVel=%.3e a=%.6g z=%.3f%s\n",
+           ThisTask, All.NumCurrentTiStep, p, (long long)P[p].ID.get(), P[p].getMass(), (long long)ti_step,
+           limiter_names[limiter], dt, dt_kin * All.cf_hubble_a, dt_courant * All.cf_hubble_a,
+           dt_treebased * All.cf_hubble_a, dt_hsml * All.cf_hubble_a,
+           dt_sfr > 0 ? dt_sfr * All.cf_hubble_a : -1.0,
+           SphP[p].Hsml, SphP[p].DtHsml, SphP[p].MaxSignalVel, All.Time, 1.0 / All.Time - 1.0,
+           tiny_dt_critical ? "  <-- CRITICAL (ti_step<=1)" : "");
 
   if(!(ti_step > 0 && ti_step < TIMEBASE))
     {

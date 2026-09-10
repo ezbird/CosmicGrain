@@ -65,6 +65,25 @@ static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
                                          double *mass_counter);
 double dust_clumping_factor(double n_H, int is_star_forming);
 
+/** Return the proper gas mass density in cgs units.
+ *
+ * Snapshot/SPH densities are comoving code densities.  The a^-3 and h^2
+ * factors match the conversion used by cooling.cc, ensuring that dust drag,
+ * sputtering, collisions, growth, and temperature calculations all use the
+ * same physical density as cooling and star formation.
+ */
+static inline double dust_gas_density_cgs(const simparticles *Sp, int gas_idx)
+{
+  return Sp->SphP[gas_idx].Density * All.cf_a3inv
+         * All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam;
+}
+
+/** Return the physical hydrogen-nucleus number density in cm^-3. */
+static inline double dust_gas_nH_cgs(const simparticles *Sp, int gas_idx)
+{
+  return HYDROGEN_MASSFRAC * dust_gas_density_cgs(Sp, gas_idx) / PROTONMASS;
+}
+
 // ── External hash and rebuild declarations (defined in feedback.cc) ───────────
 extern spatial_hash_zoom gas_hash;
 extern spatial_hash_zoom star_hash;
@@ -762,18 +781,8 @@ if(shat_passed > 0)
     // Gas properties
     // =========================================================================
 
-    double gas_density_code =
-        Sp->SphP[gas_idx].Density *
-        All.cf_a3inv;
-
-    double gas_density_cgs =
-        gas_density_code *
-        All.UnitDensity_in_cgs;
-
-    double n_H =
-        (gas_density_cgs *
-         HYDROGEN_MASSFRAC) /
-        PROTONMASS;
+    double gas_density_cgs = dust_gas_density_cgs(Sp, gas_idx);
+    double n_H             = dust_gas_nH_cgs(Sp, gas_idx);
 
     double T_gas =
         get_temperature_from_entropy(
@@ -1253,8 +1262,7 @@ int erode_dust_grain_thermal(simparticles *Sp, int dust_idx, int nearest_gas_inp
   const double omega = 2.5;   // power-law index (Tielens et al. 1994)
   double a_cgs       = a * 1e-7;            // nm → cm
   double a_minus1    = a_cgs / 1e-5;        // units of 0.1 µm
-  double rho_cgs     = Sp->SphP[nearest_gas_input].Density
-                       * All.UnitDensity_in_cgs * All.cf_a3inv;
+  double rho_cgs     = dust_gas_density_cgs(Sp, nearest_gas_input);
   double rho_minus27 = rho_cgs / 1e-27;
   // Guard against zero/unphysical gas density
   if(rho_minus27 <= 0.0 || !isfinite(rho_minus27))
@@ -1400,6 +1408,9 @@ static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
   Sp->DustP[dust_idx].GrainRadius = All.DustMinGrainSize;
   LocalDustMassChange -= dust_mass;
   LocalDustDestroyedThisStep++;
+  /* The particle has changed type and must be removed from the dust/gravity
+   * time-bin bookkeeping before the next force calculation or snapshot. */
+  DustNeedsSynchronization = 1;
   if(counter)      (*counter)++;
   if(mass_counter) (*mass_counter) += dust_mass;
   return 1;
@@ -1472,8 +1483,8 @@ static double calculate_drag_timescale(double grain_radius_nm, double grain_dens
  *
  * DRAG (Step 4): Velocity is updated analytically — the exact exponential
  * solution (Δv = v_rel × (1 − exp(−dt/t_stop))) is used rather than a linear
- * approximation, so the result is correct for any ratio of dt/t_stop including
- * the dt×10 cadence multiplier.
+ * approximation, so the result is stable for any ratio of dt/t_stop.  The
+ * caller supplies the actual physical elapsed interval in code-time units.
  *
  * SPUTTERING (Step 5): Delegated to erode_dust_grain_thermal(), which also
  * uses the exact exponential form.
@@ -1505,9 +1516,8 @@ int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double
   double gas_vel[3]     = { Sp->P[nearest_gas].Vel[0],
                              Sp->P[nearest_gas].Vel[1],
                              Sp->P[nearest_gas].Vel[2] };
-  double gas_density    = Sp->SphP[nearest_gas].Density * All.cf_a3inv;
-  double gas_density_cgs= gas_density * All.UnitDensity_in_cgs;
-  double n_H            = gas_density_cgs / PROTONMASS;
+  double gas_density_cgs= dust_gas_density_cgs(Sp, nearest_gas);
+  double n_H            = dust_gas_nH_cgs(Sp, nearest_gas);
   double T_gas          = get_temperature_from_entropy(Sp, nearest_gas);
   // ── Step 3: Relative velocity ─────────────────────────────────────────────
   double vrel_x = Sp->P[dust_idx].Vel[0] - gas_vel[0];
@@ -1522,7 +1532,9 @@ int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double
   double drag_timescale = drag_timescale_myr * 1e6 * SEC_PER_YEAR / All.UnitTime_in_s;
   // ── Step 5: Apply drag — exact analytical solution ───────────────────────
   // Δv_k = (v_gas,k − v_dust,k) × (1 − exp(−dt/t_stop))
-  // This is exact for any dt/t_stop and is safe with the ×10 cadence multiplier.
+  // This is exact for any dt/t_stop.  dt is the physical elapsed interval in
+  // internal code-time units, converted by the caller from the cosmological
+  // scale-factor step.
   double drag_factor = 1.0 - exp(-dt / drag_timescale);
   for(int k = 0; k < 3; k++)
     Sp->P[dust_idx].Vel[k] += drag_factor * (gas_vel[k] - Sp->P[dust_idx].Vel[k]);
@@ -1788,7 +1800,10 @@ return total_dust_mass;
 /**
  * Update global dust counters and redistribute the particle ID block across tasks.
  *
- * ID BLOCK SCHEME: Between synchronisation calls, each task independently
+ * This is called after each dust-physics update, not at every global
+ * synchronization point when a reduced dust cadence is selected.
+ *
+ * ID BLOCK SCHEME: Between calls, each task independently
  * increments All.MaxID as it spawns dust particles. To prevent inter-task ID
  * collisions, each task is assigned an exclusive block of size block_size
  * after every sync. block_size must exceed the maximum number of dust particles
@@ -1805,7 +1820,9 @@ void dust_global_synchronization(simparticles *Sp, MPI_Comm Communicator,
   LocalDustCreatedThisStep    = 0;
   LocalDustDestroyedThisStep  = 0;
   LocalDustMassChange         = 0.0;
-  DustNeedsSynchronization    = 0;
+  /* Do not clear DustNeedsSynchronization here.  The main run loop owns
+   * particle compaction/time-bin reconstruction and clears the flag only
+   * after that collective operation has completed. */
   // Find the global maximum ID across all tasks
   MyIDType local_max  = All.MaxID;
   MyIDType global_max = 0;
@@ -2156,9 +2173,9 @@ double stellar_luminosity(simparticles *Sp, int star_idx)
 {
   const double L_sun_cgs = 3.828e33;
   const double M_sun_cgs = 1.989e33;
-  double M_star_sun  = Sp->P[star_idx].getMass() * All.UnitMass_in_g / M_sun_cgs;
-  double age_yr      = (All.Time - Sp->P[star_idx].StellarAge)
-                       * All.UnitTime_in_s / SEC_PER_YEAR;
+  double M_star_sun  = Sp->P[star_idx].getMass() * All.UnitMass_in_g
+                       / (All.HubbleParam * M_sun_cgs);
+  double age_yr      = get_stellar_age_Myr(Sp->P[star_idx].StellarAge, All.Time) * 1.0e6;
   double L_over_M;
   if     (age_yr < 3e6)   L_over_M = 200.0;
   else if(age_yr < 10e6)  L_over_M = 200.0 - 100.0 * (age_yr - 3e6)  / 7e6;
@@ -2239,7 +2256,7 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
     int si = neighbor_indices[i];
     if(Sp->P[si].getType() != 4) continue;  // only stellar particles
     // Age cut: only OB-dominated populations (< 20 Myr)
-    double age_yr = (All.Time - Sp->P[si].StellarAge) * All.UnitTime_in_s / SEC_PER_YEAR;
+    double age_yr = get_stellar_age_Myr(Sp->P[si].StellarAge, All.Time) * 1.0e6;
     if(age_yr > 20e6) continue;
     double L_cgs = stellar_luminosity(Sp, si);
     if(L_cgs <= 0.0) continue;
@@ -2269,7 +2286,7 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
   // the drag velocity update and must NOT be applied here.
   double t_stop_code = 0.0;
   if(nearest_gas >= 0 && Sp->P[nearest_gas].getType() == 0) {
-    double rho_cgs = Sp->SphP[nearest_gas].Density * All.cf_a3inv * All.UnitDensity_in_cgs;
+    double rho_cgs = dust_gas_density_cgs(Sp, nearest_gas);
     double T_gas   = get_temperature_from_entropy(Sp, nearest_gas);
     if(rho_cgs > 0.0 && T_gas > 0.0) {
       double c_s_cgs  = sqrt((5.0/3.0) * BOLTZMANN * T_gas / (0.6 * PROTONMASS));
@@ -2305,7 +2322,8 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
 // update_dust_temperature
 // ═══════════════════════════════════════════════════════════════════════════════
 /**
- * Solve for equilibrium dust temperature via modified-blackbody energy balance.
+ * Estimate the equilibrium dust temperature from modified-blackbody energy
+ * balance and relax the represented grain population toward that value.
  *
  * Equilibrium condition:
  *   P_emit(T_eq) = P_CMB + P_ISRF + P_gas
@@ -2318,14 +2336,22 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
  *
  * Emissivity uses Draine & Lee (1984) modified blackbody: Q_abs ∝ a T^β, β=2.
  *
- * Since grain cooling times are << simulation timestep, we solve analytically
- * for T_eq and then relax T_dust → T_eq exponentially over the grain cooling
- * timescale τ_cool = C_grain × T_dust / P_emit (Hollenbach & McKee 1979).
+ * The collisional term is evaluated at the dust temperature at the start of
+ * the update, so T_eq is an operator-split estimate rather than the exact root
+ * of the coupled gas/dust equation.  The dust temperature then relaxes toward
+ * that estimate exponentially over
+ * τ_cool = C_grain × T_dust / P_emit (Hollenbach & McKee 1979).
  *
- * Back-reaction on gas: the energy transferred dust→gas (or gas→dust) is
- * applied each call, with a 20% per-call drain limiter to prevent multi-particle
- * accumulation from over-cooling a gas cell faster than the cooling solver can
- * update ne.
+ * Gas back-reaction is intentionally not applied here.  Updating the nearest
+ * gas particle once per dust superparticle made the result particle-order and
+ * decomposition dependent, and a per-call limiter did not bound the total
+ * drain from many grains selecting the same gas particle.  A future back-
+ * reaction implementation must accumulate exchanges per gas particle and
+ * apply one conservative, bounded update after the dust loop.
+ *
+ * dt is a physical elapsed interval in internal code-time units.  In
+ * cosmological runs run.cc must convert Δa using Δt = Δa/[a H(a)] before
+ * calling update_dust_dynamics().
  *
  * References: Hollenbach & McKee 1979, Draine & Lee 1984, Mathis+1983, Draine+2007.
  */
@@ -2356,8 +2382,7 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
   double T_dust = Sp->DustP[dust_idx].DustTemperature;
   if(T_dust <= 0.0 || !isfinite(T_dust)) T_dust = T_CMB;
   double T_gas       = get_temperature_from_entropy(Sp, gas_idx);
-  double rho_gas_cgs = Sp->SphP[gas_idx].Density * All.cf_a3inv * All.UnitDensity_in_cgs;
-  double n_H         = rho_gas_cgs * HYDROGEN_MASSFRAC / PROTONMASS;
+  double n_H         = dust_gas_nH_cgs(Sp, gas_idx);
   // ── Emission coefficient C_emit ───────────────────────────────────────────
   double C_emit = 4.0 * M_PI * a_cm * a_cm * Q_eff * sigma_SB / pow(T_ref, beta_eff);
   // ── Heating: CMB ─────────────────────────────────────────────────────────
@@ -2382,34 +2407,11 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
   double P_gas = f_eff * 2.0 * n_H * BOLTZMANN * (T_gas - T_dust)
                  * alpha_T * v_th * M_PI * a_cm * a_cm;
   double dt_cgs = dt * All.UnitTime_in_s;
-  // ── Back-reaction: remove energy from gas ─────────────────────────────────
-  // P_gas > 0 → heat flows gas→dust → gas cools.
-  // Limiter: no more than 20% drain per call to prevent over-cooling faster
-  // than the cooling solver can update the ionisation state.
+
+  // Mass and heat capacity of one physical grain represented by this
+  // superparticle.  These enter only the dust thermal relaxation; the gas is
+  // not mutated in this routine (see the function comment above).
   double m_grain_cgs = (4.0/3.0) * M_PI * a_cm*a_cm*a_cm * rho_grain;
-  if(m_grain_cgs > 0.0) {
-    double M_dust_cgs = Sp->P[dust_idx].getMass() * All.UnitMass_in_g;
-    double N_grains   = M_dust_cgs / m_grain_cgs;
-    double dE_gas_cgs = -P_gas * N_grains * dt_cgs;
-    double M_gas_cgs  = Sp->P[gas_idx].getMass() * All.UnitMass_in_g;
-    double du_code    = (dE_gas_cgs / M_gas_cgs)
-                        / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
-    double u_old = Sp->get_utherm_from_entropy(gas_idx);
-    double u_new = u_old + du_code;
-    // 5% drain limiter
-    double max_drain = 0.05 * u_old;
-    if((u_old - u_new) > max_drain) u_new = u_old - max_drain;
-    // CMB temperature floor: gas cannot cool below the CMB
-    double u_CMB_floor = (1.5 * BOLTZMANN * T_CMB) / (0.6 * PROTONMASS)
-                         / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
-    if(u_new < u_CMB_floor) u_new = u_CMB_floor;
-  if(u_new > 0.0 && isfinite(u_new) && u_new != u_old) {
-        Sp->set_entropy_from_utherm(u_new, gas_idx);
-        if(std::abs(u_new - u_old) > 0.30 * u_old)
-          Sp->SphP[gas_idx].Ne = 0.0;
-        set_thermodynamic_variables_safe(Sp, gas_idx);
-      }
-    }
   // ── Solve for equilibrium temperature ────────────────────────────────────
   // C_emit × T_eq^(4+β) = P_CMB + P_ISRF + P_gas
   double P_total = std::max(P_CMB + P_ISRF + P_gas, P_CMB);  // clamp to CMB floor
@@ -2431,15 +2433,16 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
   Sp->DustP[dust_idx].DustTemperature = T_new;
 }
 // ═══════════════════════════════════════════════════════════════════════════════
-// update_dust_dynamics  (main per-step entry point)
+// update_dust_dynamics  (main cadence-update entry point)
 // ═══════════════════════════════════════════════════════════════════════════════
 /**
  * Apply all dust physics processes to all live dust particles.
  *
- * CADENCE GUARD: Physics runs every 10 gravity steps. The actual elapsed
- * time dt is multiplied by 10 before being passed to all sub-routines. All
- * routines use exact exponential forms (1 − exp(−dt/τ)) that are valid for
- * any ratio of dt/τ, so the 10× multiplier does not introduce errors.
+ * The run loop may call this less often than once per global synchronization
+ * point.  dt is the sum of the exact physical intervals since the preceding
+ * call, in internal code-time units.  It must never be reconstructed as the
+ * current interval times a nominal cadence: adaptive cosmological intervals
+ * are unequal.  Pending time is force-flushed before snapshots and at z=0.
  *
  * PROCESS ORDER per particle:
  *   1. Dust temperature equilibration (if DustEnableCooling or DustEnableDrag)
@@ -2451,6 +2454,11 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
  */
 void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
 {
+  // Includes the collective existence check, so MPI waiting is not hidden.
+  static double total_time_in_dust = 0.0;
+  static int    dust_call_count    = 0;
+  double t_start = MPI_Wtime();
+
   // ── One-time flag verification (confirms parameter file was read) ─────────
   static bool flags_printed = false;
   if(!flags_printed && All.ThisTask == 0) {
@@ -2471,18 +2479,25 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     open_dust_particle_log(Communicator);
     log_opened = true;
   }
-  // ── Cadence guard: skip 9 out of 10 steps, no MPI needed ─────────────────
-  if(All.NumCurrentTiStep % 10 != 0)
-    return;
-  // ── Collective check: any dust exists across all tasks? ───────────────────
-  long long local_count  = GlobalDustCount;
+
+  // ── Collective check: any live dust exists across all tasks? ──────────────
+  // GlobalDustCount is a diagnostic counter, not restart-persistent truth, and
+  // can become stale after compaction or particle exchange.  Recounting here
+  // prevents a restarted run from silently skipping all dust evolution.
+  long long local_count = 0;
+  for(int i = 0; i < Sp->NumPart; i++)
+    if(Sp->P[i].getType() == DUST_PARTICLE_TYPE &&
+       Sp->P[i].getMass() > DUST_MASS_TO_DESTROY && Sp->P[i].ID.get() != 0)
+      local_count++;
+  GlobalDustCount = local_count;
+
   long long global_count = 0;
   MPI_Allreduce(&local_count, &global_count, 1, MPI_LONG_LONG, MPI_SUM, Communicator);
-  if(global_count == 0) return;
-  // ── Timing ───────────────────────────────────────────────────────────────
-  static double total_time_in_dust = 0.0;
-  static int    dust_call_count    = 0;
-  double t_start = MPI_Wtime();
+  if(global_count == 0) {
+    total_time_in_dust += MPI_Wtime() - t_start;
+    dust_call_count++;
+    return;
+  }
   // ── Ensure spatial hash is built ─────────────────────────────────────────
   int need_hash_rebuild = 0;
   if(All.ThisTask == 0) need_hash_rebuild = !gas_hash.is_built;
@@ -2513,11 +2528,11 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     // Temperature update — needs gas properties, so runs whenever drag or
     // cooling is active (both read the gas entropy).
     if(All.DustEnableCooling || All.DustEnableDrag)
-      update_dust_temperature(Sp, i, nearest_gas, dt * 10);
-    // Drag coupling + sputtering (internally checks DustEnableDrag)
-    dust_gas_interaction(Sp, i, nearest_gas, dt * 10);
-    if(All.DustEnableRadiationPressure)
-      dust_radiation_pressure(Sp, i, nearest_gas, dt * 10);
+      update_dust_temperature(Sp, i, nearest_gas, dt);
+
+    dust_gas_interaction(Sp, i, nearest_gas, dt);
+    dust_radiation_pressure(Sp, i, nearest_gas, dt);
+    
     // Growth, coagulation, and shattering require a resolved local gas
     // association.  A fixed 2-kpc cut is strongly resolution dependent:
     // at modest resolution a dust grain can lie well inside the nearest gas
@@ -2533,11 +2548,11 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
 
     if(dist_kpc <= local_dust_gas_radius) {
       if(All.DustEnableGrowth)
-        dust_grain_growth_subgrid(Sp, i, nearest_gas, dt * 10);
+        dust_grain_growth_subgrid(Sp, i, nearest_gas, dt);
       if(All.DustEnableCoagulation)
-        dust_grain_coagulation(Sp, i, nearest_gas, dt * 10);
+        dust_grain_coagulation(Sp, i, nearest_gas, dt);
       if(All.DustEnableShattering)
-        dust_grain_shattering(Sp, i, nearest_gas, dt * 10);
+        dust_grain_shattering(Sp, i, nearest_gas, dt);
     }
   }
   // ── Periodic diagnostics (every 500 steps, task 0) ───────────────────────
@@ -3035,8 +3050,7 @@ void erode_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx,
     sn_nearest_gas = -1;
   double gas_density_cgs = 1.0 * PROTONMASS;  // fallback: ~1 cm^-3
   if(sn_nearest_gas >= 0 && sn_nearest_gas < Sp->NumGas) {
-    double measured = Sp->SphP[sn_nearest_gas].Density * All.cf_a3inv
-                      * All.UnitDensity_in_cgs;
+    double measured = dust_gas_density_cgs(Sp, sn_nearest_gas);
     if(measured > 0.01 * PROTONMASS) gas_density_cgs = measured;
   }
 
@@ -3312,8 +3326,7 @@ void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double 
                coag_passed,      100.0 * coag_passed      / coag_calls);
 
   // ── Gate 1: density ───────────────────────────────────────────────────────
-  double gas_density_cgs  = Sp->SphP[gas_idx].Density * All.cf_a3inv * All.UnitDensity_in_cgs;
-  double n_H              = (gas_density_cgs * HYDROGEN_MASSFRAC) / PROTONMASS;
+  double n_H              = dust_gas_nH_cgs(Sp, gas_idx);
   double DustClumpingFactor= dust_clumping_factor(n_H, Sp->SphP[gas_idx].Sfr > DUST_SFR_EPS);
   double n_eff            = n_H * DustClumpingFactor;
   if(n_eff < All.DustCollisionDensityThresh) { coag_failed_dens++; return; }
@@ -3496,8 +3509,7 @@ void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, doub
     return;
   }
   // ── Gate 3: require sufficiently dense gas ──────────────────────────────────
-  double gas_density_cgs = Sp->SphP[gas_idx].Density * All.cf_a3inv * All.UnitDensity_in_cgs;
-  double n_H = (gas_density_cgs * HYDROGEN_MASSFRAC) / PROTONMASS;
+  double n_H = dust_gas_nH_cgs(Sp, gas_idx);
   double DustClumpingFactor = dust_clumping_factor(n_H, Sp->SphP[gas_idx].Sfr > DUST_SFR_EPS);
   double n_eff_cm3 = n_H * DustClumpingFactor;
   if(n_eff_cm3 < 0.1) {

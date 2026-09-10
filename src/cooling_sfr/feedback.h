@@ -27,6 +27,8 @@
 /* Initialize feedback system (called once at startup) */
 void init_stellar_feedback(void);
 
+double get_stellar_age_Myr(double a_birth, double unused);
+
 /* Apply stellar feedback for current timestep
  *
  * This handles:

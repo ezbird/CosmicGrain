@@ -20,6 +20,7 @@
 
 #include <math.h>
 #include <algorithm>
+#include <cstdint>
 #include <vector>
 #include <mpi.h>
 #include <stdio.h>
@@ -67,6 +68,23 @@ static const double FEEDBACK_KERNEL_GROWTH        = 1.25;
 static const double FEEDBACK_MAX_RADIUS_FACTOR    = 4.0;
 static const double FEEDBACK_MAX_RADIUS_PKPC      = 20.0;
 static const int    FEEDBACK_MAX_KERNEL_ITERS     = 16;
+
+// Counter-based feedback RNG.  The implementation is kept at the end of
+// this file; this explicit tuple interface prevents collisions and correlations
+// caused by adding star ID, timestep, and draw counter into one integer.
+static double feedback_random_u01(
+    std::uint64_t star_id,
+    std::uint64_t timestep,
+    std::uint64_t draw_counter,
+    std::uint64_t stream_id);
+
+// Independent deterministic streams for logically different decisions.
+// Keeping them separate ensures that adding a draw to one decision path does
+// not silently reuse the same random value in another path.
+static constexpr std::uint64_t RNG_STREAM_NEIGHBOR_SELECTION =
+    UINT64_C(0x4e47425f53454c45); // "NGB_SELE"
+static constexpr std::uint64_t RNG_STREAM_FRACTIONAL_PACKET =
+    UINT64_C(0x4245524e4f554c4c); // "BERNOULL"
 
 // SNII/HN temporal-distribution experiment.
 //
@@ -1509,10 +1527,11 @@ static double deposit_energy_stochastic(
 
 
         double rnd =
-            get_random_number(
-                Sp->P[star_idx].ID.get() +
-                All.NumCurrentTiStep +
-                random_counter++);
+            feedback_random_u01(
+                (std::uint64_t)Sp->P[star_idx].ID.get(),
+                (std::uint64_t)All.NumCurrentTiStep,
+                random_counter++,
+                RNG_STREAM_NEIGHBOR_SELECTION);
 
         double target =
             rnd * available_weight_sum;
@@ -1659,10 +1678,11 @@ static double deposit_energy_stochastic(
                          0.0, 1.0);
 
             double draw =
-                get_random_number(
-                    Sp->P[star_idx].ID.get() +
-                    All.NumCurrentTiStep +
-                    random_counter++);
+                feedback_random_u01(
+                    (std::uint64_t)Sp->P[star_idx].ID.get(),
+                    (std::uint64_t)All.NumCurrentTiStep,
+                    random_counter++,
+                    RNG_STREAM_FRACTIONAL_PACKET);
 
             if(draw < probability)
                 heat_particle = true;
@@ -2980,14 +3000,63 @@ void apply_stellar_feedback(
 }
 
 // -------------------------- RNG ---------------------------------------------
+/*
+ * Deterministic counter-based random numbers for stochastic feedback.
+ *
+ * SplitMix64 is used here as a high-quality 64-bit mixing function.  This is
+ * not a mutable pseudorandom stream: each result is a pure hash of the full
+ * (star ID, global timestep, draw counter, stream ID) tuple.  It is therefore
+ * reproducible, inexpensive, and insensitive to adjacent numerical values.
+ * Separate stream IDs decorrelate neighbor selection from fractional-packet
+ * acceptance.
+ */
+static inline std::uint64_t splitmix64(std::uint64_t x)
+{
+  x += UINT64_C(0x9e3779b97f4a7c15);
+  x = (x ^ (x >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+  x = (x ^ (x >> 27)) * UINT64_C(0x94d049bb133111eb);
+  return x ^ (x >> 31);
+}
+
+static inline double uint64_to_uniform01(std::uint64_t bits)
+{
+  // Use the upper 53 bits, matching the precision of an IEEE-754 double.
+  // The result is in the half-open interval [0,1).
+  return (double)(bits >> 11) * (1.0 / 9007199254740992.0);
+}
+
+static double feedback_random_u01(
+    std::uint64_t star_id,
+    std::uint64_t timestep,
+    std::uint64_t draw_counter,
+    std::uint64_t stream_id)
+{
+  // Mix each tuple component independently with a distinct domain constant,
+  // then mix sequentially so exchanging components cannot preserve the key.
+  std::uint64_t state = UINT64_C(0x6a09e667f3bcc909);
+  state = splitmix64(state ^ splitmix64(star_id +
+                                       UINT64_C(0x243f6a8885a308d3)));
+  state = splitmix64(state ^ splitmix64(timestep +
+                                       UINT64_C(0x13198a2e03707344)));
+  state = splitmix64(state ^ splitmix64(draw_counter +
+                                       UINT64_C(0xa4093822299f31d0)));
+  state = splitmix64(state ^ splitmix64(stream_id +
+                                       UINT64_C(0x082efa98ec4e6c89)));
+  return uint64_to_uniform01(splitmix64(state));
+}
+
+/*
+ * Backward-compatible public wrapper retained for feedback.h and any external
+ * caller.  New feedback code should use feedback_random_u01() with the full
+ * tuple rather than pre-combining inputs arithmetically.
+ */
 double get_random_number(unsigned long long id)
 {
-  unsigned int seed = (unsigned int)(id ^ (unsigned long long)(All.NumCurrentTiStep * 2654435761u));
-  int ia = 16807, im = 2147483647, iq = 127773, ir = 2836;
-  int k    = seed / iq;
-  int temp = ia * (seed - k * iq) - ir * k;
-  if(temp < 0) temp += im;
-  return temp / (double)im;
+  return feedback_random_u01(
+      (std::uint64_t)id,
+      (std::uint64_t)All.NumCurrentTiStep,
+      UINT64_C(0),
+      UINT64_C(0x4c45474143595f52)); // "LEGACY_R"
 }
 
 #endif // FEEDBACK

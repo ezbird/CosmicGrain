@@ -51,6 +51,23 @@ class sim : public pinning, public test_io_bandwidth
  public:
   sim(MPI_Comm comm) : setcomm(comm), test_io_bandwidth(comm) {}
 
+#ifdef DUST
+  int DustAccumulatedSyncPoints      = 0;
+  double DustAccumulatedPhysicalTime = 0.0;
+
+  /* Diagnostic timing state intentionally restarts from zero. */
+  long long DustCadenceOuterCalls  = 0;
+  long long DustCadenceUpdateCalls = 0;
+  double DustCadenceUpdateTime     = 0.0;
+  double DustCadenceSyncTime       = 0.0;
+#endif
+
+#ifdef FEEDBACK
+  /* Diagnostic timing state intentionally restarts from zero. */
+  long long FeedbackTimingCalls = 0;
+  double FeedbackTimingTotal    = 0.0;
+#endif
+
   /* here come the main classes the code operates on */
 
   simparticles Sp{Communicator}; /* stores all the simulation particles of the simulation */
@@ -122,6 +139,11 @@ class sim : public pinning, public test_io_bandwidth
   void rearrange_write(partset &Tp, int num, int conenr);
 
   void print_timestep_distribution(void);
+
+#ifdef DUST
+  void configure_dust_update_cadence(void);
+  void advance_dust_physics(bool force_update);
+#endif
 
  private:
 #ifdef PERIODIC

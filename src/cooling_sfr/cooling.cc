@@ -52,16 +52,39 @@
  */
 double coolsfr::DoCooling(double u_old, double rho, double dt, double *ne_guess, gas_state *gs, do_cool_data *DoCool)
 {
+  const double u_old_code = u_old;
+  const double ne_input   = *ne_guess;
+
   DoCool->u_old_input    = u_old;
   DoCool->rho_input      = rho;
   DoCool->dt_input       = dt;
   DoCool->ne_guess_input = *ne_guess;
 
-  if(!gsl_finite(u_old))
-    Terminate("invalid input: u_old=%g\n", u_old);
+  if(!gsl_finite(u_old) || !gsl_finite(rho) || !gsl_finite(dt) || !gsl_finite(*ne_guess))
+    Terminate("non-finite DoCooling input: u_old=%g rho=%g dt=%g ne=%g\n", u_old, rho, dt, *ne_guess);
 
-  if(u_old < 0 || rho < 0)
+  if(u_old < 0 || rho < 0 || dt < 0)
     Terminate("invalid input: u_old=%g  rho=%g  dt=%g  All.MinEgySpec=%g\n", u_old, rho, dt, All.MinEgySpec);
+
+  /* A zero-density particle has no volumetric cooling term.  Handle it
+   * explicitly instead of forming nH^2/rho below. */
+  if(rho == 0 || dt == 0)
+    return u_old_code;
+
+  auto return_unchanged = [&](const char *reason) -> double
+  {
+    static unsigned long long failure_count = 0;
+    failure_count++;
+    if(failure_count <= 10 || failure_count % 100000 == 0)
+      printf("WARNING: DoCooling fallback on task=%d (count=%llu, reason=%s): u=%g rho=%g dt=%g ne=%g\n",
+             ThisTask, failure_count, reason, DoCool->u_old_input, DoCool->rho_input, DoCool->dt_input,
+             DoCool->ne_guess_input);
+
+    /* CoolingRateFromU mutates the trial ionization state.  A failed energy
+     * solve must not leak that state back to the particle. */
+    *ne_guess = ne_input;
+    return u_old_code;
+  };
 
   rho *= All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam; /* convert to physical cgs units */
   u_old *= All.UnitPressure_in_cgs / All.UnitDensity_in_cgs;
@@ -74,41 +97,78 @@ double coolsfr::DoCooling(double u_old, double rho, double dt, double *ne_guess,
   double u_lower = u;
   double u_upper = u;
 
-  double LambdaNet = CoolingRateFromU(u, rho, ne_guess, gs, DoCool);
+  auto residual = [&](double trial_u, bool &valid) -> double
+  {
+    const double lambda = CoolingRateFromU(trial_u, rho, ne_guess, gs, DoCool);
+    const double value  = trial_u - u_old - ratefact * lambda * dt;
+    valid = gsl_finite(lambda) && gsl_finite(value);
+    return value;
+  };
 
-  /* bracketing */
+  bool valid = false;
+  double f_initial = residual(u, valid);
+  if(!valid)
+    return return_unchanged("non-finite initial residual");
 
-  if(u - u_old - ratefact * LambdaNet * dt < 0) /* heating */
+  /* Bracket the implicit-Euler root.  The historical loops were unbounded;
+   * pathological rates could therefore hang an MPI rank indefinitely. */
+  const int MAX_BRACKET_ITER = 200;
+
+  if(f_initial < 0) /* heating */
     {
+      u_lower = u;
       u_upper *= sqrt(1.1);
-      u_lower /= sqrt(1.1);
-      while(u_upper - u_old - ratefact * CoolingRateFromU(u_upper, rho, ne_guess, gs, DoCool) * dt < 0)
+
+      int bracket_iter = 0;
+      double f_upper = residual(u_upper, valid);
+      while(valid && f_upper < 0 && bracket_iter < MAX_BRACKET_ITER)
         {
           u_upper *= 1.1;
-          u_lower *= 1.1;
+          bracket_iter++;
+          if(!gsl_finite(u_upper) || !gsl_finite(u_lower) || u_upper <= 0 || u_lower <= 0)
+            return return_unchanged("invalid heating bracket");
+          f_upper = residual(u_upper, valid);
         }
+
+      if(!valid)
+        return return_unchanged("non-finite heating bracket residual");
+      if(f_upper < 0)
+        return return_unchanged("heating bracket iteration limit");
     }
 
-  if(u - u_old - ratefact * LambdaNet * dt > 0)
+  if(f_initial > 0) /* cooling */
     {
+      u_upper = u;
       u_lower /= sqrt(1.1);
-      u_upper *= sqrt(1.1);
-      while(u_lower - u_old - ratefact * CoolingRateFromU(u_lower, rho, ne_guess, gs, DoCool) * dt > 0)
+
+      int bracket_iter = 0;
+      double f_lower = residual(u_lower, valid);
+      while(valid && f_lower > 0 && bracket_iter < MAX_BRACKET_ITER)
         {
-          u_upper /= 1.1;
           u_lower /= 1.1;
+          bracket_iter++;
+          if(!gsl_finite(u_upper) || !gsl_finite(u_lower) || u_upper <= 0 || u_lower <= 0)
+            return return_unchanged("invalid cooling bracket");
+          f_lower = residual(u_lower, valid);
         }
+
+      if(!valid)
+        return return_unchanged("non-finite cooling bracket residual");
+      if(f_lower > 0)
+        return return_unchanged("cooling bracket iteration limit");
     }
 
   int iter = 0;
-  double du;
+  double du = u_upper - u_lower;
   do
     {
       u = 0.5 * (u_lower + u_upper);
 
-      LambdaNet = CoolingRateFromU(u, rho, ne_guess, gs, DoCool);
+      const double f_mid = residual(u, valid);
+      if(!valid || !gsl_finite(u) || u <= 0)
+        return return_unchanged("non-finite bisection state");
 
-      if(u - u_old - ratefact * LambdaNet * dt > 0)
+      if(f_mid > 0)
         {
           u_upper = u;
         }
@@ -120,17 +180,11 @@ double coolsfr::DoCooling(double u_old, double rho, double dt, double *ne_guess,
       du = u_upper - u_lower;
 
       iter++;
-
-      if(iter >= (MAXITER - 10))
-        printf("u= %g\n", u);
     }
   while(fabs(du / u) > 1.0e-6 && iter < MAXITER);
 
   if(iter >= MAXITER)
-    Terminate(
-        "failed to converge in DoCooling(): DoCool->u_old_input=%g\nDoCool->rho_input= %g\nDoCool->dt_input= "
-        "%g\nDoCool->ne_guess_input= %g\n",
-        DoCool->u_old_input, DoCool->rho_input, DoCool->dt_input, DoCool->ne_guess_input);
+    return return_unchanged("bisection iteration limit");
 
   u *= All.UnitDensity_in_cgs / All.UnitPressure_in_cgs; /* to internal units */
 
@@ -196,6 +250,10 @@ double coolsfr::convert_u_to_temp(double u, double rho, double *ne_guess, gas_st
   double max = 0;
   int iter   = 0;
   double temp_old;
+  double temp_prev2 = temp;
+  bool have_prev2   = false;
+  bool floor_cycle  = false;
+  const double Tmin_K = pow(10.0, Tmin);
   do
     {
       double ne_old = *ne_guess;
@@ -212,21 +270,91 @@ double coolsfr::convert_u_to_temp(double u, double rho, double *ne_guess, gas_st
       temp = temp_old + (temp_new - temp_old) / (1 + max);
       iter++;
 
-      if(iter > (MAXITER - 10))
-        printf("-> temp= %g ne=%g\n", temp, *ne_guess);
+      /* The ionization solver has a deliberately discontinuous neutral
+       * branch at Tmin.  Very diffuse, cold gas can consequently alternate
+       * between two temperatures straddling that boundary.  Detect only
+       * this genuine period-two cycle, and resolve it at the physical table
+       * floor instead of excluding diffuse gas from cooling altogether. */
+      if(have_prev2)
+        {
+          const double cycle_scale = std::max(std::max(fabs(temp), fabs(temp_prev2)), Tmin_K);
+          const bool repeats_two_back = fabs(temp - temp_prev2) <= 1.0e-6 * cycle_scale;
+          const bool not_converged     = fabs(temp - temp_old) > 1.0e-3 * std::max(fabs(temp), Tmin_K);
+          const bool near_floor = temp >= 0.5 * Tmin_K && temp <= 2.0 * Tmin_K &&
+                                  temp_old >= 0.5 * Tmin_K && temp_old <= 2.0 * Tmin_K;
+
+          if(repeats_two_back && not_converged && near_floor)
+            {
+              floor_cycle = true;
+              break;
+            }
+        }
+
+      temp_prev2 = temp_old;
+      have_prev2 = true;
     }
   while(fabs(temp - temp_old) > 1.0e-3 * temp && iter < MAXITER);
 
+  if(floor_cycle)
+    {
+      /* At and below Tmin the tabulated network defines the gas as neutral. */
+      gs->nH0   = 1.0;
+      gs->nHp   = 0.0;
+      gs->nHe0  = gs->yhelium;
+      gs->nHep  = 0.0;
+      gs->nHepp = 0.0;
+      gs->ne    = 0.0;
+      gs->necgs = 0.0;
+      *ne_guess = 0.0;
+
+      static unsigned long long floor_cycle_count = 0;
+      floor_cycle_count++;
+      if(floor_cycle_count <= 10 || floor_cycle_count % 100000 == 0)
+        printf("COOLING: resolved Tmin period-2 cycle on task=%d (count=%llu, rho=%g, u=%g)\n", ThisTask,
+               floor_cycle_count, rho_input, u_input);
+
+      return Tmin_K;
+    }
+
   if(iter >= MAXITER)
     {
-      //Terminate("convergence failure");
+      /* Some very diffuse particles approach Tmin without forming a clean
+       * period-two cycle.  They are the same boundary case: below the cooling
+       * table floor the primordial network is defined to be neutral.  Resolve
+       * finite near-floor states consistently instead of returning a partly
+       * iterated electron abundance. */
+      const bool finite_near_floor = std::isfinite(temp) && temp >= 0.5 * Tmin_K && temp <= 2.0 * Tmin_K;
 
-      // Try just returning the current temp instead of crashing the simulation
-      printf("WARNING: returning unconverged temp=%.4g for task=%d, proceeding\n", temp, ThisTask);
-      printf("failed to converge in convert_u_to_temp()\n");
-      printf("u_input= %g\nrho_input=%g\n ne_input=%g\n", u_input, rho_input, ne_input);
-      printf("DoCool->u_old_input=%g\nDoCool->rho_input= %g\nDoCool->dt_input= %g\nDoCool->ne_guess_input= %g\n", DoCool->u_old_input,
-             DoCool->rho_input, DoCool->dt_input, DoCool->ne_guess_input);
+      if(finite_near_floor)
+        {
+          gs->nH0   = 1.0;
+          gs->nHp   = 0.0;
+          gs->nHe0  = gs->yhelium;
+          gs->nHep  = 0.0;
+          gs->nHepp = 0.0;
+          gs->ne    = 0.0;
+          gs->necgs = 0.0;
+          *ne_guess = 0.0;
+
+          static unsigned long long floor_maxiter_count = 0;
+          floor_maxiter_count++;
+          if(floor_maxiter_count <= 10 || floor_maxiter_count % 100000 == 0)
+            printf("COOLING: resolved finite Tmin-boundary MAXITER state on task=%d "
+                   "(count=%llu, temp=%g, rho=%g, u=%g)\n",
+                   ThisTask, floor_maxiter_count, temp, rho_input, u_input);
+
+          return Tmin_K;
+        }
+
+      /* A non-floor failure is unexpected.  Preserve the non-fatal behavior
+       * for diagnostic runs, but rate-limit its output. */
+      static unsigned long long unconverged_count = 0;
+      unconverged_count++;
+      if(unconverged_count <= 10 || unconverged_count % 100000 == 0)
+        printf("WARNING: unconverged convert_u_to_temp on task=%d (count=%llu): temp=%g u=%g rho=%g ne=%g; "
+               "DoCooling inputs: u=%g rho=%g dt=%g ne=%g\n",
+               ThisTask, unconverged_count, temp, u_input, rho_input, ne_input, DoCool->u_old_input,
+               DoCool->rho_input, DoCool->dt_input, DoCool->ne_guess_input);
       return temp;
     }
 
@@ -345,8 +473,6 @@ void coolsfr::find_abundances_and_rates(double logT, double rho, double *ne_gues
       if(fabs(gs->ne - neold) < 1.0e-4)
         break;
 
-      if(niter > (MAXITER - 10))
-        printf("ne= %g  niter=%d\n", gs->ne, niter);
     }
   while(niter < MAXITER);
 
@@ -452,11 +578,16 @@ double coolsfr::GetMetallicitySolarUnits(double total_metallicity)
 double coolsfr::GetMetalLambda(double logT, double logZ)
 {
     if(!metal_table.table_loaded ||
-       logZ < metal_table.z_min || logZ > metal_table.z_max ||
        logT < metal_table.t_min || logT > metal_table.t_max)
     {
         return 0.0;
     }
+
+    /* Extrapolating a temperature-dependent cooling curve is unsafe, so
+     * temperatures outside the table still receive no metal contribution.
+     * For metallicity, use the nearest tabulated abundance instead of
+     * silently disabling metal cooling for enriched or very metal-poor gas. */
+    logZ = std::max(metal_table.z_min, std::min(logZ, metal_table.z_max));
 
     int z_index, t_index;
     double z_frac, t_frac;
@@ -498,9 +629,27 @@ void coolsfr::ReadMetalCoolingTable(const char *filename)
 
     double metallicity;
     int n_temp;
+    int expected_n_temp = -1;
 
     while(fscanf(file, "%lg %d", &metallicity, &n_temp) == 2)
     {
+        if(!gsl_finite(metallicity))
+            Terminate("Non-finite metallicity coordinate in metal cooling table\n");
+
+        if(!metal_table.metallicity_bins.empty() && metallicity <= metal_table.metallicity_bins.back())
+            Terminate("Metal cooling metallicity grid is not strictly increasing at %g\n", metallicity);
+
+        if(n_temp < 2)
+            Terminate("Metal cooling table needs at least two temperatures per metallicity bin (Z=%g, n=%d)\n",
+                      metallicity, n_temp);
+
+        if(expected_n_temp < 0)
+            expected_n_temp = n_temp;
+        else if(n_temp != expected_n_temp)
+            Terminate("Inconsistent metal cooling row length at Z=%g: got %d, expected %d\n", metallicity, n_temp,
+                      expected_n_temp);
+
+        const bool first_metallicity_row = metal_table.metallicity_bins.empty();
         metal_table.metallicity_bins.push_back(metallicity);
         std::vector<double> lambda_row;
 
@@ -512,9 +661,24 @@ void coolsfr::ReadMetalCoolingTable(const char *filename)
                 Terminate("Error reading metal cooling table at metallicity %g, point %d\n", metallicity, i);
             }
 
-            // On first metallicity bin, store temperature grid
-            if(metal_table.metallicity_bins.size() == 1)
+            if(!gsl_finite(temp) || !gsl_finite(lambda))
+                Terminate("Non-finite metal cooling table entry at Z=%g, point %d\n", metallicity, i);
+
+            if(first_metallicity_row)
+              {
+                if(!metal_table.temperature_bins.empty() && temp <= metal_table.temperature_bins.back())
+                    Terminate("Metal cooling temperature grid is not strictly increasing at Z=%g, T=%g\n", metallicity,
+                              temp);
                 metal_table.temperature_bins.push_back(temp);
+              }
+            else
+              {
+                const double reference_temp = metal_table.temperature_bins[i];
+                const double scale = std::max(1.0, fabs(reference_temp));
+                if(fabs(temp - reference_temp) > 1.0e-12 * scale)
+                    Terminate("Inconsistent metal cooling temperature grid at Z=%g, point %d: got %g, expected %g\n",
+                              metallicity, i, temp, reference_temp);
+              }
 
             lambda_row.push_back(lambda);
         }
@@ -526,7 +690,7 @@ void coolsfr::ReadMetalCoolingTable(const char *filename)
     metal_table.n_metallicity = metal_table.metallicity_bins.size();
     metal_table.n_temperature = metal_table.temperature_bins.size();
 
-    if(metal_table.n_metallicity > 0 && metal_table.n_temperature > 0)
+    if(metal_table.n_metallicity >= 2 && metal_table.n_temperature >= 2)
     {
         metal_table.z_min = metal_table.metallicity_bins.front();
         metal_table.z_max = metal_table.metallicity_bins.back();
@@ -547,7 +711,7 @@ void coolsfr::ReadMetalCoolingTable(const char *filename)
     else
     {
         if(ThisTask == 0)
-            mpi_printf("WARNING: Metal cooling table is empty\n");
+            mpi_printf("WARNING: Metal cooling table needs at least two bins on each axis; metal cooling disabled\n");
         metal_table.table_loaded = false;
     }
 }
@@ -907,18 +1071,11 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
 {
   double dens = Sp->SphP[i].Density;
 
-      /* Skip cooling for extremely low density gas (convergence issues)!
-      This happened in zooms only, and returning early was the only way to fix an oscillating error where :
-          -> temp= 9.94182 ne=0.0820482
-        -> temp= 10.0587 ne=0
-        -> temp= 9.94182 ne=0.0820482
-        -> temp= 10.0587 ne=0
-        failed to converge in convert_u_to_temp()
-      */
-      double rho_phys = dens * All.cf_a3inv * All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam;
-      if(rho_phys < 1e-26) {  // Essentially vacuum-ish density
-        return;  // Don't cool
-      }
+  /* Physical density is also used by the Jeans floor below.  Do not skip
+   * diffuse particles here: 1e-26 g cm^-3 corresponds to nH ~4.5e-3 cm^-3
+   * and includes physically important halo/CGM gas.  Low-temperature solver
+   * cycles are handled locally in convert_u_to_temp(). */
+  double rho_phys = dens * All.cf_a3inv * All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam;
 
   double dt = (Sp->P[i].getTimeBinHydro() ? (((integertime)1) << Sp->P[i].getTimeBinHydro()) : 0) * All.Timebase_interval;
   double dtime = All.cf_atime * dt / All.cf_atime_hubble_a;
@@ -934,36 +1091,11 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
   double unew    = DoCooling(std::max<double>(All.MinEgySpec, utherm), dens * All.cf_a3inv, dtime, &ne, gs, DoCool);
   Sp->SphP[i].Ne = ne;
 
-  #ifdef DUST
-  if(Sp->SphP[i].DustSurfDensLocal > 0)
-  {
-      double ne_temp = Sp->SphP[i].Ne;
-      double rho_cgs = dens * All.cf_a3inv
-                    * All.UnitDensity_in_cgs
-                    * All.HubbleParam * All.HubbleParam;
-      double u_cgs   = unew * All.UnitPressure_in_cgs / All.UnitDensity_in_cgs;
-      double T_gas   = convert_u_to_temp(u_cgs, rho_cgs, &ne_temp, gs, DoCool);
-      double T_dust  = Sp->SphP[i].DustTempLocal;
-
-      if(T_gas > T_dust && T_gas > 0)
-      {
-          double nH_cgs    = GasState.XH * rho_cgs / PROTONMASS;
-          double v_th      = sqrt(8.0 * BOLTZMANN * T_gas / (M_PI * PROTONMASS));
-          double alpha_acc = All.DustAccommodationCoeff;
-
-          // erg s^-1 cm^-3
-          double Lambda_gd = Sp->SphP[i].DustSurfDensLocal
-                          * 2.0 * BOLTZMANN * (T_gas - T_dust)
-                          * v_th * alpha_acc * nH_cgs;
-
-          // specific energy change in code units
-          double du_gd = -(Lambda_gd / rho_cgs) * dtime
-                      * (All.UnitDensity_in_cgs / All.UnitPressure_in_cgs);
-
-          unew = std::max(All.MinEgySpec, unew + du_gd);
-      }
-  }
-  #endif
+  /* Dust temperatures are evolved in dust.cc.  Gas back-reaction is not
+   * applied here: the former DustTempLocal/DustSurfDensLocal branch depended
+   * on gas-local fields that were never populated and duplicated the dust
+   * module's interaction model.  A future conservative back-reaction must
+   * accumulate exchange per gas particle before applying one bounded update. */
 
       /* ── Jeans pressure floor ──────────────────────────────────────────────
       * Prevent artificial fragmentation below the resolution limit.

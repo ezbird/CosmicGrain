@@ -78,6 +78,7 @@ purposes, regardless of which naming convention a given run produced.
 
 from __future__ import annotations
 
+import csv
 import re
 import glob as _glob
 import glob
@@ -1777,6 +1778,265 @@ def read_catalog_halos(
         concat_group_dataset(group_files, "Group_R_Crit200"), dtype=np.float64
     )
     return pos, m200, r200
+
+
+def _normalise_csv_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def _first_csv_value(
+    row: Dict[str, str], aliases: Sequence[str]
+) -> Optional[float]:
+    normalised = {_normalise_csv_name(key): value for key, value in row.items()}
+    for alias in aliases:
+        value = normalised.get(_normalise_csv_name(alias))
+        if value not in (None, ""):
+            return float(value)
+    return None
+
+
+def _find_suite_file(
+    output_dir: Path,
+    relative_candidates: Sequence[Path],
+) -> Optional[Path]:
+    """Find suite metadata relative to the run or this scripts directory."""
+    roots = [
+        output_dir.resolve().parent,
+        Path.cwd().resolve(),
+        Path(__file__).resolve().parent.parent,
+    ]
+    seen = set()
+    for root in roots:
+        for relative in relative_candidates:
+            candidate = (root / relative).resolve()
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _read_parent_target_row(csv_path: Path, halo_id: int) -> dict:
+    """Read parent M200c, R200c, and position from the selected-halo CSV."""
+    with csv_path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise RuntimeError(f"No header found in {csv_path}")
+        for row in reader:
+            row_id = _first_csv_value(
+                row, ("halo_id", "haloid", "halo", "parent_halo_id")
+            )
+            # The suite CSV's stable column order is retained as a fallback
+            # for older files whose headers used less descriptive names.
+            values = list(row.values())
+            if row_id is None and values:
+                row_id = float(values[0])
+            if row_id is None or int(row_id) != int(halo_id):
+                continue
+
+            mass = _first_csv_value(
+                row,
+                ("m200c_msun", "m200_msun", "parent_m200c_msun", "m200c"),
+            )
+            radius = _first_csv_value(
+                row,
+                ("r200c_ckpch", "r200_ckpch", "parent_r200c_ckpch", "r200c"),
+            )
+            x = _first_csv_value(row, ("x_mpc_h", "x_mpch", "x", "pos_x"))
+            y = _first_csv_value(row, ("y_mpc_h", "y_mpch", "y", "pos_y"))
+            z = _first_csv_value(row, ("z_mpc_h", "z_mpch", "z", "pos_z"))
+
+            if len(values) >= 11:
+                mass = mass if mass is not None else float(values[3])
+                radius = radius if radius is not None else float(values[5])
+                x = x if x is not None else float(values[8])
+                y = y if y is not None else float(values[9])
+                z = z if z is not None else float(values[10])
+            if None in (mass, radius, x, y, z):
+                raise RuntimeError(
+                    f"Halo {halo_id} row in {csv_path} lacks M200c, R200c, "
+                    "or parent position"
+                )
+            return {
+                "m200c_msun": float(mass),
+                "r200c_ckpch": float(radius),
+                "position_mpch": np.array([x, y, z], dtype=np.float64),
+            }
+    raise RuntimeError(f"Halo {halo_id} is absent from {csv_path}")
+
+
+def infer_zoom_target_group(
+    output_dir: str | Path,
+    reference_snap: Optional[int] = None,
+    verbose: bool = True,
+) -> Tuple[int, int, dict]:
+    """Infer the final target group from committed suite metadata.
+
+    The run directory must follow ``halo<ID>_output_<resolution>``.  The
+    parent target position and mass come from
+    ``scripts/zoom_halo_candidates_selected.csv``.  MUSIC2's logged domain
+    shift is then applied before jointly matching position and M200c in the
+    hydro catalog.  This avoids both the unsafe "largest halo" shortcut and
+    requiring users to remember output-local FOF indices.
+
+    Returns ``(group_index, reference_snapshot, diagnostics)``.  A match is
+    rejected if its position or mass is implausible; callers can still accept
+    an explicitly supplied group index when investigating unusual runs.
+    """
+    output_path = Path(output_dir)
+    match = re.fullmatch(
+        r"halo(?P<halo>[0-9]+)_output_(?P<resolution>[0-9]+)",
+        output_path.resolve().name,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        raise RuntimeError(
+            "Automatic target selection requires an output directory named "
+            "halo<ID>_output_<resolution>; otherwise pass --group-index"
+        )
+    halo_id = int(match.group("halo"))
+    resolution = int(match.group("resolution"))
+
+    selected_csv = _find_suite_file(
+        output_path,
+        (
+            Path("scripts/zoom_halo_candidates_selected.csv"),
+            Path("zoom_halo_candidates_selected.csv"),
+        ),
+    )
+    if selected_csv is None:
+        raise RuntimeError(
+            "Could not find scripts/zoom_halo_candidates_selected.csv; "
+            "pass --group-index or run from the CosmicGrain repository"
+        )
+    parent = _read_parent_target_row(selected_csv, halo_id)
+
+    stem = f"halo{halo_id}_music2_{resolution}"
+    config_path = _find_suite_file(
+        output_path, (Path(f"ICs/MUSIC2_params/{stem}.conf"),)
+    )
+    log_path = _find_suite_file(
+        output_path,
+        (
+            Path(f"ICs/MUSIC2_params/{stem}.conf_log.txt"),
+            Path(f"ICs/MUSIC2_logs/{stem}.log"),
+        ),
+    )
+    if config_path is None or log_path is None:
+        raise RuntimeError(
+            f"Could not find the MUSIC2 config/log for halo {halo_id} at "
+            f"resolution {resolution}; pass --group-index"
+        )
+
+    config_text = config_path.read_text(errors="replace")
+    level_match = re.search(
+        r"(?m)^\s*levelmin\s*=\s*([0-9]+)\s*$", config_text
+    )
+    log_text = log_path.read_text(errors="replace")
+    shift_match = re.search(
+        r"Domain will be shifted by\s*\(\s*([-+0-9]+)\s*,\s*"
+        r"([-+0-9]+)\s*,\s*([-+0-9]+)\s*\)",
+        log_text,
+        flags=re.IGNORECASE,
+    )
+    if level_match is None or shift_match is None:
+        raise RuntimeError(
+            f"Could not parse levelmin/domain shift from {config_path} and "
+            f"{log_path}; pass --group-index"
+        )
+    levelmin = int(level_match.group(1))
+    shift_cells = np.array(
+        [int(shift_match.group(i)) for i in (1, 2, 3)], dtype=np.float64
+    )
+
+    if reference_snap is None:
+        reference_snap = find_last_snap_num(output_path)
+    if reference_snap is None:
+        raise RuntimeError(f"No completed group catalog found under {output_path}")
+    snapshot_files, group_files = find_snapshot_and_group_files(
+        output_path, int(reference_snap)
+    )
+    header = read_header(snapshot_files[0])
+    positions, masses_code, radii = read_catalog_halos(group_files)
+    expected_position = wrap_position(
+        parent["position_mpch"] * 1000.0
+        + shift_cells * header["box"] / (2**levelmin),
+        header["box"],
+    )
+    distances = np.linalg.norm(
+        periodic_delta(positions, expected_position, header["box"]), axis=1
+    )
+    masses_msun = masses_code * MSUN_PER_CODE / header["h"]
+    valid = (
+        np.isfinite(distances)
+        & np.isfinite(masses_msun)
+        & np.isfinite(radii)
+        & (masses_msun > 0)
+        & (radii > 0)
+    )
+    if not np.any(valid):
+        raise RuntimeError(
+            f"No valid M200c groups in snapshot {int(reference_snap):03d}"
+        )
+
+    position_term = distances / max(parent["r200c_ckpch"], 1.0)
+    mass_log_offset = np.log10(
+        np.maximum(masses_msun, np.finfo(float).tiny)
+        / parent["m200c_msun"]
+    )
+    scores = position_term**2 + (mass_log_offset / 0.35) ** 2
+    scores[~valid] = np.inf
+    order = np.argsort(scores)
+    index = int(order[0])
+    mass_ratio = float(masses_msun[index] / parent["m200c_msun"])
+    distance_r200 = float(
+        distances[index] / max(parent["r200c_ckpch"], 1.0)
+    )
+    if distance_r200 > 3.0 or not (0.25 <= mass_ratio <= 4.0):
+        raise RuntimeError(
+            f"Automatic target match is implausible: group {index}, "
+            f"distance={distance_r200:.2f} parent R200c, "
+            f"M/Mparent={mass_ratio:.3f}; inspect the run and pass "
+            "--group-index explicitly"
+        )
+
+    runner_up = int(order[1]) if len(order) > 1 else None
+    diagnostics = {
+        "halo_id": halo_id,
+        "resolution": resolution,
+        "reference_snap": int(reference_snap),
+        "group_index": index,
+        "expected_position_ckpch": expected_position,
+        "catalog_position_ckpch": positions[index],
+        "distance_ckpch": float(distances[index]),
+        "distance_parent_r200": distance_r200,
+        "parent_m200c_msun": parent["m200c_msun"],
+        "catalog_m200c_msun": float(masses_msun[index]),
+        "mass_ratio": mass_ratio,
+        "music_shift_cells": shift_cells,
+        "levelmin": levelmin,
+        "score": float(scores[index]),
+        "runner_up_group": runner_up,
+        "runner_up_score": (
+            float(scores[runner_up]) if runner_up is not None else np.nan
+        ),
+        "selected_csv": str(selected_csv),
+        "music_log": str(log_path),
+    }
+    if verbose:
+        print("\nAUTO TARGET SELECTION")
+        print(
+            f"halo={halo_id} resolution={resolution} "
+            f"reference_snapshot={int(reference_snap):03d} group={index}"
+        )
+        print(
+            f"position offset={distances[index]:.2f} ckpc/h "
+            f"({distance_r200:.2f} parent R200c); "
+            f"catalog/parent M200c={mass_ratio:.3f}"
+        )
+        print("Use --group-index to override this match explicitly.")
+    return index, int(reference_snap), diagnostics
 
 
 def periodic_delta(

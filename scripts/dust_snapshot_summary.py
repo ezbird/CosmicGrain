@@ -29,8 +29,7 @@ import h5py
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from halo_utils import (
-    get_halo569_reference,
-    get_halo569,
+    get_zoom_halo,
     read_snap_header,
     load_particles_within_radius,
     convert_code_mass_to_msun,
@@ -142,6 +141,10 @@ def parse_args():
     p.add_argument("output_dir", help="Gadget-4 output directory, e.g. ../S10_output_1024/")
     p.add_argument("--snap", type=int, default=None,
                     help="Snapshot number to analyze (default: last complete snapshot)")
+    p.add_argument("--group-index", type=int, required=True,
+                   help="Target FOF group index at the analyzed snapshot")
+    p.add_argument("--galaxy-aperture-pkpc", type=float, default=None,
+                   help="Alias for --ism-radius used by the suite wrapper")
     p.add_argument("--ism-radius", type=float, default=20.0,
                     help="ISM/CGM boundary in physical kpc (default: 20, matching the "
                          "convention used elsewhere in this pipeline)")
@@ -159,20 +162,24 @@ def main():
     print(f"  Output dir: {output_dir}")
     print()
 
-    ref = get_halo569_reference(output_dir, snap_num_z0=args.snap, verbose=True)
-    snap_num = ref["snap_num_z0"]
+    snap_num = args.snap
+    if snap_num is None:
+        from halo_utils import find_last_snap_num
+        snap_num = find_last_snap_num(output_dir)
+    if snap_num is None:
+        raise SystemExit(f"No complete snapshot/catalog pair in {output_dir}")
     groups_dir = output_dir / f"groups_{snap_num:03d}"
     snapdir = output_dir / f"snapdir_{snap_num:03d}"
     hdr = read_snap_header(snapdir)
-    halo = get_halo569(groups_dir, snap_num, ref, verbose=True)
-    if halo is None:
-        print(fail(f"Could not identify Halo 569 at snap {snap_num:03d} -- aborting."))
-        return
+    ref = get_zoom_halo(output_dir, snap_num, group_index=args.group_index,
+                        verbose=True)
 
     h, a, z = hdr["h"], hdr["a"], hdr["z"]
-    r200_pkpc = halo["r200_pkpc"]
-    r200_ckpch = halo["r200_ckpch"]
-    center_ckpch = halo["center"]
+    r200_ckpch = ref.so_r200_ckpch
+    r200_pkpc = r200_ckpch * a / h
+    center_ckpch = ref.chosen_center_ckpch
+    if args.galaxy_aperture_pkpc is not None:
+        args.ism_radius = args.galaxy_aperture_pkpc
 
     print()
     print(f"  Snapshot {snap_num:03d}  z={z:.4f}  a={a:.6f}")

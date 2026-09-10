@@ -20,6 +20,13 @@
 #include "../data/macros.h"
 #include "../time_integration/driftfac.h"
 
+#ifdef DUST
+/* Parameter-file cadence requested for dust microphysics.  This deliberately
+ * remains outside All; cadence progress is stored by restart.cc's versioned
+ * CosmicGrain extension instead of changing the legacy All restart layout. */
+int DustUpdateCadence = 10;
+#endif
+
 void global_data_all_processes::set_cosmo_factors_for_current_time(void)
 {
   if(ComovingIntegrationOn)
@@ -207,6 +214,7 @@ void global_data_all_processes::register_parameters(void)
 #endif
 
 #ifdef DUST
+  add_param("DustUpdateCadence", &DustUpdateCadence, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableSputtering", &DustEnableSputtering, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableShattering", &DustEnableShattering, PARAM_INT, PARAM_FIXED);
   add_param("DustEnableShockDestruction", &DustEnableShockDestruction, PARAM_INT, PARAM_FIXED);

@@ -18,6 +18,7 @@
 #include <gsl/gsl_rng.h>
 #include <math.h>
 #include <mpi.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -558,6 +559,91 @@ if(Sim->Sp.NumPart > 0)
   byten(Sim->Domain.ListOfTopleaves, Sim->Domain.NTopleaves * sizeof(int), modus);
   byten(Sim->Domain.FirstTopleafOfTask, NTask * sizeof(int), modus);
   byten(Sim->Domain.NumTopleafOfTask, NTask * sizeof(int), modus);
+
+#ifdef DUST
+  /* Optional append-only CosmicGrain block.  It deliberately lives after the
+   * original GADGET restart payload, which keeps restart files written by the
+   * pre-cadence executable readable.  Fixed-width fields are written one at a
+   * time to avoid compiler-dependent structure padding. */
+  const uint64_t dust_restart_magic = UINT64_C(0x43475241494E4454); /* CGRAINDT */
+  const uint32_t dust_restart_version = 2;
+
+  if(modus == MODUS_WRITE)
+    {
+      int32_t accumulated_steps = Sim->DustAccumulatedSyncPoints;
+      int64_t created = (int64_t)LocalDustCreatedThisStep;
+      int64_t destroyed = (int64_t)LocalDustDestroyedThisStep;
+      int32_t needs_sync = DustNeedsSynchronization;
+
+      my_fwrite((void *)&dust_restart_magic, sizeof(dust_restart_magic), 1, fd);
+      my_fwrite((void *)&dust_restart_version, sizeof(dust_restart_version), 1, fd);
+      my_fwrite(&accumulated_steps, sizeof(accumulated_steps), 1, fd);
+      my_fwrite(&Sim->DustAccumulatedPhysicalTime, sizeof(Sim->DustAccumulatedPhysicalTime), 1, fd);
+      my_fwrite(&created, sizeof(created), 1, fd);
+      my_fwrite(&destroyed, sizeof(destroyed), 1, fd);
+      my_fwrite(&LocalDustMassChange, sizeof(LocalDustMassChange), 1, fd);
+      my_fwrite(&needs_sync, sizeof(needs_sync), 1, fd);
+    }
+  else
+    {
+      uint64_t magic = 0;
+      size_t got = fread(&magic, sizeof(magic), 1, fd);
+
+      if(got == 0 && feof(fd))
+        {
+          /* Legacy restart: no interval was persisted by the old executable.
+           * Begin a fresh cadence window without altering particle state. */
+          clearerr(fd);
+          Sim->DustAccumulatedSyncPoints = 0;
+          Sim->DustAccumulatedPhysicalTime = 0.0;
+          LocalDustCreatedThisStep = 0;
+          LocalDustDestroyedThisStep = 0;
+          LocalDustMassChange = 0.0;
+          DustNeedsSynchronization = 0;
+          if(All.ThisTask == 0)
+            printf("RESTART: legacy file has no CosmicGrain dust-cadence state; starting a new cadence window.\n");
+        }
+      else
+        {
+          uint32_t version = 0;
+          int32_t accumulated_steps = 0, needs_sync = 0;
+          int64_t created = 0, destroyed = 0;
+
+          if(got != 1 || magic != dust_restart_magic)
+            Terminate("RESTART: invalid CosmicGrain dust-cadence block (magic=%llu)",
+                      (unsigned long long)magic);
+
+          my_fread(&version, sizeof(version), 1, fd);
+          if(version != 1 && version != dust_restart_version)
+            Terminate("RESTART: unsupported CosmicGrain dust-cadence version=%u", version);
+
+          /* Version 1 briefly stored a duplicate cadence value.  Consume and
+           * ignore it: the active value always comes from the parameter file. */
+          if(version == 1)
+            {
+              int32_t obsolete_cadence = 0;
+              my_fread(&obsolete_cadence, sizeof(obsolete_cadence), 1, fd);
+            }
+
+          my_fread(&accumulated_steps, sizeof(accumulated_steps), 1, fd);
+          my_fread(&Sim->DustAccumulatedPhysicalTime, sizeof(Sim->DustAccumulatedPhysicalTime), 1, fd);
+          my_fread(&created, sizeof(created), 1, fd);
+          my_fread(&destroyed, sizeof(destroyed), 1, fd);
+          my_fread(&LocalDustMassChange, sizeof(LocalDustMassChange), 1, fd);
+          my_fread(&needs_sync, sizeof(needs_sync), 1, fd);
+
+          if(accumulated_steps < 0 || !isfinite(Sim->DustAccumulatedPhysicalTime) ||
+             Sim->DustAccumulatedPhysicalTime < 0.0)
+            Terminate("RESTART: invalid dust-cadence state steps=%d dt=%g",
+                      accumulated_steps, Sim->DustAccumulatedPhysicalTime);
+
+          Sim->DustAccumulatedSyncPoints = accumulated_steps;
+          LocalDustCreatedThisStep = (long long)created;
+          LocalDustDestroyedThisStep = (long long)destroyed;
+          DustNeedsSynchronization = needs_sync;
+        }
+    }
+#endif
 
   fclose(fd);
 }

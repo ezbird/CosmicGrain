@@ -451,4 +451,10 @@ int CheckpointDebugLevel;   // 0=off, 1=detailed output
 
 extern global_data_all_processes All;
 
+#ifdef DUST
+/* Kept outside global_data_all_processes so adding this run-control parameter
+ * does not change the size of GADGET's raw-serialized All restart block. */
+extern int DustUpdateCadence;
+#endif
+
 #endif

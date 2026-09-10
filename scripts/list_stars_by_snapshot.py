@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Snapshot census and target-halo evolutionary history for CosmicGrain.
 
-Two complementary scopes are available:
+Two complementary scopes are printed by default:
 
 ``volume``
     Seven-type particle census plus whole-volume stellar and dust masses.
     This is primarily an integrity/bookkeeping view.
 
 ``target``
-    Main-progenitor history for one explicitly selected final-snapshot halo.
-    The final group is anchored with ``--group-index`` and earlier snapshots
-    are followed through conserved PartType1 HRDM core IDs using halo_utils.
+    Main-progenitor history for the suite target.  Its final group is inferred
+    from the selected parent-halo catalog and MUSIC2 domain shift; earlier
+    snapshots are followed through conserved PartType1 HRDM core IDs using
+    halo_utils.  ``--group-index`` remains available as an explicit override.
 
 Mass conventions
 ----------------
@@ -37,6 +38,7 @@ import numpy as np
 from halo_utils import (
     MSUN_PER_CODE,
     get_zoom_halo_series,
+    infer_zoom_target_group,
     load_particles_within_radius,
     periodic_delta,
 )
@@ -531,11 +533,12 @@ def main():
     )
     parser.add_argument("output_dir")
     parser.add_argument(
-        "--scope", choices=("volume", "target", "both"), default="volume"
+        "--scope", choices=("volume", "target", "both"), default="both"
     )
     parser.add_argument(
         "--group-index", type=int,
-        help="Final/reference-snapshot FOF group index; required for target scope",
+        help=("Final/reference-snapshot FOF group index override; normally "
+              "inferred automatically from suite metadata"),
     )
     parser.add_argument(
         "--reference-snap", type=int,
@@ -561,8 +564,6 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.scope in ("target", "both") and args.group_index is None:
-        parser.error("--group-index is required for --scope target/both")
     if args.galaxy_aperture_r200 <= 0:
         parser.error("--galaxy-aperture-r200 must be positive")
     if args.galaxy_aperture_pkpc is not None and args.galaxy_aperture_pkpc <= 0:
@@ -573,6 +574,18 @@ def main():
         parser.error(f"No snapshots found under {args.output_dir}")
     series_list = pick_newest_series(discovered)
     unit = mass_unit_label(args.mass_unit)
+
+    group_index = args.group_index
+    reference_snap = args.reference_snap
+    if args.scope in ("target", "both") and group_index is None:
+        try:
+            group_index, reference_snap, _ = infer_zoom_target_group(
+                args.output_dir,
+                reference_snap=reference_snap,
+                verbose=True,
+            )
+        except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            parser.error(f"automatic target selection failed: {exc}")
 
     if args.scope in ("volume", "both"):
         headers = ["SnapshotBase", "z", "Age(Gyr)"]
@@ -598,8 +611,8 @@ def main():
         rows, csv_rows = build_target_rows(
             args.output_dir,
             series_list,
-            args.group_index,
-            args.reference_snap,
+            group_index,
+            reference_snap,
             args.galaxy_aperture_r200,
             args.galaxy_aperture_pkpc,
             args.mass_unit,

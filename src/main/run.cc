@@ -14,6 +14,7 @@
 // clang-format on
 
 #include <ctype.h>
+#include <cmath>
 #include <math.h>
 #include <mpi.h>
 #include <stdio.h>
@@ -76,6 +77,10 @@ void sim::run(void)
   PM.calculate_power_spectra(All.SnapshotFileCount);
 #endif
   return;
+#endif
+
+#ifdef DUST
+  configure_dust_update_cadence();
 #endif
 
   while(1) /* main loop over synchronization points */
@@ -181,6 +186,38 @@ void sim::run(void)
       calculate_non_standard_physics_end_of_step();
       MPI_Barrier(Communicator);
 
+#ifdef DUST
+      /* Accumulate the exact physical duration of this cosmological interval.
+       * Force pending dust evolution before scheduled and final snapshots. */
+      bool force_dust_update = (All.Ti_Current >= TIMEBASE || All.Time > All.TimeMax);
+
+#ifndef OUTPUT_NON_SYNCHRONIZED_ALLOWED
+      if(All.HighestActiveTimeBin == All.HighestOccupiedTimeBin && All.Ti_nextoutput >= 0 &&
+         All.Ti_Current >= All.Ti_nextoutput)
+        force_dust_update = true;
+#else
+      if(All.Ti_nextoutput >= 0 && All.Ti_Current >= All.Ti_nextoutput)
+        force_dust_update = true;
+#endif
+
+      advance_dust_physics(force_dust_update);
+
+      /* Feedback may spawn dust and dust microphysics may destroy it. Compact
+       * and rebuild time bins before statistics, snapshots, or another tree
+       * walk use the modified particle array. */
+      {
+        int need_sync_local  = DustNeedsSynchronization;
+        int need_sync_global = 0;
+        MPI_Allreduce(&need_sync_local, &need_sync_global, 1, MPI_INT, MPI_MAX, Communicator);
+        if(need_sync_global)
+          {
+            destroy_dust_particles(&Sp);
+            Sp.reconstruct_timebins();
+          }
+        DustNeedsSynchronization = 0;
+      }
+#endif
+
 #ifdef DEBUG_MD5
       Logs.log_debug_md5("A");
 #endif
@@ -212,24 +249,6 @@ void sim::run(void)
           break;
         }
 
-        // Newly spawned dust particles were inserted into timebins locally by
-        // spawn_dust_particle(). Before the collective treewalk, we must ensure
-        // all tasks have consistent timebin structures. Reconstruct timebins
-        // globally to incorporate any new particles spawned this step.
-        #ifdef DUST
-        {
-          int need_sync_local  = DustNeedsSynchronization;
-          int need_sync_global = 0;
-          MPI_Allreduce(&need_sync_local, &need_sync_global, 1, MPI_INT, MPI_MAX, Communicator);
-          if(need_sync_global)
-            {
-              destroy_dust_particles(&Sp);
-              Sp.reconstruct_timebins();
-            }
-          DustNeedsSynchronization = 0;
-        }
-        #endif
-
       /* kicks particles by half a gravity step */
       find_timesteps_and_do_gravity_step_first_half();
 
@@ -241,24 +260,6 @@ void sim::run(void)
        * but it can change how they are distributed over timebins. */
       find_hydro_timesteps();
 
-
-
-      #ifdef DUST
-          //MPI_CHECKPOINT("before update_dust_dynamics");
-          update_dust_dynamics(&Sp, All.TimeStep, Communicator);
-          //MPI_CHECKPOINT("after update_dust_dynamics");
-          //MPI_CHECKPOINT("before dust_global_synchronization");
-          dust_global_synchronization(&Sp, Communicator,
-                                  LocalDustCreatedThisStep,
-                                  LocalDustDestroyedThisStep,
-                                  LocalDustMassChange);
-          //MPI_CHECKPOINT("after dust_global_synchronization");
-
-          // Reset per-step counters on every rank (important!)
-          LocalDustCreatedThisStep = 0.0;
-          LocalDustDestroyedThisStep = 0.0;
-          LocalDustMassChange = 0.0;
-      #endif
 
 
       /* Print timebin distribution for diagnostics */
@@ -322,14 +323,113 @@ void sim::calculate_non_standard_physics_end_of_step(void)
   #endif
 
   #ifdef FEEDBACK
+    const double feedback_begin = MPI_Wtime();
     apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain, Communicator);
     feedback_diag_try_flush(Communicator, /*cadence=*/50);
+
+    FeedbackTimingTotal += MPI_Wtime() - feedback_begin;
+    FeedbackTimingCalls++;
+
+    if(FeedbackTimingCalls % 1000 == 0)
+      {
+        double feedback_maximum = 0.0;
+        MPI_Reduce(&FeedbackTimingTotal, &feedback_maximum, 1, MPI_DOUBLE, MPI_MAX, 0, Communicator);
+        if(All.ThisTask == 0)
+          printf("[FEEDBACK_OUTER_TIMING] calls=%lld max_total=%.6f max_avg=%.6f\n",
+                 FeedbackTimingCalls, feedback_maximum, feedback_maximum / FeedbackTimingCalls);
+      }
   #endif
 
   #ifdef MEASURE_TOTAL_MOMENTUM
     Logs.compute_total_momentum();
   #endif
 }
+
+#ifdef DUST
+void sim::configure_dust_update_cadence(void)
+{
+  /*
+   * DustUpdateCadence is read from the active parameter file on task 0.
+   * It lives outside All to preserve compatibility with legacy restart files.
+   * Broadcast it explicitly because All's normal parameter broadcast does not
+   * include variables stored outside All.
+   */
+  MPI_Bcast(&DustUpdateCadence, 1, MPI_INT, 0, Communicator);
+
+  if(DustUpdateCadence < 1 || DustUpdateCadence > 1000000)
+    Terminate(
+        "Invalid DustUpdateCadence=%d; expected an integer in [1,1000000]",
+        DustUpdateCadence);
+
+  if(DustAccumulatedSyncPoints < 0 ||
+     DustAccumulatedPhysicalTime < 0.0 ||
+     !std::isfinite(DustAccumulatedPhysicalTime))
+    Terminate(
+        "Invalid restored dust-cadence state: steps=%d dt=%g",
+        DustAccumulatedSyncPoints,
+        DustAccumulatedPhysicalTime);
+
+  mpi_printf(
+      "COSMICGRAIN: dust update cadence=%d sync point%s "
+      "(source=parameter file); pending restart state: steps=%d dt=%g\n",
+      DustUpdateCadence,
+      DustUpdateCadence == 1 ? "" : "s",
+      DustAccumulatedSyncPoints,
+      DustAccumulatedPhysicalTime);
+}
+
+/* Accumulate exact physical cosmological time and apply all dust processes
+ * when the cadence is reached or an output-safe flush is requested. */
+void sim::advance_dust_physics(bool force_update)
+{
+  double dust_dtime = All.TimeStep;
+  if(All.ComovingIntegrationOn)
+    dust_dtime = All.TimeStep / All.cf_atime_hubble_a;
+
+  if(!std::isfinite(dust_dtime) || dust_dtime < 0.0)
+    Terminate("Invalid physical dust timestep: da=%g a=%g aH=%g dt=%g", All.TimeStep, All.Time,
+              All.cf_atime_hubble_a, dust_dtime);
+
+  DustAccumulatedPhysicalTime += dust_dtime;
+  DustAccumulatedSyncPoints++;
+  DustCadenceOuterCalls++;
+
+  if(!force_update && DustAccumulatedSyncPoints < DustUpdateCadence)
+    return;
+
+  const double update_begin = MPI_Wtime();
+  update_dust_dynamics(&Sp, DustAccumulatedPhysicalTime, Communicator);
+  const double update_end = MPI_Wtime();
+
+  dust_global_synchronization(&Sp, Communicator, LocalDustCreatedThisStep, LocalDustDestroyedThisStep,
+                              LocalDustMassChange);
+  const double sync_end = MPI_Wtime();
+
+  DustCadenceUpdateTime += update_end - update_begin;
+  DustCadenceSyncTime += sync_end - update_end;
+  DustCadenceUpdateCalls++;
+
+  LocalDustCreatedThisStep   = 0;
+  LocalDustDestroyedThisStep = 0;
+  LocalDustMassChange        = 0.0;
+  DustAccumulatedPhysicalTime = 0.0;
+  DustAccumulatedSyncPoints   = 0;
+
+  if(DustCadenceOuterCalls % 1000 == 0 || force_update)
+    {
+      double local_times[2]   = {DustCadenceUpdateTime, DustCadenceSyncTime};
+      double maximum_times[2] = {0.0, 0.0};
+      MPI_Reduce(local_times, maximum_times, 2, MPI_DOUBLE, MPI_MAX, 0, Communicator);
+
+      if(All.ThisTask == 0)
+        printf("[DUST_OUTER_TIMING] outer_calls=%lld update_calls=%lld cadence=%d "
+               "max_update_total=%.6f max_sync_total=%.6f max_update_avg=%.6f max_sync_avg=%.6f\n",
+               DustCadenceOuterCalls, DustCadenceUpdateCalls, DustUpdateCadence, maximum_times[0], maximum_times[1],
+               DustCadenceUpdateCalls > 0 ? maximum_times[0] / DustCadenceUpdateCalls : 0.0,
+               DustCadenceUpdateCalls > 0 ? maximum_times[1] / DustCadenceUpdateCalls : 0.0);
+    }
+}
+#endif
 
 /*! \brief checks whether the run must interrupted
  *
