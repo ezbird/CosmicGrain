@@ -73,6 +73,7 @@ from pathlib import Path
 from datetime import datetime
 
 from halo_utils import (
+    get_zoom_halo,
     get_halo569_reference,
     get_halo569,
     read_snap_header,
@@ -92,6 +93,8 @@ SIMS_ROOT  = BASE_DIR  # parent dir containing {run}_output_{res}/ folders;
                         # from BASE_DIR, which also anchors the default
                         # FIGDIR output location below -- overriding one
                         # should not silently change the other.
+SINGLE_RUN_DIR = None
+TARGET_GROUP_INDEX = None
 
 FIGDIR = BASE_DIR / "dust_figures"
 FIGDIR.mkdir(parents=True, exist_ok=True)
@@ -182,7 +185,7 @@ _li19_dz = np.array([0.003,  0.010, 0.030, 0.090, 0.180, 0.280, 0.370, 0.420])
 # ─────────────────────────────────────────────────────────────────────────────
 
 def output_dir(run, resolution):
-    return SIMS_ROOT / f"{run}_output_{resolution}"
+    return SINGLE_RUN_DIR if SINGLE_RUN_DIR is not None else SIMS_ROOT / f"{run}_output_{resolution}"
 
 
 def find_snapshots(run, resolution):
@@ -266,6 +269,11 @@ def get_halo_center(run, snap_base, resolution):
 
     snap_num = int(m.group(1))
     odir = output_dir(run, resolution)
+    if SINGLE_RUN_DIR is not None:
+        halo = get_zoom_halo(odir, snap_num, group_index=TARGET_GROUP_INDEX,
+                             verbose=True)
+        return halo.chosen_center_ckpch, halo.so_r200_ckpch
+
     groups_dir = odir / f"groups_{snap_num:03d}"
 
     key = (run, resolution)
@@ -808,11 +816,26 @@ def main():
                              "numerically compromised, e.g. --unphysical 2048:S10. "
                              "Rendered as open markers with × overlay.")
     parser.add_argument("--output", default=None)
+    parser.add_argument("--run-dir", default=None,
+                        help="One zoom output directory (safe 12-halo mode)")
+    parser.add_argument("--group-index", type=int, default=None,
+                        help="Target FOF group index; required with --run-dir")
+    parser.add_argument("--snap", type=int, default=None,
+                        help="Exact snapshot in --run-dir mode")
     args = parser.parse_args()
 
-    global SIMS_ROOT
+    global SIMS_ROOT, SINGLE_RUN_DIR, TARGET_GROUP_INDEX
     if args.sims_root is not None:
         SIMS_ROOT = Path(args.sims_root)
+    if args.run_dir is not None:
+        if args.group_index is None:
+            parser.error("--group-index is required with --run-dir")
+        SINGLE_RUN_DIR = Path(args.run_dir).resolve()
+        TARGET_GROUP_INDEX = args.group_index
+        m = re.search(r"_output_(\d+)$", SINGLE_RUN_DIR.name)
+        if m:
+            args.res = [int(m.group(1))]
+        args.runs = [SINGLE_RUN_DIR.name]
 
     resolutions      = args.res
     convergence_mode = len(resolutions) > 1
@@ -879,7 +902,12 @@ def main():
             if not snaps:
                 print(f"  [{run}] no snapshots — skipping")
                 continue
-            snap_base, dz = find_snap_near_z(snaps, 0.0)
+            if SINGLE_RUN_DIR is not None and args.snap is not None:
+                wanted = str(SINGLE_RUN_DIR / f"snapdir_{args.snap:03d}" /
+                             f"snapshot_{args.snap:03d}")
+                snap_base, dz = (wanted, 0.0) if wanted in snaps else (None, 1e30)
+            else:
+                snap_base, dz = find_snap_near_z(snaps, 0.0)
             if dz > 0.2:
                 print(f"  [{run}] no z~0 snapshot (dz={dz:.2f}) — skipping")
                 continue

@@ -24,6 +24,7 @@ import argparse
 import numpy as np
 import h5py
 import matplotlib.pyplot as plt
+from halo_utils import get_zoom_halo
 
 DESTROYED_MASS_FLOOR = 1e-20
 SOLAR_MASS_G = 1.989e33
@@ -61,7 +62,7 @@ def find_snapshot_files(output_dir, snap_num=None):
     return [p for p in candidates if snap_number(p) == max_num], max_num
 
 
-def load_dust_composition(snapshot_files):
+def load_dust_composition(snapshot_files, center, rmax, box):
     all_cf, all_source, all_mass = [], [], []
     unit_mass_g, hubble_param, redshift = None, None, None
 
@@ -77,12 +78,16 @@ def load_dust_composition(snapshot_files):
             if "PartType6" not in f:
                 continue
             pt6 = f["PartType6"]
-            if "Masses" not in pt6 or "DustSource" not in pt6 or "CarbonMassFraction" not in pt6:
+            if any(name not in pt6 for name in
+                   ("Masses", "DustSource", "CarbonMassFraction", "Coordinates")):
                 print(f"  WARNING: PartType6 missing expected fields in {path}, skipping")
                 continue
-            all_mass.append(pt6["Masses"][:])
-            all_source.append(pt6["DustSource"][:])
-            all_cf.append(pt6["CarbonMassFraction"][:])
+            delta = pt6["Coordinates"][:] - center[None, :]
+            delta -= box * np.round(delta / box)
+            inside = np.einsum("ij,ij->i", delta, delta) <= rmax * rmax
+            all_mass.append(pt6["Masses"][:][inside])
+            all_source.append(pt6["DustSource"][:][inside])
+            all_cf.append(pt6["CarbonMassFraction"][:][inside])
 
     if not all_mass:
         return np.array([]), np.array([]), np.array([]), unit_mass_g, hubble_param, redshift
@@ -104,6 +109,8 @@ def main():
     p.add_argument("output_dir", help="CosmicGrain output directory (e.g. S10_output_512)")
     p.add_argument("--snap", type=int, default=None,
                    help="Specific snapshot number. Default: latest available.")
+    p.add_argument("--group-index", type=int, required=True,
+                   help="Target FOF group index at this snapshot")
     p.add_argument("--output", default="cf_histogram.png")
     p.add_argument("--bins", type=int, default=40)
     args = p.parse_args()
@@ -114,8 +121,12 @@ def main():
     else:
         files, snap_num = result
 
-    print(f"Snapshot {snap_num:03d}: {len(files)} file(s)")
-    mass, source, cf, unit_mass_g, h, z = load_dust_composition(files)
+    halo = get_zoom_halo(args.output_dir, snap_num,
+                         group_index=args.group_index, verbose=True)
+    print(f"Snapshot {snap_num:03d}: {len(files)} file(s), group {args.group_index}")
+    mass, source, cf, unit_mass_g, h, z = load_dust_composition(
+        files, halo.chosen_center_ckpch, halo.so_r200_ckpch,
+        halo.boxsize_ckpch)
     if len(mass) == 0:
         sys.exit("No live PartType6 particles found -- nothing to plot.")
 

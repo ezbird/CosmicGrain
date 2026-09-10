@@ -21,7 +21,7 @@ import h5py
 import glob
 
 try:
-    from halo_utils import get_halo569_reference, get_halo569, load_particles_within_radius, convert_code_mass_to_msun
+    from halo_utils import get_zoom_halo, load_particles_within_radius, convert_code_mass_to_msun
 except ImportError:
     print("ERROR: This script requires halo_utils.py in the same directory")
     exit(1)
@@ -168,6 +168,8 @@ def main():
     parser.add_argument('--snapshot', required=True,
                         help='Base path to snapshot (e.g., .../snapdir_049/snapshot_049)')
     parser.add_argument('--out',      default='dust_histograms_agecoded.png')
+    parser.add_argument('--group-index', type=int, required=True,
+                        help='Target FOF group index at this snapshot')
     parser.add_argument('--rmax',     type=float, default=None,
                         help='Max radius for dust extraction, in ckpc/h (matching Coordinates '
                              'convention). Default: R200c (spherical-overdensity, from halo_utils).')
@@ -201,33 +203,17 @@ def main():
         return
     snap_num = int(m.group(1))
     output_dir = snapdir_path.parent
-    groups_dir = output_dir / f"groups_{snap_num:03d}"
-
-    # refine_center=False: use the frozen FOF/catalog center, matching every
-    # other script in this pipeline (run_radial_evolution.py,
-    # plot_mdust_mstar_all_halos.py, plot_gsd_comparison.py,
-    # plot_radial_dgr.py all do the same). Without this, halo_utils' default
-    # shrinking-sphere refinement can wander a large offset from the true
-    # center on some snapshots, producing a spuriously small SO R200/M200 --
-    # this is exactly what happened here: a 172 ckpc/h refined-center offset
-    # at snap 047 dropped R200 from 115.3 pkpc to 66.1 pkpc and M200 from
-    # 1.6e11 to 3.0e10 Msun, disagreeing with every other script's value for
-    # the same halo at the same snapshot.
-    ref = get_halo569_reference(output_dir, verbose=True, refine_center=False)
-    halo = get_halo569(groups_dir, snap_num, ref, verbose=True, refine_center=False)
-    if halo is None:
-        print(f"ERROR: could not identify the target halo at snap {snap_num:03d}")
-        return
-
-    halo_pos  = halo["center"]          # ckpc/h
-    halo_mass = halo["m200_msun"]       # already fully converted to Msun
+    halo = get_zoom_halo(output_dir, snap_num, group_index=args.group_index,
+                         verbose=True)
+    halo_pos = halo.chosen_center_ckpch
+    halo_mass = halo.so_m200_code * 1.0e10 / halo.h
 
     # R200c (ckpc/h) is the new default aperture -- the old default was
     # 2x the Subfind half-mass radius, which is no longer available from
     # halo_utils (which deliberately avoids Subhalo fields; see its module
     # docstring). R200c is the standard aperture used consistently by every
     # other CosmicGrain analysis script.
-    rmax = args.rmax if args.rmax is not None else halo["r200_ckpch"]
+    rmax = args.rmax if args.rmax is not None else halo.so_r200_ckpch
     print(f"\nExtracting dust within {rmax:.2f} ckpc/h...")
 
     dust_data = load_particles_within_radius(
@@ -247,7 +233,7 @@ def main():
     # of 1/h (~1.48x for h~0.6732). convert_code_mass_to_msun() applies the
     # full, correct conversion (* 1e10 / h), consistent with every other
     # script in this pipeline.
-    masses       = convert_code_mass_to_msun(dust_data['Masses'], halo["h"])
+    masses       = convert_code_mass_to_msun(dust_data['Masses'], halo.h)
     velocities   = dust_data['Velocities']
     dust_temp    = dust_data['DustTemperature']
     vel_mag      = compute_velocity_magnitude(velocities)
@@ -269,7 +255,7 @@ def main():
     if has_formation_time and current_time is not None and np.any(dust_formation > 0):
         try:
             from scipy.integrate import quad  # noqa
-            h  = snap_info.get('HubbleParam', halo["h"])
+            h  = snap_info.get('HubbleParam', halo.h)
             Om = snap_info.get('Omega0',      0.3158)
             OL = snap_info.get('OmegaLambda', 0.6842)
             print(f"Cosmology: h={h}, Ωm={Om}, ΩΛ={OL}")
@@ -346,11 +332,11 @@ def main():
                bbox_to_anchor=(0.5, 0.905))
 
     # ── Supra-figure titles ───────────────────────────────────────────────────
-    rmax_pkpc = rmax * halo["a"] / halo["h"]
+    rmax_pkpc = rmax * halo.a / halo.h
     fig.text(0.5, 0.985, 'Dust Properties',
              fontsize=16, fontweight='bold', ha='center', va='top')
     fig.text(0.5, 0.958,
-             (f'Halo 569  $\\cdot$  '
+             (f'Target group {args.group_index}  $\\cdot$  '
               f'M$_{{200}}$={halo_mass:.2e} M$_\\odot$  $\\cdot$  '
               f'R$<${rmax_pkpc:.0f} pkpc  $\\cdot$  z={redshift:.2f}'),
              fontsize=10, ha='center', va='top')

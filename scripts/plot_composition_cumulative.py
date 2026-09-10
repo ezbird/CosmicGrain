@@ -33,6 +33,7 @@ import argparse
 import numpy as np
 import h5py
 import matplotlib.pyplot as plt
+from halo_utils import get_zoom_halo
 
 DESTROYED_MASS_FLOOR = 1e-20
 SOLAR_MASS_G = 1.989e33
@@ -82,7 +83,7 @@ def find_snapshot_files(output_dir, snap_num=None):
     return [p for p in files if snapshot_number_from_path(p) == latest], latest
 
 
-def load_dust(snapshot_files):
+def load_dust(snapshot_files, center, rmax, box):
     all_mass, all_source, all_cf, all_radius = [], [], [], []
     unit_mass_g = hubble_param = redshift = None
 
@@ -99,16 +100,19 @@ def load_dust(snapshot_files):
                 continue
 
             pt6 = f["PartType6"]
-            needed = ["Masses", "DustSource", "CarbonMassFraction", "GrainRadius"]
+            needed = ["Masses", "DustSource", "CarbonMassFraction", "GrainRadius", "Coordinates"]
             missing = [x for x in needed if x not in pt6]
             if missing:
                 print(f"WARNING: {path} missing {missing}; skipping")
                 continue
 
-            all_mass.append(pt6["Masses"][:])
-            all_source.append(pt6["DustSource"][:])
-            all_cf.append(pt6["CarbonMassFraction"][:])
-            all_radius.append(pt6["GrainRadius"][:])
+            delta = pt6["Coordinates"][:] - center[None, :]
+            delta -= box * np.round(delta / box)
+            inside = np.einsum("ij,ij->i", delta, delta) <= rmax * rmax
+            all_mass.append(pt6["Masses"][:][inside])
+            all_source.append(pt6["DustSource"][:][inside])
+            all_cf.append(pt6["CarbonMassFraction"][:][inside])
+            all_radius.append(pt6["GrainRadius"][:][inside])
 
     if not all_mass:
         return np.array([]), np.array([]), np.array([]), np.array([]), redshift
@@ -154,9 +158,13 @@ def threshold_stats(cf, mass, threshold):
     return n_below, pfrac, mbelow, mfrac
 
 
-def analyze_run(output_dir, snap_num=None):
+def analyze_run(output_dir, snap_num=None, group_index=None):
     files, snap_num = find_snapshot_files(output_dir, snap_num)
-    mass, source, cf, radius, z = load_dust(files)
+    halo = get_zoom_halo(output_dir, snap_num, group_index=group_index,
+                         verbose=True)
+    mass, source, cf, radius, z = load_dust(
+        files, halo.chosen_center_ckpch, halo.so_r200_ckpch,
+        halo.boxsize_ckpch)
 
     if len(mass) == 0:
         raise RuntimeError(f"No live PartType6 particles found in {output_dir}")
@@ -255,6 +263,8 @@ def main():
     )
     p.add_argument("output_dirs", nargs="+")
     p.add_argument("--snap", type=int, default=None)
+    p.add_argument("--group-index", type=int, required=True,
+                   help="Target FOF group index at this snapshot")
     p.add_argument("--labels", nargs="+", default=None)
     p.add_argument("--thresholds", nargs="+", type=float, default=DEFAULT_THRESHOLDS)
     p.add_argument("--output", default="cf_cumulative.png")
@@ -270,7 +280,7 @@ def main():
     runs = []
     for d, label in zip(args.output_dirs, labels):
         print(f"Loading {label}: {d}")
-        run = analyze_run(d, args.snap)
+        run = analyze_run(d, args.snap, args.group_index)
         runs.append(run)
         print_stats(run, label, args.thresholds)
 

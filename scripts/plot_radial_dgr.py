@@ -35,6 +35,7 @@ import matplotlib.ticker
 from datetime import datetime
 
 from halo_utils import (
+    get_zoom_halo,
     get_halo569_reference,
     get_halo569,
     read_snap_header,
@@ -66,6 +67,9 @@ SIMS_ROOT     = ".."  # parent dir containing {run}_output_{RESOLUTION}/ folders
                        # (e.g. a consolidated "simulation_runs_used_for_paper/")
 R_MAX_DEFAULT = 50.0   # physical kpc
 BIN_WIDTH     = 5.0    # physical kpc
+SINGLE_RUN_DIR = None
+TARGET_GROUP_INDEX = None
+SNAP_OVERRIDE = None
 
 # Radial region guides for the top of the figure.
 # These are deliberately simple visual guides, not hard physical cuts.
@@ -98,7 +102,7 @@ def remy_ruyer_dtz(r_kpc, r0=8.0, dtz0=0.5, grad=-0.04, alpha=1.5):
 
 def find_snapshots(run):
     """Return sorted list of snapshot base paths for this run/resolution."""
-    output_dir = f"{SIMS_ROOT}/{run}_output_{RESOLUTION}"
+    output_dir = str(SINGLE_RUN_DIR) if SINGLE_RUN_DIR is not None else f"{SIMS_ROOT}/{run}_output_{RESOLUTION}"
     if not os.path.isdir(output_dir):
         return []
     seen, bases = set(), []
@@ -160,7 +164,14 @@ def get_halo_center_r200(run, snap_base):
         print(f"  [get_halo_center_r200] cannot parse snap_num from {snap_base}")
         return None, None
     snap_num   = int(m.group(1))
-    output_dir = f"{SIMS_ROOT}/{run}_output_{RESOLUTION}"
+    output_dir = str(SINGLE_RUN_DIR) if SINGLE_RUN_DIR is not None else f"{SIMS_ROOT}/{run}_output_{RESOLUTION}"
+
+    if SINGLE_RUN_DIR is not None:
+        halo = get_zoom_halo(output_dir, snap_num,
+                             group_index=TARGET_GROUP_INDEX, verbose=True)
+        return (halo.chosen_center_ckpch,
+                halo.so_r200_ckpch * halo.a / halo.h)
+
     groups_dir = os.path.join(output_dir, f"groups_{snap_num:03d}")
 
     # Establish z=0 reference once (cached per run via module-level dict)
@@ -416,7 +427,12 @@ def plot_radial_profiles(runs, r_max_pkpc=None, output_path=None):
         if not snaps:
             print(f"  [{run}] no snapshots"); continue
 
-        snap_base, dz = find_snap_near_z(snaps, 0.0)
+        if SINGLE_RUN_DIR is not None and SNAP_OVERRIDE is not None:
+            wanted = os.path.join(str(SINGLE_RUN_DIR), f"snapdir_{SNAP_OVERRIDE:03d}",
+                                  f"snapshot_{SNAP_OVERRIDE:03d}")
+            snap_base, dz = (wanted, 0.0) if wanted in snaps else (None, 1e30)
+        else:
+            snap_base, dz = find_snap_near_z(snaps, 0.0)
         if dz > 0.2:
             print(f"  [{run}] no z~0 snap (dz={dz:.2f})"); continue
 
@@ -546,11 +562,27 @@ def main():
                              "e.g. ../simulation_runs_used_for_paper")
     parser.add_argument("--r-max",  type=float, default=None)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--run-dir", default=None,
+                        help="One zoom output directory (safe 12-halo mode)")
+    parser.add_argument("--group-index", type=int, default=None,
+                        help="Target FOF group index; required with --run-dir")
+    parser.add_argument("--snap", type=int, default=None,
+                        help="Exact snapshot in --run-dir mode")
     args = parser.parse_args()
 
-    global RESOLUTION, SIMS_ROOT
+    global RESOLUTION, SIMS_ROOT, SINGLE_RUN_DIR, TARGET_GROUP_INDEX, SNAP_OVERRIDE
     RESOLUTION = args.res
     SIMS_ROOT  = args.sims_root
+    if args.run_dir is not None:
+        if args.group_index is None:
+            parser.error("--group-index is required with --run-dir")
+        SINGLE_RUN_DIR = os.path.abspath(args.run_dir)
+        TARGET_GROUP_INDEX = args.group_index
+        SNAP_OVERRIDE = args.snap
+        m = re.search(r"_output_(\d+)$", os.path.basename(SINGLE_RUN_DIR))
+        if m:
+            RESOLUTION = int(m.group(1))
+        args.runs = [os.path.basename(SINGLE_RUN_DIR)]
 
     print(f"\nRuns:       {args.runs}")
     print(f"Resolution: {RESOLUTION}^3")

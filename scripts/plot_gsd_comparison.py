@@ -42,8 +42,7 @@ from pathlib import Path
 from datetime import datetime
 
 from halo_utils import (
-    get_halo569_reference,
-    get_halo569,
+    get_zoom_halo,
 )
 
 # Load shared paper style
@@ -90,7 +89,7 @@ def read_box(snap_files):
 
 # ── Halo center and R200 ──────────────────────────────────────────────────────
 
-def get_center_r200(output_dir, snap_num_str):
+def get_center_r200(output_dir, snap_num_str, group_index):
     """
     Return (center_ckpch, r200_pkpc) for Halo 569.
 
@@ -98,29 +97,15 @@ def get_center_r200(output_dir, snap_num_str):
     frozen FOF/catalog centering, and catalog SO fallback if needed.
     """
     snap_num   = int(snap_num_str)
-    groups_dir = Path(output_dir) / f"groups_{snap_num:03d}"
+    halo = get_zoom_halo(output_dir, snap_num, group_index=group_index,
+                         verbose=True)
 
-    ref = get_halo569_reference(output_dir, refine_center=False)
-    if ref is None:
-        raise RuntimeError("get_halo569_reference returned None")
+    center = halo.chosen_center_ckpch
+    r200_pkpc = halo.so_r200_ckpch * halo.a / halo.h
+    print(f"  Center (ckpc/h)  : [{center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}]")
+    print(f"  R_Crit200        : {halo.so_r200_ckpch:.1f} ckpc/h  ({r200_pkpc:.1f} pkpc)")
 
-    halo = get_halo569(
-        groups_dir,
-        snap_num,
-        ref,
-        verbose=True,
-        refine_center=False,
-    )
-    if halo is None or halo["r200_ckpch"] <= 0:
-        raise RuntimeError(
-            f"get_halo569 returned no valid halo for snap {snap_num}")
-
-    print(f"  Center (ckpc/h)  : [{halo['center'][0]:.1f}, "
-          f"{halo['center'][1]:.1f}, {halo['center'][2]:.1f}]")
-    print(f"  R_Crit200        : {halo['r200_ckpch']:.1f} ckpc/h  "
-          f"({halo['r200_pkpc']:.1f} pkpc)")
-
-    return halo["center"], halo["r200_pkpc"]
+    return center, r200_pkpc
 
 
 # ── Dust particle reader ───────────────────────────────────────────────────────
@@ -468,11 +453,17 @@ def main():
                         help=f"Snapshot number string (default: {DEFAULT_SNAP})")
     parser.add_argument("--r-ism",   type=float, default=DEFAULT_R_ISM,
                         help=f"ISM aperture in pkpc (default: {DEFAULT_R_ISM})")
+    parser.add_argument("--group-index", type=int, required=True,
+                        help="Target FOF group index at this snapshot")
+    parser.add_argument("--ism-aperture", type=float, default=None,
+                        help="Alias for --r-ism used by the suite wrapper")
     parser.add_argument("--n-bins",  type=int,   default=DEFAULT_N_BINS,
                         help=f"GSD histogram bins (default: {DEFAULT_N_BINS})")
     parser.add_argument("--output",  default=DEFAULT_OUTPUT,
                         help="Output PNG path (default: auto)")
     args = parser.parse_args()
+    if args.ism_aperture is not None:
+        args.r_ism = args.ism_aperture
 
     output_dir  = Path(args.output_dir)
     snap_num    = args.snap.zfill(3)
@@ -504,8 +495,9 @@ def main():
     box      = read_box(snap_files)
     print(f"h={h:.4f}  a={a:.6f}  z={z:.4f}  box={box:.1f} ckpc/h")
 
-    print("\nLocating Halo 569 ...")
-    ctr_ckpch, r200_pkpc = get_center_r200(str(output_dir), snap_num)
+    print(f"\nLocating target group {args.group_index} ...")
+    ctr_ckpch, r200_pkpc = get_center_r200(str(output_dir), snap_num,
+                                           args.group_index)
 
     r200_ckpch = r200_pkpc * h / a
     r_ism      = args.r_ism
