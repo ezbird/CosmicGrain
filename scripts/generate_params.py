@@ -140,7 +140,7 @@ RES_OVERRIDES = {
 
         # Dust sampling
         "DustParticlesPerSNII":       "4",
-        "DustParticlesPerAGB":        "6",
+        "DustParticlesPerAGB":        "4",
         "DustParticlesPerLRN":        "1",
 
         # Gravitational softenings (comoving kpc) — baseline
@@ -193,8 +193,8 @@ RES_OVERRIDES = {
         "DustCoagulationCalibration": "7.0",
 
         # Dust sampling
-        "DustParticlesPerSNII":       "8",
-        "DustParticlesPerAGB":        "12",
+        "DustParticlesPerSNII":       "4",
+        "DustParticlesPerAGB":        "4",
         "DustParticlesPerLRN":        "1",
 
         # Softenings halved
@@ -251,8 +251,8 @@ RES_OVERRIDES = {
         "DustCoagulationCalibration": "10.0",
 
         # Dust sampling (16/24 particles per event keeps m_dust/m_gas ~ constant)
-        "DustParticlesPerSNII":       "16",
-        "DustParticlesPerAGB":        "24",
+        "DustParticlesPerSNII":       "4",
+        "DustParticlesPerAGB":        "4",
         "DustParticlesPerLRN":        "1",
 
         # Softenings quartered
@@ -330,9 +330,9 @@ RES_OVERRIDES = {
         "DustShatteringCalibration":  "0.5",    # coag yet more active; continue downward trend
         "DustCoagulationCalibration": "12.0",   # +20% step from 2048³
 
-        # Dust sampling (doubles each level to hold m_dust/m_gas constant)
-        "DustParticlesPerSNII":       "32",
-        "DustParticlesPerAGB":        "48",
+        # Dust sampling
+        "DustParticlesPerSNII":       "4",
+        "DustParticlesPerAGB":        "4",
         "DustParticlesPerLRN":        "1",
 
         # Gravitational softenings (comoving kpc) — ×0.125 vs 512³ baseline
