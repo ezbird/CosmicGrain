@@ -79,7 +79,6 @@ void coolsfr::sfr_create_star_particles(simparticles *Sp)
   double p = 0, pall = 0, prob, p_decide;
   double rate_in_msunperyear;
   double totsfrrate;
-  double w = 0;
 
   All.set_cosmo_factors_for_current_time();
 
@@ -111,39 +110,11 @@ void coolsfr::sfr_create_star_particles(simparticles *Sp)
               pall = p;
               sum_sm += Sp->P[target].getMass() * (1 - exp(-p));
 
-              w = get_random_number();
-
-// Instantaneous metal enrichment associated with star formation.
-// For the current plumbing test, partition newly produced metals
-// according to the AGSS21 solar heavy-element abundance pattern.
-double dZ = w * METAL_YIELD * (1.0 - exp(-p));
-
-Sp->SphP[target].Metallicity += dZ;
-
-// Element-resolved gas enrichment.
-// Each Gas*MassFraction is M_element / M_gas, so because this
-// enrichment changes composition but not gas mass here, we can
-// add the corresponding elemental mass fractions directly.
-Sp->SphP[target].GasCarbonMassFraction +=
-    dZ * SOLAR_METAL_FRAC_C;
-
-Sp->SphP[target].GasOxygenMassFraction +=
-    dZ * SOLAR_METAL_FRAC_O;
-
-Sp->SphP[target].GasMagnesiumMassFraction +=
-    dZ * SOLAR_METAL_FRAC_MG;
-
-Sp->SphP[target].GasSiliconMassFraction +=
-    dZ * SOLAR_METAL_FRAC_SI;
-
-Sp->SphP[target].GasIronMassFraction +=
-    dZ * SOLAR_METAL_FRAC_FE;
-
-Sp->SphP[target].MassMetallicity =
-    Sp->SphP[target].Metallicity * Sp->P[target].getMass();
-
-Sp->P[target].Metallicity =
-    Sp->SphP[target].Metallicity;
+              // Preserve the historical RNG sequence for a controlled
+              // legacy-versus-delayed-only comparison.  CosmicGrain now
+              // produces metals exclusively through the delayed,
+              // element-resolved stellar feedback in feedback.cc.
+              (void)get_random_number();
 
               mass_of_star = Sp->P[target].getMass();
 
@@ -162,33 +133,6 @@ Sp->P[target].Metallicity =
           if(p_decide < p / pall) /* ok, a star formation is considered */
             make_star(Sp, target, prob, mass_of_star, &sum_mass_stars);
 
-          if(Sp->SphP[target].Sfr > 0)
-            {
-              if(Sp->P[target].getType() == 0) /* to protect using a particle that has been turned into a star */
-                {
-                  double dZ = (1.0 - w) * METAL_YIELD * (1.0 - exp(-p));
-
-                  Sp->SphP[target].Metallicity += dZ;
-
-                  Sp->SphP[target].GasCarbonMassFraction +=
-                      dZ * SOLAR_METAL_FRAC_C;
-
-                  Sp->SphP[target].GasOxygenMassFraction +=
-                      dZ * SOLAR_METAL_FRAC_O;
-
-                  Sp->SphP[target].GasMagnesiumMassFraction +=
-                      dZ * SOLAR_METAL_FRAC_MG;
-
-                  Sp->SphP[target].GasSiliconMassFraction +=
-                      dZ * SOLAR_METAL_FRAC_SI;
-
-                  Sp->SphP[target].GasIronMassFraction +=
-                      dZ * SOLAR_METAL_FRAC_FE;
-
-                  Sp->SphP[target].MassMetallicity =
-                      Sp->SphP[target].Metallicity * Sp->P[target].getMass();
-                }
-            }
           Sp->P[target].Metallicity = Sp->SphP[target].Metallicity;
         }
     } /* end of main loop over active gas particles */
