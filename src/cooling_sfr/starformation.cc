@@ -133,7 +133,9 @@ void coolsfr::sfr_create_star_particles(simparticles *Sp)
           if(p_decide < p / pall) /* ok, a star formation is considered */
             make_star(Sp, target, prob, mass_of_star, &sum_mass_stars);
 
-          Sp->P[target].Metallicity = Sp->SphP[target].Metallicity;
+          if(Sp->P[target].getType() == 0)
+            Sp->P[target].Metallicity =
+                Sp->SphP[target].Metallicity;
         }
     } /* end of main loop over active gas particles */
 
