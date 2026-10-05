@@ -66,8 +66,14 @@ import datetime
 from pathlib import Path
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-BASE_FILE  = Path("../params/param_base.txt")
-OUTPUT_DIR = Path("../params")
+# Resolve paths from this script rather than from the caller's working
+# directory, so both of these work identically:
+#   python scripts/generate_params.py ...
+#   cd scripts && python generate_params.py ...
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT  = SCRIPT_DIR.parent
+BASE_FILE  = REPO_ROOT / "params" / "param_base.txt"
+OUTPUT_DIR = REPO_ROOT / "params"
 
 # ── Dust switch names (must match order in param_base.txt) ────────────────────
 ALL_SWITCHES = [
@@ -97,9 +103,10 @@ ALL_SWITCHES = [
 # CritPhysDensity: Jeans threshold must be resolved by ≥1 particle,
 # so ρ_crit scales roughly as m_gas^{-1}.
 #
-# DustParticles*: keep dust particle mass / gas particle mass roughly
-# constant across resolutions.  Pattern doubles each level:
-#   512³: 4/6   1024³: 8/12   2048³: 16/24   4096³: 32/48
+# DustParticles*: fixed at 4 SNII, 4 AGB, and 1 LRN superparticle per
+# event across resolutions. Because the parent stellar-particle mass
+# decreases with increasing resolution, the spawned dust-particle mass
+# scales correspondingly without changing the multiplicity.
 #
 # DustShockAmbientDensity: see module docstring above.
 #   Calibration target: shock_events / live_dust_particles < 0.5 per window.
@@ -117,6 +124,11 @@ ALL_SWITCHES = [
 #   This threshold is empirically resolution dependent and is intentionally
 #   not forced to one fixed multiple of CritPhysDensity.  Revisit it using the
 #   live-dust density distribution and coagulation/shattering event rates.
+#
+# MinGasHsml is fixed globally at 0 in param_base.txt.
+# Controlled CG10 runs showed that an imposed nonzero floor can alter the
+# hydrodynamic evolution, whereas MinGasHsml=0 is stable at 512³, 1024³,
+# and 2048³. It is therefore not treated as resolution dependent.
 RES_OVERRIDES = {
     # ── 512³ ──────────────────────────────────────────────────────────────────
     # m_gas ~ 1e7 Msun  |  softenings are the baseline
@@ -227,7 +239,8 @@ RES_OVERRIDES = {
     #   shock_events/live_dust_particles before promoting a new run to production.
     #
     # DustShatteringCalibration = 0.7
-    #   Coagulation fires for the first time at 2048³ (n_eff > 30 cm^-3 threshold).
+    # Coagulation becomes active at 2048³ as resolved effective densities
+    # begin to exceed the adopted 150 cm^-3 collision threshold.
     #   The 1024³ +20% shattering nudge is no longer needed; coagulation now
     #   provides grain growth competition. Reducing below 1.0 prevents the
     #   coagulation/shattering balance from being shattering-dominated.
@@ -250,7 +263,7 @@ RES_OVERRIDES = {
         "DustShatteringCalibration":  "0.7",    # revert 1024³ nudge; coag now active
         "DustCoagulationCalibration": "10.0",
 
-        # Dust sampling (16/24 particles per event keeps m_dust/m_gas ~ constant)
+        # Dust sampling: fixed production multiplicities
         "DustParticlesPerSNII":       "4",
         "DustParticlesPerAGB":        "4",
         "DustParticlesPerLRN":        "1",
@@ -424,7 +437,7 @@ GRID = {
 #
 # Generated naming convention:
 #   params/param_halo295_512.txt
-#   params/param_halo295_1024.txt
+#   params/param_halo1653_1024.txt   (CG07 replacement)
 #   ...
 #   params/param_halo9235_4096.txt
 #
@@ -435,7 +448,7 @@ GRID = {
 
 HALO_IDS = [
     295, 308, 441,
-    859, 1481, 1534,
+    859, 1481, 1653,
     3352, 3879, 3886,
     5834, 7723, 9235,
 ]

@@ -1,0 +1,1588 @@
+#!/usr/bin/env python3
+"""Audit MinGasHsml behavior in CosmicGrain/GADGET-4 snapshots.
+
+Features
+--------
+* Reconstructs the target SPH smoothing length from stored mass and density:
+      N_ngb = (4*pi/3) h^3 rho / m
+* Reads HubbleParam from Parameters (CosmicGrain snapshot convention).
+* Uses either supplied center/rotation files OR the standard CosmicGrain
+  halo_utils.get_zoom_halo() center plus the established stellar-angular-
+  momentum orientation.
+* Reports galaxy, disk, inner-disk, and star-forming-gas statistics.
+* Reports radial behavior and writes CSV + diagnostic PNG outputs.
+* Supports MinGasHsml=0 control runs. For those runs, floor-hit quantities are
+  reported as N/A, while target-h distributions and candidate-floor fractions
+  remain available for comparison.
+
+The script is diagnostic-only and does not modify snapshots.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import glob
+import os
+import re
+from typing import Dict, List
+
+import h5py
+import numpy as np
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from halo_utils import get_zoom_halo, periodic_delta
+
+
+NORM_COEFF_3D = 4.188790204786  # 4*pi/3
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Audit CosmicGrain MinGasHsml behavior.")
+    p.add_argument("snapshot", help="Snapshot glob, e.g. '../halo441_output_1024/snapdir_029/snapshot_029.*.hdf5'")
+
+    # Geometry: manual mode OR automatic suite mode.
+    p.add_argument("--center-file", default=None,
+                   help="Optional 3-vector center file. If omitted, use halo_utils/get_zoom_halo.")
+    p.add_argument("--rotation-file", default=None,
+                   help="Optional 3x3 rotation matrix. If omitted, derive stellar angular-momentum orientation.")
+    p.add_argument("--output-dir", default=None,
+                   help="Simulation output directory; required for automatic centering.")
+    p.add_argument("--group-index", type=int, default=None,
+                   help="FOF group index; required for automatic centering.")
+    p.add_argument("--orientation-radius", type=float, default=20.0,
+                   help="Physical-kpc radius for stellar angular-momentum orientation (default 20).")
+    p.add_argument("--no-refine-center", action="store_true",
+                   help="Disable halo_utils center refinement (default: refinement enabled).")
+
+    # SPH parameters.
+    p.add_argument("--param-file", default=None,
+                   help="GADGET parameter file; preferably the *-usedvalues file.")
+    p.add_argument("--des-num-ngb", type=float, default=32.0)
+    p.add_argument("--max-num-ngb-deviation", type=float, default=8.0)
+    p.add_argument("--min-gas-hsml", type=float, default=1.0,
+                   help="Fallback MinGasHsml if not found in --param-file.")
+
+    # Useful for the planned 512 controlled comparison. These are code-length
+    # candidate floors and are evaluated even for a MinGasHsml=0 control run.
+    p.add_argument("--candidate-floors", type=float, nargs="*", default=[1.0, 0.5, 0.25],
+                   help="Candidate MinGasHsml code lengths to evaluate (default: 1.0 0.5 0.25).")
+
+    # Analysis selections.
+    p.add_argument("--galaxy-radius", type=float, default=30.0)
+    p.add_argument("--galaxy-zmax", type=float, default=5.0)
+    p.add_argument("--disk-radius", type=float, default=20.0)
+    p.add_argument("--disk-zmax", type=float, default=2.0)
+    p.add_argument("--inner-radius", type=float, default=5.0)
+
+    p.add_argument("--label", default="CG")
+    p.add_argument("--m200", type=float, default=np.nan,
+                   help="Optional M200c in Msun for compact summary CSV.")
+    p.add_argument("--prefix", default=None)
+    return p.parse_args()
+
+
+def read_scalar_param(filename: str | None, name: str, default: float) -> float:
+    if filename is None:
+        return default
+    if not os.path.exists(filename):
+        raise FileNotFoundError(filename)
+
+    pattern = re.compile(rf"^\s*{re.escape(name)}\s+([^\s%#]+)")
+    with open(filename) as f:
+        for line in f:
+            m = pattern.match(line)
+            if m:
+                return float(m.group(1))
+
+    print(f"WARNING: {name} not found in {filename}; using {default}")
+    return default
+
+
+def load_snapshot(pattern: str) -> Dict[str, np.ndarray]:
+    files = sorted(glob.glob(pattern))
+    if not files:
+        raise FileNotFoundError(f"No snapshot files matched:\n  {pattern}")
+
+    with h5py.File(files[0], "r") as f:
+        a = float(f["Header"].attrs["Time"])
+        box = float(f["Header"].attrs["BoxSize"])
+        # CosmicGrain convention: HubbleParam is in Parameters.
+        hubble = float(f["Parameters"].attrs["HubbleParam"])
+
+    coords, masses, density, hsml, sfr = [], [], [], [], []
+    for fn in files:
+        with h5py.File(fn, "r") as f:
+            if "PartType0" not in f:
+                continue
+            g = f["PartType0"]
+            n = len(g["Masses"])
+            coords.append(np.asarray(g["Coordinates"], dtype=np.float64))
+            masses.append(np.asarray(g["Masses"], dtype=np.float64))
+            density.append(np.asarray(g["Density"], dtype=np.float64))
+            hsml.append(np.asarray(g["SmoothingLength"], dtype=np.float64))
+            if "StarFormationRate" in g:
+                sfr.append(np.asarray(g["StarFormationRate"], dtype=np.float64))
+            else:
+                sfr.append(np.zeros(n, dtype=np.float64))
+
+    if not coords:
+        raise RuntimeError("No PartType0 gas particles found.")
+
+    return {
+        "files": files,
+        "a": a,
+        "hubble": hubble,
+        "box": box,
+        "coords": np.concatenate(coords),
+        "mass": np.concatenate(masses),
+        "rho": np.concatenate(density),
+        "hsml": np.concatenate(hsml),
+        "sfr": np.concatenate(sfr),
+    }
+
+
+def load_stars(snapshot_files):
+    coords, masses, velocities = [], [], []
+    for fn in snapshot_files:
+        with h5py.File(fn, "r") as f:
+            if "PartType4" not in f:
+                continue
+            s = f["PartType4"]
+            coords.append(np.asarray(s["Coordinates"], dtype=np.float64))
+            masses.append(np.asarray(s["Masses"], dtype=np.float64))
+            velocities.append(np.asarray(s["Velocities"], dtype=np.float64))
+    if not coords:
+        raise RuntimeError("No PartType4 stars found for automatic orientation.")
+    return np.concatenate(coords), np.concatenate(masses), np.concatenate(velocities)
+
+
+def make_rotation_matrix(j):
+    j = np.asarray(j, dtype=float)
+    norm = np.linalg.norm(j)
+    if not np.isfinite(norm) or norm <= 0:
+        raise RuntimeError("Invalid stellar angular-momentum vector.")
+
+    zhat = j / norm
+    reference = np.array([0.0, 0.0, 1.0])
+    if abs(reference @ zhat) > 0.9:
+        reference = np.array([0.0, 1.0, 0.0])
+
+    xhat = np.cross(reference, zhat)
+    xhat /= np.linalg.norm(xhat)
+    yhat = np.cross(zhat, xhat)
+    return np.vstack((xhat, yhat, zhat))
+
+
+def automatic_orientation(snapshot_files, center, box, a, hubble, orientation_radius):
+    star_coords, star_mass, star_vel = load_stars(snapshot_files)
+    star_pos = periodic_delta(star_coords, center, box) * a / hubble
+    r = np.linalg.norm(star_pos, axis=1)
+
+    orient = (
+        np.isfinite(r) & (r < orientation_radius) &
+        np.isfinite(star_mass) & (star_mass > 0) &
+        np.all(np.isfinite(star_vel), axis=1)
+    )
+    n_orient = int(np.sum(orient))
+    if n_orient < 3:
+        raise RuntimeError(
+            f"Only {n_orient} valid stars inside {orientation_radius:g} pkpc; "
+            "cannot determine orientation."
+        )
+
+    # The common mass conversion factor cancels in the weighted velocity and J direction.
+    bulk_velocity = np.average(star_vel[orient], axis=0, weights=star_mass[orient])
+    J = np.sum(
+        np.cross(star_pos[orient], star_vel[orient] - bulk_velocity)
+        * star_mass[orient, None],
+        axis=0,
+    )
+    Jnorm = np.linalg.norm(J)
+    if not np.isfinite(Jnorm) or Jnorm <= 0:
+        raise RuntimeError("Stellar angular momentum is zero or invalid.")
+
+    j_hat = J / Jnorm
+    return make_rotation_matrix(J), j_hat, n_orient
+
+
+def infer_snapshot_number(snapshot_files):
+    for fn in snapshot_files:
+        m = re.search(r"snapshot_(\d+)", os.path.basename(fn))
+        if m:
+            return int(m.group(1))
+    raise RuntimeError("Could not infer snapshot number from snapshot filenames.")
+
+
+def choose_geometry(args, data):
+    # Center
+    halo = None
+    if args.center_file is not None:
+        center = np.loadtxt(args.center_file, dtype=float).reshape(3)
+        center_source = f"file: {args.center_file}"
+    else:
+        if args.output_dir is None or args.group_index is None:
+            raise ValueError(
+                "Without --center-file, automatic centering requires both "
+                "--output-dir and --group-index."
+            )
+        snapnum = infer_snapshot_number(data["files"])
+        halo = get_zoom_halo(
+            args.output_dir,
+            snapnum,
+            group_index=args.group_index,
+            refine_center=not args.no_refine_center,
+            verbose=False,
+        )
+        center = np.asarray(halo.chosen_center_ckpch, dtype=float)
+        center_source = (
+            f"halo_utils: group={halo.group_index}, "
+            f"refinement_accepted={halo.refinement_accepted}"
+        )
+
+    # Orientation
+    if args.rotation_file is not None:
+        rotation = np.loadtxt(args.rotation_file, dtype=float).reshape(3, 3)
+        j_hat = rotation[2].copy()
+        n_orientation_stars = -1
+        orientation_source = f"file: {args.rotation_file}"
+    else:
+        rotation, j_hat, n_orientation_stars = automatic_orientation(
+            data["files"], center, data["box"], data["a"], data["hubble"],
+            args.orientation_radius,
+        )
+        orientation_source = (
+            f"stellar angular momentum within {args.orientation_radius:g} pkpc"
+        )
+
+    return center, rotation, j_hat, n_orientation_stars, center_source, orientation_source, halo
+
+
+def galaxy_coordinates(coords, center, rotation, box, a, hubble):
+    d = periodic_delta(coords, center, box) * a / hubble
+    u = d @ rotation.T
+    R = np.hypot(u[:, 0], u[:, 1])
+    z = u[:, 2]
+    return u, R, z
+
+
+def summarize_selection(name, mask, at_floor, h_target, h_low, h_high,
+                        h_floor, min_h_code, candidate_floor_pkpc):
+    q = np.asarray(mask, dtype=bool)
+    result = {"selection": name, "N": int(np.sum(q))}
+    if not np.any(q):
+        return result
+
+    ht = h_target[q]
+    result.update({
+        "h_target_p16": float(np.percentile(ht, 16)),
+        "h_target_p50": float(np.percentile(ht, 50)),
+        "h_target_p84": float(np.percentile(ht, 84)),
+    })
+
+    # Candidate-floor diagnostics are meaningful even in the MinGasHsml=0 control.
+    for code_floor, physical_floor in candidate_floor_pkpc:
+        tag = str(code_floor).replace(".", "p")
+        result[f"f_h_target_lt_candidate_{tag}"] = float(np.mean(ht < physical_floor))
+        result[f"f_h_target_lt_half_candidate_{tag}"] = float(np.mean(ht < 0.5 * physical_floor))
+
+    if min_h_code > 0:
+        floor_q = at_floor[q]
+        ratio = ht / h_floor
+        result.update({
+            "N_floor": int(np.sum(floor_q)),
+            "f_floor": float(np.mean(floor_q)),
+            "ratio_p16": float(np.percentile(ratio, 16)),
+            "ratio_p50": float(np.percentile(ratio, 50)),
+            "ratio_p84": float(np.percentile(ratio, 84)),
+            "f_lt_075": float(np.mean(ratio < 0.75)),
+            "f_lt_050": float(np.mean(ratio < 0.50)),
+            "f_lt_025": float(np.mean(ratio < 0.25)),
+        })
+        if np.any(floor_q):
+            htf = ht[floor_q]
+            rf = htf / h_floor
+            result.update({
+                "floor_h_target_p16": float(np.percentile(htf, 16)),
+                "floor_h_target_p50": float(np.percentile(htf, 50)),
+                "floor_h_target_p84": float(np.percentile(htf, 84)),
+                "floor_ratio_p16": float(np.percentile(rf, 16)),
+                "floor_ratio_p50": float(np.percentile(rf, 50)),
+                "floor_ratio_p84": float(np.percentile(rf, 84)),
+                "floor_h_low_p50": float(np.percentile(h_low[q][floor_q], 50)),
+                "floor_h_high_p50": float(np.percentile(h_high[q][floor_q], 50)),
+            })
+    else:
+        result.update({
+            "N_floor": 0,
+            "f_floor": np.nan,
+            "ratio_p16": np.nan,
+            "ratio_p50": np.nan,
+            "ratio_p84": np.nan,
+            "f_lt_075": np.nan,
+            "f_lt_050": np.nan,
+            "f_lt_025": np.nan,
+        })
+
+    return result
+
+
+def print_summary(result, min_h_code, candidate_floor_pkpc):
+    print(result["selection"])
+    print("-" * 78)
+    if result["N"] == 0:
+        print("No particles.\n")
+        return
+
+    print(f"N gas                         = {result['N']:,}")
+    print("Target h [pkpc]:")
+    print(f"  p16={result['h_target_p16']:.4f}  p50={result['h_target_p50']:.4f}  p84={result['h_target_p84']:.4f}")
+
+    if min_h_code > 0:
+        print(f"N stored at floor             = {result['N_floor']:,}")
+        print(f"fraction stored at floor      = {result['f_floor']:.4f}")
+        print("h_target / physical floor:")
+        print(f"  p16={result['ratio_p16']:.4f}  p50={result['ratio_p50']:.4f}  p84={result['ratio_p84']:.4f}")
+        print("Fraction whose target h is:")
+        print(f"  < 0.75 h_floor : {result['f_lt_075']:.4f}")
+        print(f"  < 0.50 h_floor : {result['f_lt_050']:.4f}")
+        print(f"  < 0.25 h_floor : {result['f_lt_025']:.4f}")
+        if "floor_ratio_p50" in result:
+            print("Particles STORED at MinGasHsml:")
+            print(f"  target h [pkpc]: p16={result['floor_h_target_p16']:.4f}  p50={result['floor_h_target_p50']:.4f}  p84={result['floor_h_target_p84']:.4f}")
+            print(f"  h_target / floor: p16={result['floor_ratio_p16']:.4f}  p50={result['floor_ratio_p50']:.4f}  p84={result['floor_ratio_p84']:.4f}")
+            print(f"  median allowed-h range: {result['floor_h_low_p50']:.4f} -- {result['floor_h_high_p50']:.4f} pkpc")
+    else:
+        print("MinGasHsml = 0: no imposed floor; floor-hit ratios are N/A.")
+
+    print("Candidate-floor test from reconstructed target h:")
+    for code_floor, physical_floor in candidate_floor_pkpc:
+        tag = str(code_floor).replace(".", "p")
+        f1 = result[f"f_h_target_lt_candidate_{tag}"]
+        fhalf = result[f"f_h_target_lt_half_candidate_{tag}"]
+        print(f"  code {code_floor:g} ({physical_floor:.4f} pkpc): f(h_target < floor)={f1:.4f}, f(h_target < 0.5 floor)={fhalf:.4f}")
+    print()
+
+
+def radial_table(R, z, good, at_floor, h_target, h_floor, min_h_code, sfr):
+    edges = np.array([0, 2.5, 5, 10, 20, 30], dtype=float)
+    rows = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        q = good & (np.abs(z) < 5.0) & (R >= lo) & (R < hi)
+        if not np.any(q):
+            continue
+        sfq = sfr[q] > 0
+        row = {"rmin": lo, "rmax": hi, "N": int(np.sum(q)), "N_SF": int(np.sum(sfq))}
+        if min_h_code > 0:
+            ratio = h_target[q] / h_floor
+            fq = at_floor[q]
+            row.update({
+                "f_floor": float(np.mean(fq)),
+                "ratio_p16": float(np.percentile(ratio, 16)),
+                "ratio_p50": float(np.percentile(ratio, 50)),
+                "ratio_p84": float(np.percentile(ratio, 84)),
+                "f_floor_SF": float(np.mean(fq[sfq])) if np.any(sfq) else np.nan,
+            })
+        else:
+            row.update({"f_floor": np.nan, "ratio_p16": np.nan, "ratio_p50": np.nan,
+                        "ratio_p84": np.nan, "f_floor_SF": np.nan})
+        rows.append(row)
+    return rows
+
+
+def write_dict_rows(filename, rows):
+    if not rows:
+        return
+    fields: List[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fields:
+                fields.append(key)
+    with open(filename, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+
+
+def make_figure(filename, label, u, R, z, rho, sfr, good, at_floor,
+                h_target, h_floor, min_h_code, galaxy_radius, galaxy_zmax,
+                candidate_floor_pkpc):
+    q = good & (R < galaxy_radius) & (np.abs(z) < galaxy_zmax)
+    x, y = u[q, 0], u[q, 1]
+    rho_q, R_q, sfr_q, ht_q = rho[q], R[q], sfr[q], h_target[q]
+
+    # For no-floor control, use the first candidate floor as a comparison scale.
+    if min_h_code > 0:
+        plot_floor = h_floor
+        ratio_q = ht_q / plot_floor
+        highlighted = at_floor[q]
+        highlight_title = "Particles stored at MinGasHsml"
+        ratio_label = r"$h_{\rm target}/h_{\rm floor}$"
+    else:
+        plot_floor = candidate_floor_pkpc[0][1] if candidate_floor_pkpc else 1.0
+        ratio_q = ht_q / plot_floor
+        highlighted = ht_q < plot_floor
+        highlight_title = "Would lie below reference floor"
+        ratio_label = r"$h_{\rm target}/h_{\rm ref}$"
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    ax = axes[0, 0]
+    ax.scatter(x, y, s=3, alpha=0.35, rasterized=True)
+    ax.set_xlim(-galaxy_radius, galaxy_radius); ax.set_ylim(-galaxy_radius, galaxy_radius)
+    ax.set_aspect("equal"); ax.set_xlabel("x (pkpc)"); ax.set_ylabel("y (pkpc)")
+    ax.set_title("Gas particle distribution")
+
+    ax = axes[0, 1]
+    ax.scatter(x[~highlighted], y[~highlighted], s=2, alpha=0.12, rasterized=True)
+    sc = ax.scatter(x[highlighted], y[highlighted], c=ratio_q[highlighted], s=7,
+                    alpha=0.8, vmin=0.25, vmax=1.0, rasterized=True)
+    cb = fig.colorbar(sc, ax=ax); cb.set_label(ratio_label)
+    ax.set_xlim(-galaxy_radius, galaxy_radius); ax.set_ylim(-galaxy_radius, galaxy_radius)
+    ax.set_aspect("equal"); ax.set_xlabel("x (pkpc)"); ax.set_ylabel("y (pkpc)")
+    ax.set_title(highlight_title)
+
+    ax = axes[1, 0]
+    ax.scatter(R_q, ratio_q, s=4, alpha=0.25, rasterized=True)
+    sf = sfr_q > 0
+    if np.any(sf):
+        ax.scatter(R_q[sf], ratio_q[sf], s=8, alpha=0.5, marker="o",
+                   facecolors="none", label="star-forming", rasterized=True)
+        ax.legend(frameon=False)
+    for yy, ls in [(1.0, "--"), (0.75, ":"), (0.5, ":")]:
+        ax.axhline(yy, linestyle=ls, linewidth=1)
+    ax.set_xlim(0, galaxy_radius); ax.set_ylim(bottom=0)
+    ax.set_xlabel("R (pkpc)"); ax.set_ylabel(ratio_label)
+    ax.set_title("Smoothing-scale ratio vs radius")
+
+    ax = axes[1, 1]
+    positive = rho_q > 0
+    ax.scatter(rho_q[positive], ratio_q[positive], s=4, alpha=0.25, rasterized=True)
+    sfp = positive & sf
+    if np.any(sfp):
+        ax.scatter(rho_q[sfp], ratio_q[sfp], s=8, alpha=0.5, marker="o",
+                   facecolors="none", label="star-forming", rasterized=True)
+    for yy, ls in [(1.0, "--"), (0.75, ":"), (0.5, ":")]:
+        ax.axhline(yy, linestyle=ls, linewidth=1)
+    ax.set_xscale("log"); ax.set_ylim(bottom=0)
+    ax.set_xlabel("Gas density (code units)"); ax.set_ylabel(ratio_label)
+    ax.set_title("Smoothing-scale ratio vs density")
+
+    fig.suptitle(f"{label}: MinGasHsml audit", fontsize=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(filename, dpi=200)
+    plt.close(fig)
+
+
+def main():
+    args = parse_args()
+    prefix = args.prefix or f"{args.label}_mingashsml_audit"
+
+    des_ngb = read_scalar_param(args.param_file, "DesNumNgb", args.des_num_ngb)
+    dev_ngb = read_scalar_param(args.param_file, "MaxNumNgbDeviation", args.max_num_ngb_deviation)
+    min_h_code = read_scalar_param(args.param_file, "MinGasHsml", args.min_gas_hsml)
+    if min_h_code < 0:
+        raise ValueError("MinGasHsml cannot be negative.")
+
+    data = load_snapshot(args.snapshot)
+    center, rotation, j_hat, n_orientation_stars, center_source, orientation_source, halo = choose_geometry(args, data)
+
+    u, R, z = galaxy_coordinates(data["coords"], center, rotation, data["box"], data["a"], data["hubble"])
+    mass, rho, hsml, sfr = data["mass"], data["rho"], data["hsml"], data["sfr"]
+
+    good = (np.isfinite(mass) & (mass > 0) & np.isfinite(rho) & (rho > 0) &
+            np.isfinite(hsml) & (hsml > 0))
+
+    ngb_low = max(des_ngb - dev_ngb, 1.0)
+    ngb_high = des_ngb + dev_ngb
+    h_target_code = np.full(len(mass), np.nan)
+    h_low_code = np.full(len(mass), np.nan)
+    h_high_code = np.full(len(mass), np.nan)
+    h_target_code[good] = (des_ngb * mass[good] / (NORM_COEFF_3D * rho[good])) ** (1.0 / 3.0)
+    h_low_code[good] = (ngb_low * mass[good] / (NORM_COEFF_3D * rho[good])) ** (1.0 / 3.0)
+    h_high_code[good] = (ngb_high * mass[good] / (NORM_COEFF_3D * rho[good])) ** (1.0 / 3.0)
+
+    length_conv = data["a"] / data["hubble"]
+    h_target = h_target_code * length_conv
+    h_low = h_low_code * length_conv
+    h_high = h_high_code * length_conv
+    h_floor = min_h_code * length_conv
+    candidate_floor_pkpc = [(x, x * length_conv) for x in args.candidate_floors if x > 0]
+
+    if min_h_code > 0:
+        atol = max(2.0e-6, abs(min_h_code) * 2.0e-6)
+        at_floor = np.isclose(hsml, min_h_code, rtol=0.0, atol=atol)
+    else:
+        at_floor = np.zeros(len(hsml), dtype=bool)
+
+    galaxy = good & (R < args.galaxy_radius) & (np.abs(z) < args.galaxy_zmax)
+    disk = good & (R < args.disk_radius) & (np.abs(z) < args.disk_zmax)
+    inner = good & (R < args.inner_radius) & (np.abs(z) < args.disk_zmax)
+    sf = galaxy & (sfr > 0)
+
+    selections = [
+        (f"Galaxy: R < {args.galaxy_radius:g} pkpc, |z| < {args.galaxy_zmax:g} pkpc", galaxy),
+        (f"Disk: R < {args.disk_radius:g} pkpc, |z| < {args.disk_zmax:g} pkpc", disk),
+        (f"Inner disk: R < {args.inner_radius:g} pkpc, |z| < {args.disk_zmax:g} pkpc", inner),
+        (f"Star-forming gas: R < {args.galaxy_radius:g} pkpc, |z| < {args.galaxy_zmax:g} pkpc", sf),
+    ]
+
+    print("=" * 78)
+    print(f"{args.label} MinGasHsml audit")
+    print("=" * 78)
+    print(f"Snapshot files            = {len(data['files'])}")
+    print(f"a                         = {data['a']:.8f}")
+    print(f"HubbleParam               = {data['hubble']:.8f}")
+    print(f"Kernel normalization      = {NORM_COEFF_3D:.12f}")
+    print(f"DesNumNgb                 = {des_ngb:g}")
+    print(f"MaxNumNgbDeviation        = {dev_ngb:g}")
+    print(f"allowed effective Ngb     = {ngb_low:g} -- {ngb_high:g}")
+    print(f"MinGasHsml                = {min_h_code:g} code length")
+    if min_h_code > 0:
+        print(f"physical floor            = {h_floor:.6f} pkpc")
+    else:
+        print("physical floor            = none (MinGasHsml=0 control)")
+    print(f"Center                    = {center}")
+    print(f"Center source             = {center_source}")
+    print(f"Orientation source        = {orientation_source}")
+    print(f"j_hat                     = {j_hat}")
+    if n_orientation_stars >= 0:
+        print(f"Orientation stars         = {n_orientation_stars:,}")
+    if halo is not None:
+        print(f"Halo group index          = {halo.group_index}")
+    print()
+
+    results = []
+    for name, q in selections:
+        result = summarize_selection(name, q, at_floor, h_target, h_low, h_high,
+                                     h_floor, min_h_code, candidate_floor_pkpc)
+        results.append(result)
+        print_summary(result, min_h_code, candidate_floor_pkpc)
+
+    radial = radial_table(R, z, good, at_floor, h_target, h_floor, min_h_code, sfr)
+    print("Radial audit: |z| < 5 pkpc")
+    print("-" * 78)
+    print(f"{'R [pkpc]':>13} {'N':>8} {'f_floor':>10} {'ratio50':>10} {'N_SF':>8} {'f_floor,SF':>12}")
+    for r in radial:
+        ff = f"{r['f_floor']:.4f}" if np.isfinite(r['f_floor']) else "--"
+        rr = f"{r['ratio_p50']:.4f}" if np.isfinite(r['ratio_p50']) else "--"
+        fsf = f"{r['f_floor_SF']:.4f}" if np.isfinite(r['f_floor_SF']) else "--"
+        print(f"{r['rmin']:5.1f}-{r['rmax']:<5.1f} {r['N']:8d} {ff:>10} {rr:>10} {r['N_SF']:8d} {fsf:>12}")
+    print()
+
+    selection_csv = prefix + "_selections.csv"
+    radial_csv = prefix + "_radial.csv"
+    summary_csv = prefix + "_summary_row.csv"
+    figfile = prefix + "_diagnostic.png"
+    write_dict_rows(selection_csv, results)
+    write_dict_rows(radial_csv, radial)
+
+    galaxy_result, disk_result, inner_result, sf_result = results
+    summary = {
+        "label": args.label,
+        "M200c_Msun": args.m200,
+        "a": data["a"],
+        "HubbleParam": data["hubble"],
+        "MinGasHsml_code": min_h_code,
+        "h_floor_pkpc": h_floor if min_h_code > 0 else np.nan,
+        "DesNumNgb": des_ngb,
+        "MaxNumNgbDeviation": dev_ngb,
+        "N_galaxy": galaxy_result.get("N", 0),
+        "f_floor_galaxy": galaxy_result.get("f_floor", np.nan),
+        "h_target50_galaxy_pkpc": galaxy_result.get("h_target_p50", np.nan),
+        "N_disk": disk_result.get("N", 0),
+        "f_floor_disk": disk_result.get("f_floor", np.nan),
+        "h_target50_disk_pkpc": disk_result.get("h_target_p50", np.nan),
+        "N_inner": inner_result.get("N", 0),
+        "f_floor_inner": inner_result.get("f_floor", np.nan),
+        "h_target50_inner_pkpc": inner_result.get("h_target_p50", np.nan),
+        "N_SF": sf_result.get("N", 0),
+        "f_floor_SF": sf_result.get("f_floor", np.nan),
+        "h_target50_SF_pkpc": sf_result.get("h_target_p50", np.nan),
+        "ratio50_SF": sf_result.get("ratio_p50", np.nan),
+        "f_lt_075_SF": sf_result.get("f_lt_075", np.nan),
+        "f_lt_050_SF": sf_result.get("f_lt_050", np.nan),
+        "f_lt_025_SF": sf_result.get("f_lt_025", np.nan),
+        "center_x_ckpch": center[0], "center_y_ckpch": center[1], "center_z_ckpch": center[2],
+        "jhat_x": j_hat[0], "jhat_y": j_hat[1], "jhat_z": j_hat[2],
+        "orientation_stars": n_orientation_stars,
+    }
+    for code_floor, physical_floor in candidate_floor_pkpc:
+        tag = str(code_floor).replace(".", "p")
+        summary[f"candidate_{tag}_pkpc"] = physical_floor
+        summary[f"f_SF_h_target_lt_candidate_{tag}"] = sf_result.get(f"f_h_target_lt_candidate_{tag}", np.nan)
+        summary[f"f_SF_h_target_lt_half_candidate_{tag}"] = sf_result.get(f"f_h_target_lt_half_candidate_{tag}", np.nan)
+    write_dict_rows(summary_csv, [summary])
+
+    make_figure(figfile, args.label, u, R, z, rho, sfr, good, at_floor,
+                h_target, h_floor, min_h_code, args.galaxy_radius,
+                args.galaxy_zmax, candidate_floor_pkpc)
+
+    print("=" * 78)
+    print("Outputs")
+    print("=" * 78)
+    print(f"Selection CSV : {selection_csv}")
+    print(f"Radial CSV    : {radial_csv}")
+    print(f"Summary CSV   : {summary_csv}")
+    print(f"Figure        : {figfile}")
+
+
+if __name__ == "__main__":
+    main()#!/usr/bin/env python3
+
+"""
+cosmicgrain_mingashsml_audit.py
+
+Audit the effect of MinGasHsml in CosmicGrain/GADGET-4 snapshots.
+
+For each gas particle, reconstruct the smoothing length associated with the
+target effective neighbour number,
+
+    N_ngb = NORM_COEFF * h^3 * rho / m
+
+using the Density and Masses stored in the snapshot.
+
+This is particularly useful for the current CosmicGrain MinGasHsml
+implementation, where the density/neighbour iteration converges first and
+MinGasHsml is applied afterward.
+
+The script reports:
+  * fraction of particles stored at MinGasHsml
+  * reconstructed target h
+  * h_target / h_floor
+  * clipping severity
+  * radial and density dependence
+  * star-forming-gas statistics
+  * CSV summary
+  * diagnostic four-panel figure
+
+IMPORTANT:
+  - HubbleParam is read from Parameters, not Header.
+  - Coordinates and Hsml are assumed to be comoving kpc/h.
+  - Density and particle mass only need to be in mutually consistent code
+    units for the h reconstruction.
+"""
+
+import argparse
+import csv
+import glob
+import os
+import re
+
+import h5py
+import numpy as np
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+
+
+# ---------------------------------------------------------------------------
+# GADGET configuration for the present CosmicGrain runs
+# ---------------------------------------------------------------------------
+
+NORM_COEFF_3D = 4.188790204786  # 4*pi/3
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Audit CosmicGrain/GADGET MinGasHsml."
+    )
+
+    p.add_argument(
+        "snapshot",
+        help="Snapshot glob, e.g. '../halo441_output_1024/"
+             "snapdir_029/snapshot_029.*.hdf5'"
+    )
+
+    p.add_argument(
+        "--center-file",
+        required=True,
+        help="Text file containing the 3-component halo center."
+    )
+
+    p.add_argument(
+        "--rotation-file",
+        required=True,
+        help="3x3 rotation matrix defining the galaxy frame."
+    )
+
+    p.add_argument(
+        "--param-file",
+        default=None,
+        help="GADGET parameter file. If supplied, DesNumNgb, "
+             "MaxNumNgbDeviation and MinGasHsml are read from it."
+    )
+
+    p.add_argument("--des-num-ngb", type=float, default=32.0)
+    p.add_argument("--max-num-ngb-deviation", type=float, default=8.0)
+    p.add_argument("--min-gas-hsml", type=float, default=1.0)
+
+    p.add_argument(
+        "--galaxy-radius",
+        type=float,
+        default=30.0,
+        help="Galaxy audit radius in physical kpc."
+    )
+
+    p.add_argument(
+        "--galaxy-zmax",
+        type=float,
+        default=5.0,
+        help="Galaxy vertical half-height in physical kpc."
+    )
+
+    p.add_argument(
+        "--disk-radius",
+        type=float,
+        default=20.0,
+        help="Disk audit radius in physical kpc."
+    )
+
+    p.add_argument(
+        "--disk-zmax",
+        type=float,
+        default=2.0,
+        help="Disk vertical half-height in physical kpc."
+    )
+
+    p.add_argument(
+        "--inner-radius",
+        type=float,
+        default=5.0,
+        help="Inner-disk radius in physical kpc."
+    )
+
+    p.add_argument(
+        "--label",
+        default="CG",
+        help="Halo label, e.g. CG10."
+    )
+
+    p.add_argument(
+        "--m200",
+        type=float,
+        default=np.nan,
+        help="Optional M200c in Msun for suite CSV."
+    )
+
+    p.add_argument(
+        "--prefix",
+        default=None,
+        help="Output prefix. Default: <label>_mingashsml_audit"
+    )
+
+    return p.parse_args()
+
+
+def read_scalar_param(filename, name, default):
+    if filename is None:
+        return default
+
+    if not os.path.exists(filename):
+        raise FileNotFoundError(filename)
+
+    pattern = re.compile(
+        rf"^\s*{re.escape(name)}\s+([^\s%#]+)"
+    )
+
+    with open(filename) as f:
+        for line in f:
+            m = pattern.match(line)
+            if m:
+                return float(m.group(1))
+
+    print(
+        f"WARNING: {name} not found in {filename}; "
+        f"using {default}"
+    )
+    return default
+
+
+def load_snapshot(pattern):
+    files = sorted(glob.glob(pattern))
+
+    if not files:
+        raise FileNotFoundError(
+            f"No snapshot files matched:\n  {pattern}"
+        )
+
+    with h5py.File(files[0], "r") as f:
+        a = float(f["Header"].attrs["Time"])
+        box = float(f["Header"].attrs["BoxSize"])
+
+        # CosmicGrain snapshots store this in Parameters.
+        h = float(f["Parameters"].attrs["HubbleParam"])
+
+    coords = []
+    masses = []
+    density = []
+    hsml = []
+    sfr = []
+
+    for fn in files:
+        with h5py.File(fn, "r") as f:
+            if "PartType0" not in f:
+                continue
+
+            g = f["PartType0"]
+
+            coords.append(np.asarray(g["Coordinates"], dtype=np.float64))
+            masses.append(np.asarray(g["Masses"], dtype=np.float64))
+            density.append(np.asarray(g["Density"], dtype=np.float64))
+            hsml.append(
+                np.asarray(g["SmoothingLength"], dtype=np.float64)
+            )
+
+            if "StarFormationRate" in g:
+                sfr.append(
+                    np.asarray(g["StarFormationRate"], dtype=np.float64)
+                )
+            else:
+                sfr.append(
+                    np.zeros(len(g["Masses"]), dtype=np.float64)
+                )
+
+    if not coords:
+        raise RuntimeError("No PartType0 gas particles found.")
+
+    return {
+        "files": files,
+        "a": a,
+        "hubble": h,
+        "box": box,
+        "coords": np.concatenate(coords),
+        "mass": np.concatenate(masses),
+        "rho": np.concatenate(density),
+        "hsml": np.concatenate(hsml),
+        "sfr": np.concatenate(sfr),
+    }
+
+
+def galaxy_coordinates(coords, center, rotation, box, a, hubble):
+    d = coords - center[None, :]
+
+    # Periodic nearest image in code coordinates.
+    d -= box * np.rint(d / box)
+
+    # ckpc/h -> physical kpc
+    d *= a / hubble
+
+    # Same convention used in the existing CosmicGrain morphology scripts.
+    u = d @ rotation.T
+
+    R = np.hypot(u[:, 0], u[:, 1])
+    z = u[:, 2]
+
+    return u, R, z
+
+
+def percentile_string(x, percentiles=(1, 5, 16, 50, 84, 95, 99)):
+    x = np.asarray(x)
+    x = x[np.isfinite(x)]
+
+    if len(x) == 0:
+        return "none"
+
+    vals = np.percentile(x, percentiles)
+
+    return "  ".join(
+        f"p{p}={v:.4f}"
+        for p, v in zip(percentiles, vals)
+    )
+
+
+def summarize_selection(
+    name,
+    mask,
+    at_floor,
+    h_target,
+    h_low,
+    h_high,
+    h_floor,
+):
+    q = np.asarray(mask, dtype=bool)
+
+    result = {
+        "selection": name,
+        "N": int(np.sum(q)),
+    }
+
+    if not np.any(q):
+        return result
+
+    floor_q = at_floor[q]
+    ht = h_target[q]
+    ratio = ht / h_floor
+
+    result.update({
+        "N_floor": int(np.sum(floor_q)),
+        "f_floor": float(np.mean(floor_q)),
+        "h_target_p16": float(np.percentile(ht, 16)),
+        "h_target_p50": float(np.percentile(ht, 50)),
+        "h_target_p84": float(np.percentile(ht, 84)),
+        "ratio_p16": float(np.percentile(ratio, 16)),
+        "ratio_p50": float(np.percentile(ratio, 50)),
+        "ratio_p84": float(np.percentile(ratio, 84)),
+        "f_lt_075": float(np.mean(ratio < 0.75)),
+        "f_lt_050": float(np.mean(ratio < 0.50)),
+        "f_lt_025": float(np.mean(ratio < 0.25)),
+    })
+
+    if np.any(floor_q):
+        htf = ht[floor_q]
+        rf = htf / h_floor
+
+        result.update({
+            "floor_h_target_p16":
+                float(np.percentile(htf, 16)),
+            "floor_h_target_p50":
+                float(np.percentile(htf, 50)),
+            "floor_h_target_p84":
+                float(np.percentile(htf, 84)),
+            "floor_ratio_p16":
+                float(np.percentile(rf, 16)),
+            "floor_ratio_p50":
+                float(np.percentile(rf, 50)),
+            "floor_ratio_p84":
+                float(np.percentile(rf, 84)),
+            "floor_h_low_p50":
+                float(np.percentile(h_low[q][floor_q], 50)),
+            "floor_h_high_p50":
+                float(np.percentile(h_high[q][floor_q], 50)),
+        })
+
+    return result
+
+
+def print_summary(result, h_floor):
+    print(result["selection"])
+    print("-" * 78)
+
+    if result["N"] == 0:
+        print("No particles.")
+        print()
+        return
+
+    print(f"N gas                         = {result['N']:,}")
+    print(f"N stored at floor             = {result['N_floor']:,}")
+    print(f"fraction stored at floor      = {result['f_floor']:.4f}")
+
+    print()
+    print("Target h [pkpc]:")
+    print(
+        f"  p16={result['h_target_p16']:.4f}  "
+        f"p50={result['h_target_p50']:.4f}  "
+        f"p84={result['h_target_p84']:.4f}"
+    )
+
+    print("h_target / physical floor:")
+    print(
+        f"  p16={result['ratio_p16']:.4f}  "
+        f"p50={result['ratio_p50']:.4f}  "
+        f"p84={result['ratio_p84']:.4f}"
+    )
+
+    print()
+    print("Fraction whose target h is:")
+    print(f"  < 0.75 h_floor : {result['f_lt_075']:.4f}")
+    print(f"  < 0.50 h_floor : {result['f_lt_050']:.4f}")
+    print(f"  < 0.25 h_floor : {result['f_lt_025']:.4f}")
+
+    if "floor_ratio_p50" in result:
+        print()
+        print("Particles STORED at MinGasHsml:")
+        print(
+            "  target h [pkpc]: "
+            f"p16={result['floor_h_target_p16']:.4f}  "
+            f"p50={result['floor_h_target_p50']:.4f}  "
+            f"p84={result['floor_h_target_p84']:.4f}"
+        )
+        print(
+            "  h_target / floor: "
+            f"p16={result['floor_ratio_p16']:.4f}  "
+            f"p50={result['floor_ratio_p50']:.4f}  "
+            f"p84={result['floor_ratio_p84']:.4f}"
+        )
+        print(
+            "  median allowed-h range: "
+            f"{result['floor_h_low_p50']:.4f} -- "
+            f"{result['floor_h_high_p50']:.4f} pkpc"
+        )
+
+    print()
+
+
+def radial_table(R, z, good, at_floor, ratio, sfr):
+    edges = np.array([0, 2.5, 5, 10, 20, 30], dtype=float)
+
+    rows = []
+
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        q = (
+            good &
+            (np.abs(z) < 5.0) &
+            (R >= lo) &
+            (R < hi)
+        )
+
+        if not np.any(q):
+            continue
+
+        rq = ratio[q]
+        fq = at_floor[q]
+        sfq = sfr[q] > 0
+
+        row = {
+            "rmin": lo,
+            "rmax": hi,
+            "N": int(np.sum(q)),
+            "f_floor": float(np.mean(fq)),
+            "ratio_p16": float(np.percentile(rq, 16)),
+            "ratio_p50": float(np.percentile(rq, 50)),
+            "ratio_p84": float(np.percentile(rq, 84)),
+            "N_SF": int(np.sum(sfq)),
+        }
+
+        if np.any(sfq):
+            row["f_floor_SF"] = float(np.mean(fq[sfq]))
+        else:
+            row["f_floor_SF"] = np.nan
+
+        rows.append(row)
+
+    return rows
+
+
+def write_dict_rows(filename, rows):
+    if not rows:
+        return
+
+    fields = []
+    for r in rows:
+        for key in r:
+            if key not in fields:
+                fields.append(key)
+
+    with open(filename, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def make_figure(
+    filename,
+    label,
+    u,
+    R,
+    z,
+    rho,
+    sfr,
+    good,
+    at_floor,
+    ratio,
+    galaxy_radius,
+    galaxy_zmax,
+):
+    q = (
+        good &
+        (R < galaxy_radius) &
+        (np.abs(z) < galaxy_zmax)
+    )
+
+    x = u[q, 0]
+    y = u[q, 1]
+    floor_q = at_floor[q]
+    ratio_q = ratio[q]
+    rho_q = rho[q]
+    R_q = R[q]
+    sfr_q = sfr[q]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    # ------------------------------------------------------------------
+    # Panel 1: all gas, face-on
+    # ------------------------------------------------------------------
+    ax = axes[0, 0]
+
+    ax.scatter(
+        x,
+        y,
+        s=3,
+        alpha=0.35,
+        rasterized=True,
+    )
+
+    ax.set_xlim(-galaxy_radius, galaxy_radius)
+    ax.set_ylim(-galaxy_radius, galaxy_radius)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x (pkpc)")
+    ax.set_ylabel("y (pkpc)")
+    ax.set_title("Gas particle distribution")
+
+    # ------------------------------------------------------------------
+    # Panel 2: floor particles
+    # ------------------------------------------------------------------
+    ax = axes[0, 1]
+
+    ax.scatter(
+        x[~floor_q],
+        y[~floor_q],
+        s=2,
+        alpha=0.12,
+        rasterized=True,
+        label="not at floor",
+    )
+
+    sc = ax.scatter(
+        x[floor_q],
+        y[floor_q],
+        c=ratio_q[floor_q],
+        s=7,
+        alpha=0.8,
+        vmin=0.25,
+        vmax=1.0,
+        rasterized=True,
+    )
+
+    cb = fig.colorbar(sc, ax=ax)
+    cb.set_label(r"$h_{\rm target}/h_{\rm floor}$")
+
+    ax.set_xlim(-galaxy_radius, galaxy_radius)
+    ax.set_ylim(-galaxy_radius, galaxy_radius)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x (pkpc)")
+    ax.set_ylabel("y (pkpc)")
+    ax.set_title("Particles stored at MinGasHsml")
+
+    # ------------------------------------------------------------------
+    # Panel 3: ratio vs radius
+    # ------------------------------------------------------------------
+    ax = axes[1, 0]
+
+    ax.scatter(
+        R_q,
+        ratio_q,
+        s=4,
+        alpha=0.25,
+        rasterized=True,
+    )
+
+    sf = sfr_q > 0
+
+    if np.any(sf):
+        ax.scatter(
+            R_q[sf],
+            ratio_q[sf],
+            s=8,
+            alpha=0.5,
+            marker="o",
+            facecolors="none",
+            label="star-forming",
+            rasterized=True,
+        )
+        ax.legend(frameon=False)
+
+    ax.axhline(1.0, linestyle="--", linewidth=1)
+    ax.axhline(0.75, linestyle=":", linewidth=1)
+    ax.axhline(0.50, linestyle=":", linewidth=1)
+
+    ax.set_xlim(0, galaxy_radius)
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel("R (pkpc)")
+    ax.set_ylabel(
+        r"$h_{\rm target}/h_{\rm floor}$"
+    )
+    ax.set_title("Floor severity vs radius")
+
+    # ------------------------------------------------------------------
+    # Panel 4: ratio vs density
+    # ------------------------------------------------------------------
+    ax = axes[1, 1]
+
+    positive = rho_q > 0
+
+    ax.scatter(
+        rho_q[positive],
+        ratio_q[positive],
+        s=4,
+        alpha=0.25,
+        rasterized=True,
+    )
+
+    sfp = positive & sf
+
+    if np.any(sfp):
+        ax.scatter(
+            rho_q[sfp],
+            ratio_q[sfp],
+            s=8,
+            alpha=0.5,
+            marker="o",
+            facecolors="none",
+            label="star-forming",
+            rasterized=True,
+        )
+
+    ax.axhline(1.0, linestyle="--", linewidth=1)
+    ax.axhline(0.75, linestyle=":", linewidth=1)
+    ax.axhline(0.50, linestyle=":", linewidth=1)
+
+    ax.set_xscale("log")
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel("Gas density (code units)")
+    ax.set_ylabel(
+        r"$h_{\rm target}/h_{\rm floor}$"
+    )
+    ax.set_title("Floor severity vs density")
+
+    fig.suptitle(
+        f"{label}: MinGasHsml audit",
+        fontsize=15
+    )
+
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(filename, dpi=200)
+    plt.close(fig)
+
+
+def main():
+    args = parse_args()
+
+    prefix = (
+        args.prefix
+        if args.prefix is not None
+        else f"{args.label}_mingashsml_audit"
+    )
+
+    des_ngb = read_scalar_param(
+        args.param_file,
+        "DesNumNgb",
+        args.des_num_ngb,
+    )
+
+    dev_ngb = read_scalar_param(
+        args.param_file,
+        "MaxNumNgbDeviation",
+        args.max_num_ngb_deviation,
+    )
+
+    min_h_code = read_scalar_param(
+        args.param_file,
+        "MinGasHsml",
+        args.min_gas_hsml,
+    )
+
+    if min_h_code <= 0:
+        raise ValueError(
+            "MinGasHsml must be > 0 for this floor audit."
+        )
+
+    data = load_snapshot(args.snapshot)
+
+    center = np.loadtxt(args.center_file, dtype=float).reshape(3)
+    rotation = np.loadtxt(
+        args.rotation_file,
+        dtype=float
+    ).reshape(3, 3)
+
+    a = data["a"]
+    hubble = data["hubble"]
+
+    u, R, z = galaxy_coordinates(
+        data["coords"],
+        center,
+        rotation,
+        data["box"],
+        a,
+        hubble,
+    )
+
+    mass = data["mass"]
+    rho = data["rho"]
+    hsml = data["hsml"]
+    sfr = data["sfr"]
+
+    good = (
+        np.isfinite(mass) &
+        (mass > 0) &
+        np.isfinite(rho) &
+        (rho > 0) &
+        np.isfinite(hsml) &
+        (hsml > 0)
+    )
+
+    # Reconstruct target and allowed-neighbour smoothing scales.
+    #
+    # N = C h^3 rho/m
+    #
+    # therefore
+    #
+    # h = [N m / (C rho)]^(1/3)
+    #
+    ngb_low = max(des_ngb - dev_ngb, 1.0)
+    ngb_high = des_ngb + dev_ngb
+
+    h_target_code = np.full(len(mass), np.nan)
+    h_low_code = np.full(len(mass), np.nan)
+    h_high_code = np.full(len(mass), np.nan)
+
+    h_target_code[good] = (
+        des_ngb * mass[good] /
+        (NORM_COEFF_3D * rho[good])
+    ) ** (1.0 / 3.0)
+
+    h_low_code[good] = (
+        ngb_low * mass[good] /
+        (NORM_COEFF_3D * rho[good])
+    ) ** (1.0 / 3.0)
+
+    h_high_code[good] = (
+        ngb_high * mass[good] /
+        (NORM_COEFF_3D * rho[good])
+    ) ** (1.0 / 3.0)
+
+    # ckpc/h -> physical kpc
+    length_conv = a / hubble
+
+    h_target = h_target_code * length_conv
+    h_low = h_low_code * length_conv
+    h_high = h_high_code * length_conv
+    h_stored = hsml * length_conv
+    h_floor = min_h_code * length_conv
+
+    # Tight tolerance because the floor is assigned exactly in code,
+    # modulo snapshot floating-point representation.
+    atol = max(2.0e-6, abs(min_h_code) * 2.0e-6)
+
+    at_floor = np.isclose(
+        hsml,
+        min_h_code,
+        rtol=0.0,
+        atol=atol,
+    )
+
+    ratio = h_target / h_floor
+
+    galaxy = (
+        good &
+        (R < args.galaxy_radius) &
+        (np.abs(z) < args.galaxy_zmax)
+    )
+
+    disk = (
+        good &
+        (R < args.disk_radius) &
+        (np.abs(z) < args.disk_zmax)
+    )
+
+    inner = (
+        good &
+        (R < args.inner_radius) &
+        (np.abs(z) < args.disk_zmax)
+    )
+
+    sf = galaxy & (sfr > 0)
+
+    selections = [
+        (
+            f"Galaxy: R < {args.galaxy_radius:g} pkpc, "
+            f"|z| < {args.galaxy_zmax:g} pkpc",
+            galaxy,
+        ),
+        (
+            f"Disk: R < {args.disk_radius:g} pkpc, "
+            f"|z| < {args.disk_zmax:g} pkpc",
+            disk,
+        ),
+        (
+            f"Inner disk: R < {args.inner_radius:g} pkpc, "
+            f"|z| < {args.disk_zmax:g} pkpc",
+            inner,
+        ),
+        (
+            f"Star-forming gas: R < {args.galaxy_radius:g} pkpc, "
+            f"|z| < {args.galaxy_zmax:g} pkpc",
+            sf,
+        ),
+    ]
+
+    results = []
+
+    print("=" * 78)
+    print(f"{args.label} MinGasHsml audit")
+    print("=" * 78)
+
+    print(f"Snapshot files            = {len(data['files'])}")
+    print(f"a                         = {a:.8f}")
+    print(f"HubbleParam               = {hubble:.8f}")
+    print(f"Kernel normalization      = {NORM_COEFF_3D:.12f}")
+    print(f"DesNumNgb                 = {des_ngb:g}")
+    print(f"MaxNumNgbDeviation        = {dev_ngb:g}")
+    print(
+        f"allowed effective Ngb     = "
+        f"{ngb_low:g} -- {ngb_high:g}"
+    )
+    print(f"MinGasHsml                = {min_h_code:g} code length")
+    print(f"physical floor            = {h_floor:.6f} pkpc")
+    print()
+
+    for name, q in selections:
+        result = summarize_selection(
+            name,
+            q,
+            at_floor,
+            h_target,
+            h_low,
+            h_high,
+            h_floor,
+        )
+
+        results.append(result)
+        print_summary(result, h_floor)
+
+    # ------------------------------------------------------------------
+    # Radial audit
+    # ------------------------------------------------------------------
+
+    radial = radial_table(
+        R,
+        z,
+        good,
+        at_floor,
+        ratio,
+        sfr,
+    )
+
+    print("Radial audit: |z| < 5 pkpc")
+    print("-" * 78)
+    print(
+        f"{'R [pkpc]':>13} "
+        f"{'N':>8} "
+        f"{'f_floor':>10} "
+        f"{'ratio50':>10} "
+        f"{'N_SF':>8} "
+        f"{'f_floor,SF':>12}"
+    )
+
+    for r in radial:
+        fsf = r["f_floor_SF"]
+
+        fsf_text = (
+            f"{fsf:.4f}"
+            if np.isfinite(fsf)
+            else "--"
+        )
+
+        print(
+            f"{r['rmin']:5.1f}-{r['rmax']:<5.1f} "
+            f"{r['N']:8d} "
+            f"{r['f_floor']:10.4f} "
+            f"{r['ratio_p50']:10.4f} "
+            f"{r['N_SF']:8d} "
+            f"{fsf_text:>12}"
+        )
+
+    print()
+
+    # ------------------------------------------------------------------
+    # CSV output
+    # ------------------------------------------------------------------
+
+    selection_csv = prefix + "_selections.csv"
+    radial_csv = prefix + "_radial.csv"
+    suite_csv = prefix + "_suite_row.csv"
+
+    write_dict_rows(selection_csv, results)
+    write_dict_rows(radial_csv, radial)
+
+    # Compact row specifically intended for combining CG01--CG12.
+    galaxy_result = results[0]
+    disk_result = results[1]
+    inner_result = results[2]
+    sf_result = results[3]
+
+    suite_row = {
+        "label": args.label,
+        "M200c_Msun": args.m200,
+        "a": a,
+        "HubbleParam": hubble,
+        "MinGasHsml_code": min_h_code,
+        "h_floor_pkpc": h_floor,
+        "DesNumNgb": des_ngb,
+        "MaxNumNgbDeviation": dev_ngb,
+
+        "N_galaxy": galaxy_result.get("N", 0),
+        "f_floor_galaxy":
+            galaxy_result.get("f_floor", np.nan),
+        "ratio50_galaxy":
+            galaxy_result.get("ratio_p50", np.nan),
+
+        "N_disk": disk_result.get("N", 0),
+        "f_floor_disk":
+            disk_result.get("f_floor", np.nan),
+        "ratio50_disk":
+            disk_result.get("ratio_p50", np.nan),
+
+        "N_inner": inner_result.get("N", 0),
+        "f_floor_inner":
+            inner_result.get("f_floor", np.nan),
+        "ratio50_inner":
+            inner_result.get("ratio_p50", np.nan),
+
+        "N_SF": sf_result.get("N", 0),
+        "f_floor_SF":
+            sf_result.get("f_floor", np.nan),
+        "ratio16_SF":
+            sf_result.get("ratio_p16", np.nan),
+        "ratio50_SF":
+            sf_result.get("ratio_p50", np.nan),
+        "ratio84_SF":
+            sf_result.get("ratio_p84", np.nan),
+        "f_lt_075_SF":
+            sf_result.get("f_lt_075", np.nan),
+        "f_lt_050_SF":
+            sf_result.get("f_lt_050", np.nan),
+        "f_lt_025_SF":
+            sf_result.get("f_lt_025", np.nan),
+    }
+
+    write_dict_rows(suite_csv, [suite_row])
+
+    # ------------------------------------------------------------------
+    # Figure
+    # ------------------------------------------------------------------
+
+    figfile = prefix + "_diagnostic.png"
+
+    make_figure(
+        figfile,
+        args.label,
+        u,
+        R,
+        z,
+        rho,
+        sfr,
+        good,
+        at_floor,
+        ratio,
+        args.galaxy_radius,
+        args.galaxy_zmax,
+    )
+
+    print("=" * 78)
+    print("Outputs")
+    print("=" * 78)
+    print(f"Selection CSV : {selection_csv}")
+    print(f"Radial CSV    : {radial_csv}")
+    print(f"Suite row CSV : {suite_csv}")
+    print(f"Figure        : {figfile}")
+    print()
+
+
+if __name__ == "__main__":
+    main()

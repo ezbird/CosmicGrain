@@ -35,7 +35,7 @@ import h5py
 import numpy as np
 
 
-HALOS = (295, 308, 441, 859, 1481, 1534, 3352, 3879, 3886, 5834, 7723, 9235)
+HALOS = (1653,)
 RESOLUTIONS = (512, 1024, 2048, 4096)
 NPART_TYPES = 7
 CORE_DATASETS = ("Coordinates", "Velocities", "ParticleIDs")

@@ -27,14 +27,21 @@ except ImportError:
     exit(1)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Age bin definitions — drawn oldest-first so young sits on top
+# Default age breaks. They can be overridden with --age-breaks.
 # ─────────────────────────────────────────────────────────────────────────────
-AGE_BINS = [
-    (0.0,   5.0,  'Young  (<5 Gyr)',    '#2196F3'),   # blue
-    (5.0,  10.0,  'Mid    (5–10 Gyr)',  '#4CAF50'),   # green
-    (10.0, 14.0,  'Old    (>10 Gyr)',   '#FF5722'),   # orange-red
-]
+DEFAULT_AGE_BREAKS = (3.0, 7.0)
 AGE_BIN_ALPHA = 0.55
+
+
+def build_age_bins(young_max, old_min):
+    if not (0.0 < young_max < old_min):
+        raise ValueError('age breaks must satisfy 0 < YOUNG_MAX < OLD_MIN')
+    return [
+        (0.0, young_max, f'Young  (<{young_max:g} Gyr)', '#2196F3'),
+        (young_max, old_min,
+         f'Mid    ({young_max:g}–{old_min:g} Gyr)', '#4CAF50'),
+        (old_min, np.inf, f'Old    (>{old_min:g} Gyr)', '#FF5722'),
+    ]
 
 # Fields to load for PartType6 (dust). load_particles_within_radius's own
 # default field list (halo_utils._SPATIAL_FIELDS[6]) does NOT include
@@ -79,7 +86,7 @@ def compute_velocity_magnitude(velocities):
 
 def make_age_coded_histogram(ax, data, age_gyr, xlabel, title,
                               bins=50, log_x=False, color_all='#BBBBBB',
-                              xlim=None):
+                              xlim=None, age_bins=None):
     """
     Plot a histogram with overlaid age-bin histograms.
 
@@ -95,9 +102,14 @@ def make_age_coded_histogram(ax, data, age_gyr, xlabel, title,
     data    = np.asarray(data)
     age_gyr = np.asarray(age_gyr)
 
-    finite  = np.isfinite(data) & np.isfinite(age_gyr)
-    data    = data[finite]
-    age_gyr = age_gyr[finite]
+    if age_bins is None:
+        age_bins = build_age_bins(*DEFAULT_AGE_BREAKS)
+
+    # Missing/invalid ages do not remove particles from the grey population
+    # and must not be silently classified as newborn dust.
+    finite_data = np.isfinite(data)
+    data = data[finite_data]
+    age_gyr = age_gyr[finite_data]
 
     if len(data) == 0:
         ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
@@ -131,7 +143,7 @@ def make_age_coded_histogram(ax, data, age_gyr, xlabel, title,
             color='#999', linewidth=1.2, label='All')
 
     # ── Draw oldest bin first so younger bins layer on top ────────────────────
-    for (a_lo, a_hi, label, color) in reversed(AGE_BINS):
+    for (a_lo, a_hi, label, color) in reversed(age_bins):
         mask   = (age_full >= a_lo) & (age_full < a_hi)
         subset = data_full[mask]
         if len(subset) == 0:
@@ -174,9 +186,18 @@ def main():
                         help='Max radius for dust extraction, in ckpc/h (matching Coordinates '
                              'convention). Default: R200c (spherical-overdensity, from halo_utils).')
     parser.add_argument('--bins',     type=int,   default=50)
+    parser.add_argument('--age-breaks', type=float, nargs=2,
+                        metavar=('YOUNG_MAX', 'OLD_MIN'),
+                        default=DEFAULT_AGE_BREAKS,
+                        help='Age boundaries in Gyr (default: 3 7, giving '
+                             '<3, 3–7, and >7 Gyr)')
     parser.add_argument('--dpi',      type=int,   default=150)
     parser.add_argument('--figsize',  type=float, nargs=2, default=[16, 10])
     args = parser.parse_args()
+    try:
+        age_bins = build_age_bins(*args.age_breaks)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     print("=" * 60)
     print("DUST HISTOGRAM PLOTTER  (age-coded)")
@@ -249,8 +270,8 @@ def main():
         has_formation_time = True
         print("✓ DustFormationTime")
     else:
-        dust_formation = np.zeros(len(grain_radius))
-        print("✗ No formation time — all ages set to 0")
+        dust_formation = np.full(len(grain_radius), np.nan)
+        print("✗ No formation time — ages left unclassified")
 
     if has_formation_time and current_time is not None and np.any(dust_formation > 0):
         try:
@@ -263,30 +284,45 @@ def main():
             current_age = scale_factor_to_age(current_time, h, Om, OL)
             print(f"Current age of universe: {current_age:.3f} Gyr")
 
-            dust_age_gyr = np.zeros(len(dust_formation))
+            dust_age_gyr = np.full(len(dust_formation), np.nan)
+            valid_formation = (np.isfinite(dust_formation)
+                               & (dust_formation > 0)
+                               & (dust_formation <= current_time))
             for i, a_form in enumerate(dust_formation):
-                if 0 < a_form <= current_time:
+                if valid_formation[i]:
                     dust_age_gyr[i] = current_age - scale_factor_to_age(a_form, h, Om, OL)
 
-            print(f"Age range: {dust_age_gyr.min():.3f} – {dust_age_gyr.max():.3f} Gyr")
+            valid_ages = dust_age_gyr[np.isfinite(dust_age_gyr)]
+            print(f"Valid formation times: {len(valid_ages):,}/{len(dust_age_gyr):,}")
+            if len(valid_ages):
+                print(f"Age range: {valid_ages.min():.3f} – {valid_ages.max():.3f} Gyr")
             age_xlabel = 'Age (Gyr)'
             age_title  = 'Age'
 
         except ImportError:
             print("scipy not available — using linear approximation")
-            dust_age_gyr = (current_time - dust_formation) * 13.8
+            dust_age_gyr = np.full(len(dust_formation), np.nan)
+            valid_formation = (np.isfinite(dust_formation)
+                               & (dust_formation > 0)
+                               & (dust_formation <= current_time))
+            dust_age_gyr[valid_formation] = (
+                current_time - dust_formation[valid_formation]) * 13.8
             age_xlabel   = 'Age (approx, Gyr)'
             age_title    = 'Age (approx)'
     else:
-        dust_age_gyr = np.zeros(len(grain_radius))
+        dust_age_gyr = np.full(len(grain_radius), np.nan)
         age_xlabel   = 'Age (Gyr)'
         age_title    = 'Age'
 
     # ── Age bin breakdown ────────────────────────────────────────────────────
     print("\nAge bin breakdown:")
-    for (a_lo, a_hi, label, color) in AGE_BINS:
+    valid_age_count = np.count_nonzero(np.isfinite(dust_age_gyr))
+    for (a_lo, a_hi, label, color) in age_bins:
         n = np.sum((dust_age_gyr >= a_lo) & (dust_age_gyr < a_hi))
-        print(f"  {label}: {n:,} ({100*n/len(dust_age_gyr):.1f}%)")
+        pct = 100 * n / valid_age_count if valid_age_count else 0.0
+        print(f"  {label}: {n:,} ({pct:.1f}% of valid ages)")
+    print(f"  Unclassified (invalid/missing formation time): "
+          f"{len(dust_age_gyr) - valid_age_count:,}")
 
     # ── Figure ───────────────────────────────────────────────────────────────
     fig = plt.figure(figsize=args.figsize)
@@ -313,13 +349,14 @@ def main():
     for (ax, data, xlabel, title, log_x, xlim) in panels:
         make_age_coded_histogram(ax, data, dust_age_gyr,
                                   xlabel=xlabel, title=title,
-                                  bins=args.bins, log_x=log_x, xlim=xlim)
+                                  bins=args.bins, log_x=log_x, xlim=xlim,
+                                  age_bins=age_bins)
 
     # ── Shared legend — listed young→old to match intuitive reading order ────
     legend_handles = [
         mpatches.Patch(color='#BBBBBB', alpha=0.55, label='All particles')
     ]
-    for (a_lo, a_hi, label, color) in AGE_BINS:
+    for (a_lo, a_hi, label, color) in age_bins:
         n = np.sum((dust_age_gyr >= a_lo) & (dust_age_gyr < a_hi))
         legend_handles.append(
             mpatches.Patch(color=color, alpha=AGE_BIN_ALPHA,
@@ -354,7 +391,11 @@ def main():
     print(f"Masses (Msun):         min={masses.min():.2e}  max={masses.max():.2e}  median={np.median(masses):.2e}")
     print(f"Velocity (km/s):       min={vel_mag.min():.1f}   max={vel_mag.max():.1f}   median={np.median(vel_mag):.1f}")
     print(f"Temperature (K):       min={dust_temp.min():.1f}   max={dust_temp.max():.1f}   median={np.median(dust_temp):.1f}")
-    print(f"Age (Gyr):             min={dust_age_gyr.min():.3f}  max={dust_age_gyr.max():.3f}  median={np.median(dust_age_gyr):.3f}")
+    valid_ages = dust_age_gyr[np.isfinite(dust_age_gyr)]
+    if len(valid_ages):
+        print(f"Age (Gyr):             min={valid_ages.min():.3f}  max={valid_ages.max():.3f}  median={np.median(valid_ages):.3f}")
+    else:
+        print("Age (Gyr):             unavailable (no valid formation times)")
 
 
 if __name__ == "__main__":

@@ -740,12 +740,20 @@ def _periodic_cluster_center(
     if cKDTree is not None:
         tree = cKDTree(pos, boxsize=box)
 
-        # For modest core sets, query every point.  This directly finds the
-        # densest conserved-ID clump without assuming a FOF center.
-        neighborhoods = tree.query_ball_point(pos, r)
-        counts = np.fromiter((len(x) for x in neighborhoods), dtype=int)
+        # Count neighbors without materializing the entire N x neighborhood
+        # collection. For a massive halo that collection can exhaust RAM.
+        # Fetch the actual neighbor list only for the densest seed.
+        try:
+            counts = np.asarray(tree.query_ball_point(pos, r, return_length=True))
+        except TypeError:
+            # Older scipy versions do not expose return_length. Bound the
+            # temporary list size by querying a small batch at a time.
+            counts = np.empty(len(pos), dtype=np.int64)
+            for start in range(0, len(pos), 32):
+                batch = tree.query_ball_point(pos[start:start + 32], r)
+                counts[start:start + len(batch)] = [len(group) for group in batch]
         seed = int(np.argmax(counts))
-        members = np.asarray(neighborhoods[seed], dtype=np.int64)
+        members = np.asarray(tree.query_ball_point(pos[seed], r), dtype=np.int64)
     else:
         # Vectorized fallback.  Use the particle nearest the predicted center
         # as a first seed, then gather its local neighbors.
@@ -828,7 +836,7 @@ def _select_dm_main_progenitor(
     cat = read_fof_catalog(earlier_groups, earlier_snap)
     if cat is None:
         if verbose:
-            print(f"  [halo569-ID] {earlier_snap:03d}: no FOF catalog")
+            print(f"  [halo-track-ID] {earlier_snap:03d}: no FOF catalog")
         return None
 
     hdr_earlier = read_snap_header(earlier_snapdir)
@@ -862,7 +870,7 @@ def _select_dm_main_progenitor(
     if len(trusted_core_ids) < DM_TRACK_MIN_CORE_IDS:
         if verbose:
             print(
-                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                f"  [halo-track-ID] {later_snap:03d}->{earlier_snap:03d}: "
                 f"trusted halo has only {len(trusted_core_ids)} DM core IDs; "
                 "not enough for robust tracking."
             )
@@ -883,7 +891,7 @@ def _select_dm_main_progenitor(
     if len(matched_ids) < DM_TRACK_MIN_CLUSTER_IDS:
         if verbose:
             print(
-                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                f"  [halo-track-ID] {later_snap:03d}->{earlier_snap:03d}: "
                 f"only {len(matched_ids)}/{len(trusted_core_ids)} trusted "
                 "core IDs exist in earlier snapshot; rejecting."
             )
@@ -916,7 +924,7 @@ def _select_dm_main_progenitor(
     ):
         if verbose:
             print(
-                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                f"  [halo-track-ID] {later_snap:03d}->{earlier_snap:03d}: "
                 f"weak conserved-core cluster: N={n_cluster}, "
                 f"fraction={cluster_fraction:.3f}; rejecting and keeping "
                 f"snapshot {later_snap:03d} as trusted anchor."
@@ -969,7 +977,7 @@ def _select_dm_main_progenitor(
     if halo is None:
         if verbose:
             print(
-                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                f"  [halo-track-ID] {later_snap:03d}->{earlier_snap:03d}: "
                 "conserved DM core found, but SO construction failed."
             )
             for msg in build_errors:
@@ -999,7 +1007,7 @@ def _select_dm_main_progenitor(
     if catastrophic_mass:
         if verbose:
             print(
-                f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+                f"  [halo-track-ID] {later_snap:03d}->{earlier_snap:03d}: "
                 f"rejecting structurally implausible solution "
                 f"(Mearlier/Mlater={mass_ratio:.3e}, "
                 f"core cluster fraction={cluster_fraction:.3f})."
@@ -1031,7 +1039,7 @@ def _select_dm_main_progenitor(
 
     if verbose:
         print(
-            f"  [halo569-ID] {later_snap:03d}->{earlier_snap:03d}: "
+            f"  [halo-track-ID] {later_snap:03d}->{earlier_snap:03d}: "
             f"group={idx:4d}, core={n_cluster:5d}/{len(trusted_core_ids):5d} "
             f"({cluster_fraction:.3f}), global-ID={global_retained:.3f}, "
             f"FOFdist={fof_dist:.1f} ckpc/h"
@@ -1470,11 +1478,11 @@ def get_halo569_series(
 
     if verbose:
         print(
-            f"[halo569-ID] STRICT conserved-DM-core tracking: "
+            f"[halo-track-ID] STRICT conserved-DM-core tracking: "
             f"{ref_snap:03d} -> {min_requested:03d}"
         )
         print(
-            f"[halo569-ID] Walking {len(chain)} complete snapshots; "
+            f"[halo-track-ID] Walking {len(chain)} complete snapshots; "
             "failed matches become gaps and NEVER replace the trusted anchor."
         )
 
@@ -1495,7 +1503,7 @@ def get_halo569_series(
             tracked_all[earlier_snap] = None
             if verbose:
                 print(
-                    f"  [halo569-ID] snap {earlier_snap:03d}: rejected/gap; "
+                    f"  [halo-track-ID] snap {earlier_snap:03d}: rejected/gap; "
                     f"trusted anchor remains {trusted_snap:03d}"
                 )
             continue
@@ -1508,7 +1516,7 @@ def get_halo569_series(
     missing = [s for s in requested if s not in available_set and s != ref_snap]
     if missing and verbose:
         print(
-            f"[halo569-ID] WARNING: requested snapshots without complete "
+            f"[halo-track-ID] WARNING: requested snapshots without complete "
             f"snapshot/catalog pairs: {missing}"
         )
 
@@ -1866,6 +1874,84 @@ def _read_parent_target_row(csv_path: Path, halo_id: int) -> dict:
     raise RuntimeError(f"Halo {halo_id} is absent from {csv_path}")
 
 
+def _parse_zoom_output_identity(output_dir: str | Path) -> tuple[int, int]:
+    """Return ``(parent_halo_id, nominal_resolution)`` from a run name.
+
+    Physics/version suffixes are intentionally accepted, for example
+    ``halo441_output_2048_mingashsml0.0``.  The earlier exact-name matcher
+    silently disabled metadata-based target selection for such production
+    directories.
+    """
+    name = Path(output_dir).resolve().name
+    match = re.fullmatch(
+        r"halo(?P<halo>[0-9]+)_output_(?P<resolution>[0-9]+)(?:_.*)?",
+        name,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        raise RuntimeError(
+            "Automatic target selection requires an output directory named "
+            "halo<ID>_output_<resolution> with an optional physics suffix; "
+            "otherwise pass --group-index"
+        )
+    return int(match.group("halo")), int(match.group("resolution"))
+
+
+def _music_coordinate_displacement(
+    output_dir: str | Path,
+    halo_id: int,
+    resolution: int,
+    box_ckpch: float,
+) -> tuple[np.ndarray, dict]:
+    """Return the MUSIC2 periodic coordinate displacement in ckpc/h."""
+    output_path = Path(output_dir)
+    stem = f"halo{halo_id}_music2_{resolution}"
+    config_path = _find_suite_file(
+        output_path, (Path(f"ICs/MUSIC2_params/{stem}.conf"),)
+    )
+    log_path = _find_suite_file(
+        output_path,
+        (
+            Path(f"ICs/MUSIC2_params/{stem}.conf_log.txt"),
+            Path(f"ICs/MUSIC2_logs/{stem}.log"),
+        ),
+    )
+    if config_path is None or log_path is None:
+        raise RuntimeError(
+            f"Could not find the MUSIC2 config/log for halo {halo_id} at "
+            f"resolution {resolution}"
+        )
+
+    config_text = config_path.read_text(errors="replace")
+    log_text = log_path.read_text(errors="replace")
+    level_match = re.search(
+        r"(?m)^\s*levelmin\s*=\s*([0-9]+)\s*$", config_text
+    )
+    shift_match = re.search(
+        r"Domain will be shifted by\s*\(\s*([-+0-9]+)\s*,\s*"
+        r"([-+0-9]+)\s*,\s*([-+0-9]+)\s*\)",
+        log_text,
+        flags=re.IGNORECASE,
+    )
+    if level_match is None or shift_match is None:
+        raise RuntimeError(
+            f"Could not parse levelmin/domain shift from {config_path} and "
+            f"{log_path}"
+        )
+
+    levelmin = int(level_match.group(1))
+    shift_cells = np.array(
+        [int(shift_match.group(i)) for i in (1, 2, 3)], dtype=np.float64
+    )
+    displacement = shift_cells * float(box_ckpch) / (2**levelmin)
+    return displacement, {
+        "levelmin": levelmin,
+        "shift_cells": shift_cells,
+        "config": str(config_path),
+        "log": str(log_path),
+    }
+
+
 def infer_zoom_target_group(
     output_dir: str | Path,
     reference_snap: Optional[int] = None,
@@ -1885,18 +1971,7 @@ def infer_zoom_target_group(
     an explicitly supplied group index when investigating unusual runs.
     """
     output_path = Path(output_dir)
-    match = re.fullmatch(
-        r"halo(?P<halo>[0-9]+)_output_(?P<resolution>[0-9]+)",
-        output_path.resolve().name,
-        flags=re.IGNORECASE,
-    )
-    if match is None:
-        raise RuntimeError(
-            "Automatic target selection requires an output directory named "
-            "halo<ID>_output_<resolution>; otherwise pass --group-index"
-        )
-    halo_id = int(match.group("halo"))
-    resolution = int(match.group("resolution"))
+    halo_id, resolution = _parse_zoom_output_identity(output_path)
 
     selected_csv = _find_suite_file(
         output_path,
@@ -1912,44 +1987,6 @@ def infer_zoom_target_group(
         )
     parent = _read_parent_target_row(selected_csv, halo_id)
 
-    stem = f"halo{halo_id}_music2_{resolution}"
-    config_path = _find_suite_file(
-        output_path, (Path(f"ICs/MUSIC2_params/{stem}.conf"),)
-    )
-    log_path = _find_suite_file(
-        output_path,
-        (
-            Path(f"ICs/MUSIC2_params/{stem}.conf_log.txt"),
-            Path(f"ICs/MUSIC2_logs/{stem}.log"),
-        ),
-    )
-    if config_path is None or log_path is None:
-        raise RuntimeError(
-            f"Could not find the MUSIC2 config/log for halo {halo_id} at "
-            f"resolution {resolution}; pass --group-index"
-        )
-
-    config_text = config_path.read_text(errors="replace")
-    level_match = re.search(
-        r"(?m)^\s*levelmin\s*=\s*([0-9]+)\s*$", config_text
-    )
-    log_text = log_path.read_text(errors="replace")
-    shift_match = re.search(
-        r"Domain will be shifted by\s*\(\s*([-+0-9]+)\s*,\s*"
-        r"([-+0-9]+)\s*,\s*([-+0-9]+)\s*\)",
-        log_text,
-        flags=re.IGNORECASE,
-    )
-    if level_match is None or shift_match is None:
-        raise RuntimeError(
-            f"Could not parse levelmin/domain shift from {config_path} and "
-            f"{log_path}; pass --group-index"
-        )
-    levelmin = int(level_match.group(1))
-    shift_cells = np.array(
-        [int(shift_match.group(i)) for i in (1, 2, 3)], dtype=np.float64
-    )
-
     if reference_snap is None:
         reference_snap = find_last_snap_num(output_path)
     if reference_snap is None:
@@ -1959,9 +1996,15 @@ def infer_zoom_target_group(
     )
     header = read_header(snapshot_files[0])
     positions, masses_code, radii = read_catalog_halos(group_files)
+    music_displacement, music_meta = _music_coordinate_displacement(
+        output_path, halo_id, resolution, header["box"]
+    )
+    shift_cells = music_meta["shift_cells"]
+    levelmin = music_meta["levelmin"]
+    config_path = Path(music_meta["config"])
+    log_path = Path(music_meta["log"])
     expected_position = wrap_position(
-        parent["position_mpch"] * 1000.0
-        + shift_cells * header["box"] / (2**levelmin),
+        parent["position_mpch"] * 1000.0 + music_displacement,
         header["box"],
     )
     distances = np.linalg.norm(
@@ -2037,6 +2080,197 @@ def infer_zoom_target_group(
         )
         print("Use --group-index to override this match explicitly.")
     return index, int(reference_snap), diagnostics
+
+
+def infer_zoom_target_group_from_reference(
+    output_dir: str | Path,
+    reference_output: str | Path,
+    target_snap: Optional[int] = None,
+    reference_group_index: Optional[int] = None,
+    reference_snap: Optional[int] = None,
+    verbose: bool = True,
+) -> Tuple[int, int, dict]:
+    """Transfer target identity from a completed same-halo reference run.
+
+    The reference target is first identified at its final snapshot and then
+    followed backward with conserved HRDM core IDs to ``target_snap``.  Its
+    same-epoch center is transformed between the two MUSIC2 coordinate frames.
+    Candidate groups in the target run are ranked jointly by transformed
+    position, M200c, and R200c.  Particle IDs are deliberately *not* compared
+    across different mass resolutions.
+
+    This is the preferred anchor for an incomplete production run: the parent
+    catalog contains a z=0 position and therefore must not be matched directly
+    to an earlier snapshot.
+    """
+    output_path = Path(output_dir)
+    reference_path = Path(reference_output)
+    halo_id, resolution = _parse_zoom_output_identity(output_path)
+    ref_halo_id, ref_resolution = _parse_zoom_output_identity(reference_path)
+    if ref_halo_id != halo_id:
+        raise RuntimeError(
+            f"Reference run halo {ref_halo_id} does not match target halo "
+            f"{halo_id}"
+        )
+
+    if target_snap is None:
+        target_snap = find_last_snap_num(output_path)
+    if target_snap is None:
+        raise RuntimeError(f"No completed group catalog found under {output_path}")
+    target_snap = int(target_snap)
+
+    if reference_snap is None:
+        reference_snap = find_last_snap_num(reference_path)
+    if reference_snap is None or int(reference_snap) < target_snap:
+        raise RuntimeError(
+            f"Reference run {reference_path} does not reach snapshot "
+            f"{target_snap:03d}"
+        )
+    reference_snap = int(reference_snap)
+
+    if reference_group_index is None:
+        reference_group_index, inferred_snap, _ = infer_zoom_target_group(
+            reference_path,
+            reference_snap=reference_snap,
+            verbose=verbose,
+        )
+        reference_snap = int(inferred_snap)
+
+    ref_halo = get_zoom_halo_series(
+        reference_path,
+        [target_snap],
+        group_index=int(reference_group_index),
+        reference_snap=reference_snap,
+        verbose=verbose,
+    ).get(target_snap)
+    if ref_halo is None:
+        raise RuntimeError(
+            f"Reference target could not be tracked to snapshot "
+            f"{target_snap:03d}"
+        )
+
+    snapshot_files, group_files = find_snapshot_and_group_files(
+        output_path, target_snap
+    )
+    target_header = read_header(snapshot_files[0])
+    positions, masses_code, radii_ckpch = read_catalog_halos(group_files)
+    if len(positions) == 0:
+        raise RuntimeError(
+            f"No groups found in target snapshot {target_snap:03d}"
+        )
+
+    target_box = float(target_header["box"])
+    # Historical halos produced by the conserved-core tracker intentionally
+    # carry only the evolving halo quantities, not a duplicate box-size key.
+    # Read the same-epoch reference header instead of assuming that key exists.
+    reference_snapshot_files, _ = find_snapshot_and_group_files(
+        reference_path, target_snap
+    )
+    reference_header = read_header(reference_snapshot_files[0])
+    ref_box = float(reference_header["box"])
+    if not np.isclose(target_box, ref_box, rtol=0.0, atol=1.0e-6):
+        raise RuntimeError(
+            f"Reference and target boxes differ: {ref_box} versus {target_box}"
+        )
+
+    ref_displacement, ref_music = _music_coordinate_displacement(
+        reference_path, halo_id, ref_resolution, target_box
+    )
+    target_displacement, target_music = _music_coordinate_displacement(
+        output_path, halo_id, resolution, target_box
+    )
+    expected_position = wrap_position(
+        np.asarray(ref_halo["center"], dtype=float)
+        - ref_displacement + target_displacement,
+        target_box,
+    )
+
+    distances = np.linalg.norm(
+        periodic_delta(positions, expected_position, target_box), axis=1
+    )
+    h = float(target_header["h"])
+    a = float(target_header["a"])
+    masses_msun = masses_code * MSUN_PER_CODE / h
+    radii_pkpc = radii_ckpch * a / h
+    reference_mass = float(ref_halo["m200_msun"])
+    reference_radius = float(ref_halo["r200_pkpc"])
+    reference_r_ckpch = float(ref_halo["r200_ckpch"])
+
+    valid = (
+        np.isfinite(distances)
+        & np.isfinite(masses_msun) & (masses_msun > 0)
+        & np.isfinite(radii_pkpc) & (radii_pkpc > 0)
+    )
+    mass_ratio = masses_msun / reference_mass
+    radius_ratio = radii_pkpc / reference_radius
+    score = (
+        (distances / max(reference_r_ckpch, 1.0)) ** 2
+        + (np.log10(np.maximum(mass_ratio, np.finfo(float).tiny)) / 0.30) ** 2
+        + (np.log10(np.maximum(radius_ratio, np.finfo(float).tiny)) / 0.30) ** 2
+    )
+    score[~valid] = np.inf
+    order = np.argsort(score)
+    if not len(order) or not np.isfinite(score[order[0]]):
+        raise RuntimeError("No valid target-run group candidates")
+
+    index = int(order[0])
+    distance_r200 = float(distances[index] / max(reference_r_ckpch, 1.0))
+    selected_mass_ratio = float(mass_ratio[index])
+    selected_radius_ratio = float(radius_ratio[index])
+    if (
+        distance_r200 > 1.0
+        or not (0.20 <= selected_mass_ratio <= 5.0)
+        or not (0.20 <= selected_radius_ratio <= 5.0)
+    ):
+        raise RuntimeError(
+            f"Reference-run target match is implausible: group {index}, "
+            f"distance={distance_r200:.2f} reference R200c, "
+            f"M/Mref={selected_mass_ratio:.3f}, "
+            f"R/Rref={selected_radius_ratio:.3f}"
+        )
+
+    runner_up = int(order[1]) if len(order) > 1 else None
+    diagnostics = {
+        "halo_id": halo_id,
+        "target_resolution": resolution,
+        "reference_resolution": ref_resolution,
+        "target_snap": target_snap,
+        "reference_snap": reference_snap,
+        "reference_output": str(reference_path),
+        "reference_group_index": int(reference_group_index),
+        "group_index": index,
+        "expected_position_ckpch": expected_position,
+        "catalog_position_ckpch": positions[index],
+        "distance_ckpch": float(distances[index]),
+        "distance_reference_r200": distance_r200,
+        "reference_m200c_msun": reference_mass,
+        "catalog_m200c_msun": float(masses_msun[index]),
+        "mass_ratio": selected_mass_ratio,
+        "reference_r200c_pkpc": reference_radius,
+        "catalog_r200c_pkpc": float(radii_pkpc[index]),
+        "radius_ratio": selected_radius_ratio,
+        "score": float(score[index]),
+        "runner_up_group": runner_up,
+        "runner_up_score": (
+            float(score[runner_up]) if runner_up is not None else np.nan
+        ),
+        "reference_music": ref_music,
+        "target_music": target_music,
+        "selection": "same-epoch cross-resolution reference match",
+    }
+    if verbose:
+        print("\nREFERENCE-RUN TARGET SELECTION")
+        print(
+            f"reference={reference_path} snap={target_snap:03d}; "
+            f"target={output_path} group={index}"
+        )
+        print(
+            f"position offset={distances[index]:.2f} ckpc/h "
+            f"({distance_r200:.3f} reference R200c); "
+            f"M/Mref={selected_mass_ratio:.3f}; "
+            f"R/Rref={selected_radius_ratio:.3f}"
+        )
+    return index, target_snap, diagnostics
 
 
 def periodic_delta(

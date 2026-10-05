@@ -1,0 +1,6 @@
+R_d_kpc 2.356098413428568
+h_z_kpc 0.9663027915055924
+disk_fraction_eps_gt_0.7 0.1578586101029514
+disk_fraction_eps_gt_0.5 0.27039125242709
+counterrotating_fraction_eps_lt_0 0.26880063378044144
+circularity_definition j_z/[R V_circ(R)]

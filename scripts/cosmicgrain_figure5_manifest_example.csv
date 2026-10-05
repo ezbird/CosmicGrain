@@ -1,0 +1,5 @@
+halo,m200_msun,r200_pkpc,pixel_csv
+CG01,5.134e10,78.69,../CG01_figure4_source_fractions_by_radius.csv
+CG07,3.516e11,149.45,../CG07_figure4_source_fractions_by_radius.csv
+CG10,1.055e12,215.55,../CG10_figure4_source_fractions_by_radius.csv
+CG12,2.482e12,286.67,../CG12_figure4_source_fractions_by_radius.csv

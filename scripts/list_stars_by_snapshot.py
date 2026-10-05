@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
+import gc
 import math
 import os
 import re
@@ -37,8 +39,10 @@ import numpy as np
 
 from halo_utils import (
     MSUN_PER_CODE,
+    find_last_snap_num,
     get_zoom_halo_series,
     infer_zoom_target_group,
+    infer_zoom_target_group_from_reference,
     load_particles_within_radius,
     periodic_delta,
 )
@@ -58,6 +62,32 @@ PARTICLE_LABELS = {
     5: "P5",
     6: "P6(dust)",
 }
+
+# Parent-box z=0 masses for the named CosmicGrain zoom targets.  These are
+# used only as a sanity prior when the position-based matcher cannot identify
+# an incomplete run; reported halo properties still come from the zoom.
+SUITE_PARENT_M200_MSUN = {
+    9235: 5.601e10, 7723: 6.499e10, 5834: 8.766e10,
+    3886: 1.332e11, 3879: 1.438e11, 3352: 1.593e11,
+    1653: 3.7562e11,
+    1481: 4.241e11, 859: 6.808e11,
+    441: 1.061e12, 308: 2.3951e12, 295: 2.6368e12,
+}
+
+
+def release_process_memory() -> None:
+    """Return unused NumPy/SciPy allocations to the OS when possible.
+
+    ``gc.collect()`` destroys unreachable Python objects, but glibc can retain
+    their large allocation arenas.  That resident-memory watermark was enough
+    to make a 30-snapshot target history unsafe on the largest zooms.
+    ``malloc_trim`` is Linux/glibc-specific, so failure is intentionally benign.
+    """
+    gc.collect()
+    try:
+        ctypes.CDLL(None).malloc_trim(0)
+    except (AttributeError, OSError):
+        pass
 
 
 def is_backup_or_temp(filename: str) -> bool:
@@ -370,8 +400,9 @@ def build_target_rows(
 
     fields = {
         0: ["Coordinates", "Masses", "Metallicity", "StarFormationRate"],
-        1: ["Coordinates", "Masses"],
-        2: ["Coordinates", "Masses"],
+        # HRDM is used by get_zoom_halo_series for tracking, but is not needed
+        # again for the aperture census below.  Avoid loading it twice.
+        2: ["Coordinates"],
         4: ["Coordinates", "Masses"],
         6: ["Coordinates", "Masses"],
     }
@@ -415,14 +446,14 @@ def build_target_rows(
             series.key,
             center,
             r200,
-            part_types=(0, 1, 2, 4, 6),
+            part_types=(0, 2, 4, 6),
             fields_by_type=fields,
         )
         masks = {
             ptype: _aperture_mask(
                 particles.get(ptype, {}), center, box, galaxy_radius
             )
-            for ptype in (0, 1, 2, 4, 6)
+            for ptype in (0, 2, 4, 6)
         }
 
         gas = particles.get(0, {})
@@ -512,7 +543,83 @@ def build_target_rows(
             "dust_to_total_metals": dz_total,
             "tracking_status": "ok",
         })
+        # h5py/NumPy temporaries can otherwise leave a high resident-memory
+        # watermark during a long all-snapshot history on large zooms.
+        del particles, masks, gas, stars, dust
+        release_process_memory()
     return display_rows, csv_rows
+
+
+def build_target_rows_memory_safe(
+    output_dir: str | Path,
+    series_list,
+    group_index: int,
+    reference_snap: Optional[int],
+    aperture_r200: float,
+    aperture_pkpc: Optional[float],
+    mass_unit: str,
+    tracking_verbose: bool,
+    batch_size: int,
+):
+    """Build a full target history without one monolithic particle pass.
+
+    The original ``--target-mode all`` sent every snapshot through one call to
+    ``build_target_rows``.  On large zooms, repeated SciPy trees and HDF5/NumPy
+    particle arrays left a high resident-memory watermark even after objects
+    went out of scope.  Here snapshots are requested in small newest-to-oldest
+    batches.  Every batch completes its tracking and aperture census, then all
+    large allocations are destroyed and trimmed before the next batch begins.
+
+    A batch size of one is deliberately the default.  It repeats some tracking
+    work, making it slower, but bounds the aperture-analysis state to a single
+    requested epoch.  Users with ample memory may increase the batch size.
+    """
+    if batch_size < 1:
+        raise ValueError("history batch size must be at least one")
+    if len(series_list) <= batch_size:
+        return build_target_rows(
+            output_dir, series_list, group_index, reference_snap,
+            aperture_r200, aperture_pkpc, mass_unit, tracking_verbose,
+        )
+
+    rows_by_snap = {}
+    csv_by_snap = {}
+    total = len(series_list)
+    completed = 0
+
+    # Work backward so the inexpensive late-time batches complete first and
+    # so progress remains visible during a long progenitor reconstruction.
+    for end in range(total, 0, -batch_size):
+        start = max(0, end - batch_size)
+        batch = series_list[start:end]
+        batch_snaps = [snap for snap, _ in batch]
+        print(
+            f"\n[history] snapshots {batch_snaps[0]:03d}--"
+            f"{batch_snaps[-1]:03d} ({completed}/{total} rows complete)",
+            flush=True,
+        )
+        batch_rows, batch_csv = build_target_rows(
+            output_dir,
+            batch,
+            group_index,
+            reference_snap,
+            aperture_r200,
+            aperture_pkpc,
+            mass_unit,
+            tracking_verbose,
+        )
+        for (snap, _), display, csv_row in zip(batch, batch_rows, batch_csv):
+            rows_by_snap[int(snap)] = display
+            csv_by_snap[int(snap)] = csv_row
+        completed += len(batch)
+        del batch_rows, batch_csv, batch
+        release_process_memory()
+
+    ordered_snaps = [int(snap) for snap, _ in series_list]
+    return (
+        [rows_by_snap[snap] for snap in ordered_snaps],
+        [csv_by_snap[snap] for snap in ordered_snaps],
+    )
 
 
 def write_csv(path: Path, rows: Sequence[dict]):
@@ -527,6 +634,268 @@ def write_csv(path: Path, rows: Sequence[dict]):
         writer.writerows(rows)
 
 
+def find_same_ic_reference_output(
+    output_dir: str | Path,
+    required_snap: int,
+) -> Optional[Path]:
+    """Find the best completed sibling run for same-halo epoch matching.
+
+    Cross-resolution references are allowed.  The reference halo is tracked
+    to the target epoch using IDs *within the reference run*, after which its
+    center is transferred through the MUSIC coordinate frames.  IDs are never
+    compared across mass resolutions.
+    """
+    current = Path(output_dir).resolve()
+    match = re.fullmatch(
+        r"halo(?P<halo>[0-9]+)_output_(?P<resolution>[0-9]+)(?:_.*)?",
+        current.name,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    halo_id = int(match.group("halo"))
+    resolution = int(match.group("resolution"))
+    current_suffix = re.sub(
+        rf"^halo{halo_id}_output_{resolution}", "", current.name,
+        flags=re.IGNORECASE,
+    )
+    candidates = []
+    for path in current.parent.glob(f"halo{halo_id}_output_*"):
+        if not path.is_dir() or path.resolve() == current:
+            continue
+        candidate_match = re.fullmatch(
+            rf"halo{halo_id}_output_(?P<resolution>[0-9]+)(?P<suffix>_.*)?",
+            path.name,
+            flags=re.IGNORECASE,
+        )
+        if candidate_match is None:
+            continue
+        last = find_last_snap_num(path)
+        if last is None or last < required_snap:
+            continue
+        candidate_resolution = int(candidate_match.group("resolution"))
+        candidate_suffix = candidate_match.group("suffix") or ""
+        same_physics_suffix = int(candidate_suffix == current_suffix)
+        same_resolution = int(candidate_resolution == resolution)
+        # Prefer the run extending furthest in time, then the closest physics
+        # label, then the same resolution.  A completed 1024 run is therefore
+        # preferred to an incomplete 2048 sibling when monitoring 2048.
+        candidates.append((
+            last,
+            same_physics_suffix,
+            same_resolution,
+            path.stat().st_mtime,
+            path,
+        ))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[:4])[4]
+
+
+def _natural_catalog_key(path: Path):
+    """Sort split group catalogs by their numeric file suffix."""
+    match = re.search(r"\.(\d+)\.hdf5$", path.name)
+    return int(match.group(1)) if match else -1
+
+
+def infer_latest_pure_zoom_group(output_dir: str | Path, snap: int):
+    """Fallback target selection from mass and zoom-region purity.
+
+    This is intentionally conservative.  It is used only after the standard
+    parent-position matcher rejects its candidate.  A valid fallback must be
+    close to the known parent-halo mass scale and dominated by HRDM rather
+    than low-resolution dark matter.
+    """
+    output_dir = Path(output_dir)
+    name_match = re.search(r"halo(\d+)_output_\d+", output_dir.name)
+    if not name_match:
+        raise ValueError(
+            "output directory does not encode a suite halo ID as "
+            "halo<ID>_output_<resolution>"
+        )
+    halo_id = int(name_match.group(1))
+    parent_mass = SUITE_PARENT_M200_MSUN.get(halo_id)
+    if parent_mass is None:
+        raise ValueError(f"no parent-mass prior is known for halo {halo_id}")
+
+    group_dir = output_dir / f"groups_{snap:03d}"
+    patterns = (
+        f"fof_subhalo_tab_{snap:03d}.*.hdf5",
+        f"fof_subhalo_tab_{snap:03d}.hdf5",
+        f"group_tab_{snap:03d}.*.hdf5",
+        f"group_tab_{snap:03d}.hdf5",
+    )
+    files = []
+    for pattern in patterns:
+        files.extend(group_dir.glob(pattern))
+    files = sorted(set(files), key=_natural_catalog_key)
+    if not files:
+        raise OSError(f"no group catalog found for snapshot {snap:03d}")
+
+    m200_parts = []
+    r200_parts = []
+    length_parts = []
+    mass_type_parts = []
+    h = None
+    a = None
+    for filename in files:
+        with h5py.File(filename, "r") as handle:
+            if "Group" not in handle or "Group_M_Crit200" not in handle["Group"]:
+                continue
+            group = handle["Group"]
+            m200_parts.append(np.asarray(group["Group_M_Crit200"], dtype=float))
+            r200_parts.append(np.asarray(group["Group_R_Crit200"], dtype=float))
+            length_parts.append(np.asarray(group["GroupLenType"], dtype=np.int64))
+            if "GroupMassType" in group:
+                mass_type_parts.append(np.asarray(group["GroupMassType"], dtype=float))
+            header = handle["Header"].attrs
+            parameters = (
+                handle["Parameters"].attrs if "Parameters" in handle else {}
+            )
+            if h is None:
+                h = float(np.asarray(
+                    header.get("HubbleParam", parameters.get("HubbleParam", 1.0))
+                ).squeeze())
+                a = float(np.asarray(header.get("Time", 1.0)).squeeze())
+    if not m200_parts:
+        raise KeyError("group catalogs contain no Group_M_Crit200 data")
+
+    m200 = np.concatenate(m200_parts) * 1.0e10 / h
+    r200 = np.concatenate(r200_parts) * a / h
+    lengths = np.concatenate(length_parts, axis=0)
+    mass_types = (
+        np.concatenate(mass_type_parts, axis=0)
+        if len(mass_type_parts) == len(m200_parts) else None
+    )
+    if lengths.ndim != 2 or lengths.shape[1] < 3:
+        raise ValueError("GroupLenType does not contain HRDM/LRDM columns")
+
+    n_hr = lengths[:, 1].astype(float)
+    n_lr = lengths[:, 2].astype(float)
+    if mass_types is not None and mass_types.shape[1] >= 3:
+        dm_total = mass_types[:, 1] + mass_types[:, 2]
+        contamination = np.divide(
+            mass_types[:, 2], dm_total,
+            out=np.ones_like(dm_total), where=dm_total > 0,
+        )
+    else:
+        dm_total = n_hr + n_lr
+        contamination = np.divide(
+            n_lr, dm_total,
+            out=np.ones_like(dm_total), where=dm_total > 0,
+        )
+
+    ratio = m200 / parent_mass
+    candidate = (
+        np.isfinite(m200) & (m200 > 0)
+        & (ratio >= 0.05) & (ratio <= 2.0)
+        & (n_hr >= 100)
+        & (contamination <= 0.05)
+    )
+    indices = np.flatnonzero(candidate)
+    if len(indices) == 0:
+        raise RuntimeError(
+            "no group has 0.05--2.0 times the parent mass, at least 100 "
+            "HRDM particles, and <=5% low-resolution DM contamination"
+        )
+
+    # Prefer the expected mass scale, with a strong penalty for contamination.
+    score = np.abs(np.log10(ratio[indices])) + 30.0 * contamination[indices]
+    ranked = indices[np.argsort(score)]
+    best = int(ranked[0])
+
+    evidence = {
+        "halo_id": halo_id,
+        "m200_msun": float(m200[best]),
+        "mass_ratio": float(ratio[best]),
+        "r200_pkpc": float(r200[best]),
+        "n_hrdm": int(n_hr[best]),
+        "n_lrdm": int(n_lr[best]),
+        "contamination": float(contamination[best]),
+    }
+    return best, evidence
+
+
+def resolve_target_group(args, series_list, parser):
+    """Resolve the target only when the target table is about to be built."""
+    group_index = args.group_index
+    reference_snap = args.reference_snap
+    if group_index is not None:
+        return group_index, reference_snap
+
+    try:
+        group_index, reference_snap, _ = infer_zoom_target_group(
+            args.output_dir,
+            reference_snap=reference_snap,
+            verbose=True,
+        )
+        return group_index, reference_snap
+    except (OSError, ValueError, RuntimeError, KeyError) as direct_exc:
+        direct_error = str(direct_exc)
+
+    latest_current = max(snap for snap, _ in series_list)
+    reference_output = args.reference_output
+    if reference_output is None:
+        reference_output = find_same_ic_reference_output(
+            args.output_dir, latest_current
+        )
+        if reference_output is not None:
+            print(
+                "\nDirect z=0 parent-position matching was rejected; "
+                "automatically trying a completed same-halo reference run: "
+                f"{reference_output}"
+            )
+    reference_error = "no compatible completed same-halo reference run found"
+    if reference_output is not None:
+        try:
+            group_index, reference_snap, _ = (
+                infer_zoom_target_group_from_reference(
+                    args.output_dir,
+                    reference_output,
+                    target_snap=latest_current,
+                    verbose=True,
+                )
+            )
+            return group_index, reference_snap
+        except (OSError, ValueError, RuntimeError, KeyError) as ref_exc:
+            reference_error = str(ref_exc)
+
+    # Mass and nominal FOF purity can identify an attractive interloper, as
+    # happened for CG10/2048 at snapshot 019.  Keep this heuristic available
+    # only for explicit investigation; never silently promote it to identity.
+    if args.allow_purity_fallback:
+        try:
+            group_index, evidence = infer_latest_pure_zoom_group(
+                args.output_dir, latest_current
+            )
+            print(
+                "\nWARNING: using explicitly enabled mass/purity heuristic; "
+                "this candidate has no ancestry evidence:"
+            )
+            print(
+                f"  group={group_index}  "
+                f"M200={evidence['m200_msun']:.3e} Msun  "
+                f"M/Mparent={evidence['mass_ratio']:.3f}  "
+                f"R200={evidence['r200_pkpc']:.2f} pkpc  "
+                f"N_HRDM={evidence['n_hrdm']:,}  "
+                f"N_LRDM={evidence['n_lrdm']:,}  "
+                f"f_contam={evidence['contamination']:.3e}"
+            )
+            return group_index, latest_current
+        except (OSError, ValueError, RuntimeError, KeyError) as purity_exc:
+            purity_error = str(purity_exc)
+    else:
+        purity_error = "disabled (enable only with --allow-purity-fallback)"
+
+    parser.error(
+        "automatic target selection failed after the whole-volume census: "
+        f"direct matcher: {direct_error}; reference matcher: "
+        f"{reference_error}; purity heuristic: {purity_error}. "
+        "Pass --group-index and --reference-snap for a validated explicit "
+        "anchor"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Whole-volume census and tracked target-halo history"
@@ -536,6 +905,19 @@ def main():
         "--scope", choices=("volume", "target", "both"), default="both"
     )
     parser.add_argument(
+        "--target-mode", choices=("latest", "all"), default="latest",
+        help=("Target-halo rows to calculate. 'latest' is the memory-safe "
+              "default for monitoring an active run; 'all' reconstructs the "
+              "full target history in bounded-memory batches and is "
+              "substantially slower."),
+    )
+    parser.add_argument(
+        "--history-batch-size", type=int, default=1,
+        help=("Requested target-history rows per memory-release batch when "
+              "--target-mode all is used (default: 1, safest; increase only "
+              "on machines with ample RAM)."),
+    )
+    parser.add_argument(
         "--group-index", type=int,
         help=("Final/reference-snapshot FOF group index override; normally "
               "inferred automatically from suite metadata"),
@@ -543,6 +925,18 @@ def main():
     parser.add_argument(
         "--reference-snap", type=int,
         help="Reference snapshot for --group-index (default: latest complete snapshot)",
+    )
+    parser.add_argument(
+        "--reference-output", type=Path,
+        help=("Trusted completed same-halo run. Its target is ID-tracked "
+              "internally to the current epoch, then position/mass/radius "
+              "are matched across MUSIC coordinate frames."),
+    )
+    parser.add_argument(
+        "--allow-purity-fallback", action="store_true",
+        help=("Explicitly allow the unsafe mass/FOF-purity heuristic when no "
+              "ancestry-backed anchor exists. Intended only for diagnostics; "
+              "the selected group is not automatically trustworthy."),
     )
     parser.add_argument(
         "--galaxy-aperture-r200", type=float, default=0.1,
@@ -568,24 +962,14 @@ def main():
         parser.error("--galaxy-aperture-r200 must be positive")
     if args.galaxy_aperture_pkpc is not None and args.galaxy_aperture_pkpc <= 0:
         parser.error("--galaxy-aperture-pkpc must be positive")
+    if args.history_batch_size < 1:
+        parser.error("--history-batch-size must be at least 1")
 
     discovered = discover_groups(args.output_dir)
     if not discovered:
         parser.error(f"No snapshots found under {args.output_dir}")
     series_list = pick_newest_series(discovered)
     unit = mass_unit_label(args.mass_unit)
-
-    group_index = args.group_index
-    reference_snap = args.reference_snap
-    if args.scope in ("target", "both") and group_index is None:
-        try:
-            group_index, reference_snap, _ = infer_zoom_target_group(
-                args.output_dir,
-                reference_snap=reference_snap,
-                verbose=True,
-            )
-        except (OSError, ValueError, RuntimeError, KeyError) as exc:
-            parser.error(f"automatic target selection failed: {exc}")
 
     if args.scope in ("volume", "both"):
         headers = ["SnapshotBase", "z", "Age(Gyr)"]
@@ -602,22 +986,51 @@ def main():
             print(f"\nCSV: {path}")
 
     if args.scope in ("target", "both"):
+        group_index, reference_snap = resolve_target_group(
+            args, series_list, parser
+        )
         headers = [
             "SnapshotBase", "z", "Age(Gyr)", "Group", f"M200({unit})",
             "R200(pkpc)", "Rap(pkpc)", "Nstar", "Ngas", "Ndust",
             "NLR<R200", f"Mstar({unit})", f"Mgas({unit})",
             f"Mdust({unit})", "SFR", "D/G", "D/Ztot",
         ]
-        rows, csv_rows = build_target_rows(
-            args.output_dir,
-            series_list,
-            group_index,
-            reference_snap,
-            args.galaxy_aperture_r200,
-            args.galaxy_aperture_pkpc,
-            args.mass_unit,
-            args.tracking_verbose,
+        target_series = (
+            series_list[-1:] if args.target_mode == "latest" else series_list
         )
+        if args.target_mode == "latest":
+            print(
+                "\nTarget mode: latest snapshot only (memory-safe). "
+                "Use --target-mode all for the full history."
+            )
+        if args.target_mode == "all":
+            print(
+                "\nTarget mode: full history with bounded-memory batches "
+                f"(batch size={args.history_batch_size}).",
+                flush=True,
+            )
+            rows, csv_rows = build_target_rows_memory_safe(
+                args.output_dir,
+                target_series,
+                group_index,
+                reference_snap,
+                args.galaxy_aperture_r200,
+                args.galaxy_aperture_pkpc,
+                args.mass_unit,
+                args.tracking_verbose,
+                args.history_batch_size,
+            )
+        else:
+            rows, csv_rows = build_target_rows(
+                args.output_dir,
+                target_series,
+                group_index,
+                reference_snap,
+                args.galaxy_aperture_r200,
+                args.galaxy_aperture_pkpc,
+                args.mass_unit,
+                args.tracking_verbose,
+            )
         print("\nTRACKED TARGET-HALO HISTORY")
         print(format_table(headers, rows))
         print(

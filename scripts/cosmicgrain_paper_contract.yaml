@@ -1,0 +1,195 @@
+# CosmicGrain manuscript analysis contract
+#
+# This file fixes the measurement definitions used by the paper.  It is not a
+# menu of selectable profiles: every scientific product is assigned one named
+# measurement below.  Exploratory scripts may deviate, but final paper products
+# must record those deviations and must not be labeled contract-compliant.
+
+contract:
+  name: cosmicgrain-paper
+  version: "1.1"
+  status: frozen
+  frozen_date: "2026-10-01"
+  code_length_unit: ckpc_h
+  physical_length_unit: pkpc
+  mass_unit: Msun
+  policy:
+    command_line_overrides_for_final_products: forbidden
+    exploratory_overrides: allowed_if_recorded
+    require_contract_checksum: true
+    require_source_data_export: true
+    require_analysis_metadata_json: true
+
+halo_identity:
+  mass_definition: M200c
+  radius_definition: R200c
+  progenitor_rule: adjacent_snapshot_shared_hrdm_core_ids
+  primary_identity_evidence: conserved_high_resolution_dark_matter_ids
+  validation_checks:
+    - position_continuity
+    - mass_continuity
+    - low_resolution_contamination
+  allow_position_only_fallback_for_final_products: false
+
+integrated_galaxy:
+  geometry: three_dimensional_sphere
+  aperture_pkpc: 30.0
+  stellar_mass: surviving_particle_mass
+  gas_mass: particle_mass
+  dust_mass: particle_mass
+  sfr_primary: stellar_mass_formed_over_100_myr
+  sfr_secondary: instantaneous_gas_particle_sfr
+  recent_sfr_windows_myr: [50.0, 100.0]
+  note: >-
+    Prefer birth or initial stellar masses when available. If only surviving
+    stellar Masses are stored, identify the recent-SFR estimate as a lower
+    bound and record the adopted field.
+
+orientation:
+  geometry: face_on
+  tracer: stars
+  radius_pkpc: 20.0
+  method: mass_weighted_angular_momentum
+  minimum_tracer_particles: 20
+  fallback_for_final_products: forbidden
+
+grain_size_distribution:
+  geometry: three_dimensional_sphere
+  aperture_pkpc: 30.0
+  minimum_radius_nm: 1.0
+  maximum_radius_nm: 200.0
+  logarithmic_bins: 30
+  normalization: dust_mass_fraction_per_dex_in_grain_radius
+  component_normalization: component_mass_over_total_dust_mass_per_dex
+  particle_weight: dust_mass
+  small_grain_threshold_nm: 50.0
+  composition_components: [carbonaceous, silicate]
+  source_components: [SNII, AGB, LRN]
+
+metallicity:
+  geometry: three_dimensional_sphere
+  aperture_pkpc: 30.0
+  abundance: gas_phase_12_plus_log10_O_over_H
+  hydrogen_prescription: metal_corrected
+  preferred_weighting: star_formation_rate
+  minimum_star_forming_particles: 20
+  fallback_weighting: gas_mass
+  fallback_marker: open_symbol
+  solar_metal_mass_fraction: 0.0134
+  observational_aperture_mismatches_must_be_stated: true
+
+dust_ratios:
+  aperture_pkpc: 30.0
+  dust_to_gas: Mdust_over_Mgas
+  dust_to_total_metals: Mdust_over_MZgas_plus_Mdust
+
+suite_extinction:
+  purpose: uniform_comparison_across_all_12_halos
+  projected_aperture: 0.1_R200c
+  projection_half_depth: 0.1_R200c
+  pixel_size_pkpc: 1.0
+  minimum_dust_particles_per_pixel: 3
+  minimum_tauV_fraction_of_aperture_maximum: 0.001
+  minimum_EBV_fraction_of_aperture_maximum: 0.001
+  displayed_RV_range: [1.5, 10.0]
+  report_excluded_pixel_counts: true
+  pixel_weighting: equal
+  minimum_eligible_pixels_per_halo: 10
+  minimum_pixels_per_radial_bin: 20
+  radial_bin_summary: median_and_16th_84th_percentiles
+
+cg10_grain_rv:
+  purpose: resolved_grain_physics_underlying_RV_in_CG10
+  projected_aperture_pkpc: 20.0
+  projection_half_depth_pkpc: 20.0
+  pixel_size_pkpc: 0.5
+  minimum_dust_particles_per_pixel: 5
+  minimum_tauV_fraction_of_aperture_maximum: 0.001
+  minimum_EBV_fraction_of_aperture_maximum: 0.001
+  displayed_RV_range: [1.5, 10.0]
+  pixel_weighting: equal
+  RV_groups: equal_count_tertiles
+  summary: median_and_16th_84th_percentiles
+  minimum_pixels_per_radial_bin: 20
+  grouped_GSD_population: eligible_projected_pixels
+  grouped_GSD_within_pixel_normalization: dust_mass_fraction_per_dex
+  grouped_GSD_combination: equal_weight_mean_across_eligible_pixels
+  grouped_GSD_components: [carbonaceous, silicate]
+  grouped_GSD_sources: [SNII, AGB, LRN]
+  birth_source_definition: stellar_origin_at_creation_not_current_processing_state
+
+zhang_green_comparison:
+  purpose: scale_matched_milky_way_benchmark
+  projected_aperture_pkpc: 5.0
+  projection_half_depth_pkpc: 0.4
+  pixel_size_pkpc: 0.25
+  layer_depth_pkpc: 0.2
+  additional_gaussian_smoothing_pkpc: 0.0
+  grid_note: native_common_250pc_cartesian_grid
+  common_mask_required: true
+  power_spectrum_requires_dense_contiguous_common_mask: true
+  selection_sensitivity_must_be_exported: true
+
+statistics:
+  central_summary: median
+  lower_percentile: 16.0
+  upper_percentile: 84.0
+  uncertainty_label: 16th_to_84th_percentile
+  distribution_comparison:
+    - wasserstein_distance
+    - ks_statistic
+  note: ks_pvalue_is_descriptive_only_for_large_pixel_samples
+
+optical_constants:
+  carbonaceous_table: scripts/dust_optics/callqcomp.out_D16MGemt
+  silicate_table: scripts/dust_optics/callqcomp.out_DH16asil
+  RV_definition: A_V_over_E_B_minus_V
+
+halo_registry:
+  CG01: 9235
+  CG02: 7723
+  CG03: 5834
+  CG04: 3886
+  CG05: 3879
+  CG06: 3352
+  CG07: 1653
+  CG08: 1481
+  CG09: 859
+  CG10: 441
+  CG11: 308
+  CG12: 295
+
+paper_figures:
+  figure_1:
+    title: Suite context
+    measurements: [halo_identity, integrated_galaxy]
+  figure_2:
+    title: Dust buildup
+    measurements: [integrated_galaxy, metallicity, dust_ratios]
+  figure_3:
+    title: Emergent grain populations
+    measurements: [halo_identity, integrated_galaxy, grain_size_distribution]
+  figure_4:
+    title: Grains behind RV
+    measurements: [orientation, cg10_grain_rv, optical_constants]
+  figure_5:
+    title: Extinction across the suite
+    measurements: [halo_identity, orientation, suite_extinction]
+  figure_6:
+    title: Milky Way benchmark
+    measurements: [orientation, zhang_green_comparison, optical_constants]
+
+required_output_metadata:
+  - contract_name
+  - contract_version
+  - contract_sha256
+  - measurement_sections
+  - halo_label
+  - parent_halo_id
+  - output_directory
+  - snapshot
+  - redshift
+  - group_index
+  - git_commit
+  - command
+  - overrides

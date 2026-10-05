@@ -179,6 +179,46 @@ def issue(bucket: List[Dict[str, str]], severity: str, check: str, detail: str):
     bucket.append({"severity": severity, "check": check, "detail": detail})
 
 
+def parse_music_config(path: Optional[str]) -> Dict[str, Any]:
+    """Return the refinement-related settings from a MUSIC-style config file."""
+    if not path:
+        return {"path": None, "found": False, "settings": {}}
+    full = os.path.abspath(os.path.expanduser(path))
+    result: Dict[str, Any] = {"path": full, "found": os.path.isfile(full), "settings": {}}
+    if not result["found"]:
+        return result
+    wanted = {
+        "levelmin", "levelmax", "padding", "overlap", "region", "region_point_file",
+        "ref_center", "ref_extent", "ref_offset", "refinement", "setup_format",
+    }
+    with open(full, "r", encoding="utf-8", errors="replace") as handle:
+        for raw in handle:
+            line = raw.split("#", 1)[0].split(";", 1)[0].strip()
+            if not line or "=" not in line:
+                continue
+            key, value = (part.strip() for part in line.split("=", 1))
+            if key.lower() in wanted:
+                result["settings"][key] = value
+    return result
+
+
+def particle_mass_summary(masses: np.ndarray, mass_to_msun: float) -> Dict[str, Any]:
+    finite = np.asarray(masses, dtype=float)
+    finite = finite[np.isfinite(finite) & (finite > 0)]
+    if not len(finite):
+        return {"count": 0, "min_msun": None, "median_msun": None, "max_msun": None,
+                "unique_levels_msun": []}
+    levels = np.unique(finite)
+    return {
+        "count": int(len(finite)),
+        "min_msun": float(finite.min() * mass_to_msun),
+        "median_msun": float(np.median(finite) * mass_to_msun),
+        "max_msun": float(finite.max() * mass_to_msun),
+        "unique_levels_msun": [float(x * mass_to_msun) for x in levels[:32]],
+        "unique_level_count": int(len(levels)),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Standardized 30-snapshot CosmicGrain zoom acceptance audit")
@@ -198,8 +238,19 @@ def main() -> int:
     ap.add_argument("--source-map", default="0:SNII,1:AGB,2:LRN",
                     help="Dust source integer labels")
     ap.add_argument("--no-refine-center", action="store_true")
+    ap.add_argument("--music-config", default=None,
+                    help="Optional MUSIC config; refinement/mask settings are copied into the audit")
+    ap.add_argument("--contamination-radii", default="0.02,0.05,0.1,0.25,0.5,1,2,3",
+                    help="Comma-separated radii in units of R200 for the LRDM mass profile")
     ap.add_argument("--no-write", action="store_true", help="Print only")
     args = ap.parse_args()
+
+    try:
+        contamination_radii = sorted(set(float(x) for x in args.contamination_radii.split(",") if x.strip()))
+        if not contamination_radii or any(x <= 0 for x in contamination_radii):
+            raise ValueError("radii must be positive")
+    except ValueError as exc:
+        ap.error(f"invalid --contamination-radii: {exc}")
 
     output_dir = os.path.abspath(args.output_dir)
     run_name = args.run_name or os.path.basename(output_dir.rstrip(os.sep))
@@ -319,9 +370,11 @@ def main() -> int:
     mdust = float(dust_mass_code.sum() * mass_to_msun)
     mgas = regions[0]["mass_aperture_msun"]
     dg = mdust / mgas if mgas > 0 else float("nan")
-    dz = mdust / gas_metal_mass if gas_metal_mass > 0 else float("nan")
+    dz_gas = mdust / gas_metal_mass if gas_metal_mass > 0 else float("nan")
+    dz = mdust / (gas_metal_mass + mdust) if gas_metal_mass + mdust > 0 else float("nan")
     dust_result: Dict[str, Any] = {"mass_msun": mdust, "count": int(dust_q.sum()),
-                                   "dust_to_gas": dg, "dust_to_gas_metals": dz}
+                                   "dust_to_gas": dg, "dust_to_total_metals": dz,
+                                   "dust_to_gas_phase_metals": dz_gas}
     if dust is not None:
         radius_field = first_present(dust["fields"], DUST_RADIUS_FIELDS)
         cf_field = first_present(dust["fields"], DUST_CF_FIELDS)
@@ -373,9 +426,12 @@ def main() -> int:
     if abs(float(halo.z)) > 1.0e-4:
         issue(issues, "FAIL", "final_redshift", f"final snapshot is z={halo.z:.6g}, expected z=0")
 
-    contamination = {"present": particles[2] is not None, "mass_levels": []}
+    m200 = float(halo.so_m200_code * mass_to_msun)
+    contamination = {"present": particles[2] is not None, "mass_levels": [],
+                     "radial_profile": [], "music": parse_music_config(args.music_config)}
     if particles[2] is not None:
         rlr, mlr = regions[2]["r_ckpch"], particles[2]["masses"]
+        rhr, mhr = regions[1]["r_ckpch"], particles[1]["masses"]
         contamination["nearest_r200"] = float(rlr.min() / r200) if len(rlr) else None
         contamination["nearest_pkpc"] = float(rlr.min() * length_to_pkpc) if len(rlr) else None
         contamination["n_within_1r200"] = int(np.count_nonzero(rlr < r200))
@@ -388,12 +444,51 @@ def main() -> int:
                 "n_2r200": int(np.count_nonzero(rlr[q] < 2*r200)),
                 "n_3r200": int(np.count_nonzero(rlr[q] < 3*r200)),
                 "nearest_r200": float(rlr[q].min()/r200)})
+        contamination["hr_particle_masses"] = particle_mass_summary(mhr, mass_to_msun)
+        contamination["lr_particle_masses"] = particle_mass_summary(mlr, mass_to_msun)
+        hr_median = contamination["hr_particle_masses"]["median_msun"]
+        lr_median = contamination["lr_particle_masses"]["median_msun"]
+        contamination["median_lr_to_hr_particle_mass_ratio"] = (
+            float(lr_median / hr_median) if hr_median and lr_median else None)
+
+        profile_specs = [(f"{x:g} R200", x * r200, x) for x in contamination_radii]
+        profile_specs.append((f"{args.galaxy_aperture_pkpc:g} pkpc", aperture,
+                              aperture / r200))
+        seen = set()
+        for label, radius_code, radius_r200 in sorted(profile_specs, key=lambda row: row[1]):
+            key = round(radius_code, 12)
+            if key in seen:
+                continue
+            seen.add(key)
+            qhr, qlr = rhr < radius_code, rlr < radius_code
+            mhr_here = float(mhr[qhr].sum() * mass_to_msun)
+            mlr_here = float(mlr[qlr].sum() * mass_to_msun)
+            dm_total = mhr_here + mlr_here
+            contamination["radial_profile"].append({
+                "label": label, "radius_r200": float(radius_r200),
+                "radius_pkpc": float(radius_code * length_to_pkpc),
+                "n_hr": int(qhr.sum()), "n_lr": int(qlr.sum()),
+                "m_hr_msun": mhr_here, "m_lr_msun": mlr_here,
+                "lr_dm_mass_fraction": float(mlr_here / dm_total) if dm_total > 0 else None,
+                "lr_mass_over_m200": float(mlr_here / m200) if m200 > 0 else None,
+            })
+        central = min(contamination["radial_profile"],
+                      key=lambda row: abs(row["radius_pkpc"] - args.galaxy_aperture_pkpc))
+        contamination["central_aperture"] = central
+        if central["n_lr"]:
+            issue(issues, "FAIL", "central_low_resolution_contamination",
+                  f"{central['n_lr']} PartType2 particles within {args.galaxy_aperture_pkpc:g} pkpc; "
+                  f"LRDM is {central['lr_dm_mass_fraction']:.3%} of enclosed DM mass")
         if contamination["n_within_1r200"]:
             issue(issues, "FAIL", "low_resolution_contamination",
                   f"{contamination['n_within_1r200']} PartType2 particles within R200")
+    elif particles[1] is not None:
+        contamination["hr_particle_masses"] = particle_mass_summary(particles[1]["masses"], mass_to_msun)
+
+    if args.music_config and not contamination["music"]["found"]:
+        issue(issues, "WARN", "music_config", f"file not found: {contamination['music']['path']}")
 
     parent_delta = None
-    m200 = float(halo.so_m200_code * mass_to_msun)
     if args.parent_m200_msun:
         parent_delta = 100.0 * (m200 / args.parent_m200_msun - 1.0)
 
@@ -403,6 +498,8 @@ def main() -> int:
         "settings": {"expected_snapshots": args.expected_snapshots, "final_snap": final_snap,
                      "group_index_requested": args.group_index,
                      "galaxy_aperture_pkpc": args.galaxy_aperture_pkpc,
+                     "contamination_radii_r200": contamination_radii,
+                     "music_config": args.music_config,
                      "refine_center": not args.no_refine_center,
                      "dust_source_map": source_map},
         "cadence": {"snapshot_count": len(snapshots), "catalog_count": len(catalogs),
@@ -457,13 +554,30 @@ def main() -> int:
             print("M200c parent / zoom difference: not supplied")
         print(f"Nearest low-resolution particle: {contamination.get('nearest_r200', 'n/a')} R200")
         print(f"Low-resolution counts <1/<2/<3 R200: {contamination.get('n_within_1r200', 0)}/{contamination.get('n_within_2r200', 0)}/{contamination.get('n_within_3r200', 0)}")
+        if contamination.get("median_lr_to_hr_particle_mass_ratio") is not None:
+            print(f"Median particle masses HR/LR: {contamination['hr_particle_masses']['median_msun']:.6e} / "
+                  f"{contamination['lr_particle_masses']['median_msun']:.6e} Msun "
+                  f"(LR/HR={contamination['median_lr_to_hr_particle_mass_ratio']:.1f})")
+        if contamination.get("radial_profile"):
+            print("Low-resolution DM contamination profile:")
+            print("  radius          N_HR     N_LR       M_HR[Msun]       M_LR[Msun]   f_LR,DM")
+            for row in contamination["radial_profile"]:
+                frac = row["lr_dm_mass_fraction"]
+                frac_text = f"{frac:.3%}" if frac is not None else "n/a"
+                print(f"  {row['label']:>10s}  {row['n_hr']:8d} {row['n_lr']:8d}  "
+                      f"{row['m_hr_msun']:14.6e} {row['m_lr_msun']:14.6e}  {frac_text:>9s}")
+        if contamination["music"]["path"]:
+            print(f"MUSIC config: {contamination['music']['path']} (found={contamination['music']['found']})")
+            for key, value in contamination["music"]["settings"].items():
+                print(f"  {key} = {value}")
         print("\n--- GALAXY ---")
         print(f"Aperture: {args.galaxy_aperture_pkpc:g} pkpc")
         print(f"Mstar={regions[4]['mass_aperture_msun']:.6e} Msun  Mgas={mgas:.6e} Msun  SFR={sfr:.6e} Msun/yr")
         print(f"Zgas={zgas:.6e} ({zfield or 'field absent'})")
         print("Counts: " + ", ".join(f"{PTYPE_NAMES[p]}={regions[p]['n_aperture']}" for p in PTYPES))
         print("\n--- DUST ---")
-        print(f"Mdust={mdust:.6e} Msun  D/G={dg:.6e}  D/Z={dz:.6e}  Ndust={int(dust_q.sum())}")
+        print(f"Mdust={mdust:.6e} Msun  D/G={dg:.6e}  D/Ztot={dz:.6e}  "
+              f"Mdust/MZgas={dz_gas:.6e}  Ndust={int(dust_q.sum())}")
         if result["dust"].get("radius_mass_p05_p50_p95"):
             print(f"Grain radius mass-weighted p05/p50/p95: {result['dust']['radius_mass_p05_p50_p95']}")
         if result["dust"].get("carbon_mass_fraction") is not None:
@@ -486,9 +600,12 @@ def main() -> int:
         "M200c_Msun": m200, "R200c_pkpc": r200*length_to_pkpc,
         "Mstar_Msun": regions[4]["mass_aperture_msun"], "Mgas_Msun": mgas,
         "SFR_Msun_yr": sfr, "Zgas_mass_fraction": zgas, "Mdust_Msun": mdust,
-        "dust_to_gas": dg, "dust_to_gas_metals": dz,
+        "dust_to_gas": dg, "dust_to_total_metals": dz,
+        "dust_to_gas_phase_metals": dz_gas,
         "nearest_lowres_R200": contamination.get("nearest_r200"),
         "N_lowres_within_R200": contamination.get("n_within_1r200", 0),
+        "LRDM_fraction_within_R200": next((row["lr_dm_mass_fraction"] for row in contamination.get("radial_profile", []) if abs(row["radius_r200"] - 1.0) < 1e-10), None),
+        "LRDM_fraction_within_galaxy_aperture": contamination.get("central_aperture", {}).get("lr_dm_mass_fraction"),
         "acceptance": result["acceptance"]["status"],
     }
     if not args.no_write:
