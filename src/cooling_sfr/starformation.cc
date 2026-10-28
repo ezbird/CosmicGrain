@@ -326,6 +326,12 @@ void coolsfr::convert_sph_particle_into_star(simparticles *Sp, int i, double bir
 
   Sp->P[i].StellarAge = birthtime;
   Sp->P[i].StellarBirthMass = Sp->P[i].getMass();
+  Sp->P[i].AGBLastProcessedAgeMyr = 0.0;
+  Sp->P[i].AGBBirthMetallicity = Sp->P[i].Metallicity;
+  Sp->P[i].AGBPendingCarbonMass = 0.0;
+  Sp->P[i].AGBPendingSilicateMass = 0.0;
+  Sp->P[i].AGBCumulativeReturnedMass = 0.0;
+  Sp->P[i].AGBDustPacketsCreated = 0;
   Sp->P[i].FeedbackFlag = 0;
   Sp->P[i].EnergyReservoir = 0.0;
 
@@ -366,6 +372,12 @@ void coolsfr::spawn_star_from_sph_particle(simparticles *Sp, int igas, double bi
 
   Sp->P[istar].StellarAge = birthtime;
   Sp->P[istar].StellarBirthMass = Sp->P[istar].getMass();
+  Sp->P[istar].AGBLastProcessedAgeMyr = 0.0;
+  Sp->P[istar].AGBBirthMetallicity = Sp->P[istar].Metallicity;
+  Sp->P[istar].AGBPendingCarbonMass = 0.0;
+  Sp->P[istar].AGBPendingSilicateMass = 0.0;
+  Sp->P[istar].AGBCumulativeReturnedMass = 0.0;
+  Sp->P[istar].AGBDustPacketsCreated = 0;
   Sp->P[istar].FeedbackFlag = 0;
   Sp->P[istar].EnergyReservoir = 0.0;
 

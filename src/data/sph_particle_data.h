@@ -160,28 +160,19 @@ struct sph_particle_data : public sph_particle_data_hydrocore
   }
 
 
-  // Added various checks to prevent negative densities/pressures! eh - 11-25-25
+  /* Update pressure and sound speed from the already predicted SPH state.
+   *
+   * This routine must not repair Density, Entropy, or EntropyPred.  In
+   * particular, assigning a fixed "vacuum" density here is unsafe: valid
+   * diffuse particles can be many orders of magnitude below such a value,
+   * and P=A*rho^gamma would then turn the replacement into an enormous,
+   * artificial pressure jump.  Invalid predictions are diagnosed where the
+   * prediction is formed (predict.cc), where the particle ID and derivatives
+   * are available. */
   inline void set_thermodynamic_variables(void)
   {
-      // Fix negative/invalid density
-      if(Density <= 0 || Density != Density) {  // Check for <= 0 or NaN
-          Density = 1e-5;    // Reset to vacuum threshold
-      }
-
-      double rho = Density;
-      Pressure = get_pressure();
-
-      // If pressure is bad after density fix, reset entropy too
-      if(Pressure < 0 || Pressure != Pressure) {  // Check for < 0 or NaN
-          Entropy = 1.0;      // Reset entropy
-          Pressure = get_pressure();  // Recalculate
-
-          if(Pressure < 0) {
-              Pressure = 1e-10;  // Force positive as last resort
-          }
-      }
-
-      Csnd = get_sound_speed();
+    Pressure = get_pressure();
+    Csnd     = get_sound_speed();
   }
 
 

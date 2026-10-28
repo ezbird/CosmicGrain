@@ -1584,7 +1584,9 @@ double create_dust_particles_from_feedback(
     int star_idx,
     double carbon_dust_mass,
     double silicate_dust_mass,
-    int feedback_type)
+    int feedback_type,
+    int particle_count_override,
+    bool conserve_agb_momentum)
 {
   if(!All.DustEnableCreation)
     return 0.0;
@@ -1636,6 +1638,9 @@ else if(feedback_type == 3)
 }
 else
     return 0.0;
+
+if(particle_count_override >= 0)
+    n_dust_particles = particle_count_override;
 
 if(n_dust_particles <= 0)
     return 0.0;
@@ -1694,21 +1699,24 @@ for(int n = 0; n < n_create; n++) {
       r * cos(theta)
   };
 
+  // P.Vel is a * physical peculiar velocity for comoving integration.
+  // Apply the corrected conversion only for the new AGB transport path.
+  double kick_scale = (conserve_agb_momentum && All.ComovingIntegrationOn) ? All.Time : 1.0;
   double initial_velocity[3];
 
   initial_velocity[0] =
       Sp->P[star_idx].Vel[0] +
-      velocity_scale * sin(theta) * cos(phi)
+      kick_scale * velocity_scale * sin(theta) * cos(phi)
       / All.UnitVelocity_in_cm_per_s * 1e5;
 
   initial_velocity[1] =
       Sp->P[star_idx].Vel[1] +
-      velocity_scale * sin(theta) * sin(phi)
+      kick_scale * velocity_scale * sin(theta) * sin(phi)
       / All.UnitVelocity_in_cm_per_s * 1e5;
 
   initial_velocity[2] =
       Sp->P[star_idx].Vel[2] +
-      velocity_scale * cos(theta)
+      kick_scale * velocity_scale * cos(theta)
       / All.UnitVelocity_in_cm_per_s * 1e5;
 
   spawn_dust_particle(
@@ -1735,6 +1743,19 @@ for(int n = 0; n < n_create; n++) {
 
   Sp->DustP[new_idx].CarbonMassFraction =
       (float)carbon_mass_fraction;
+
+  if(conserve_agb_momentum)
+    {
+      // Caller debits dust mass after return. During this call the star
+      // still contains all yet-to-be-debited dust. Account sequentially.
+      const double remaining = Sp->P[star_idx].getMass() - (n + 1) * dust_mass_per_particle;
+      if(remaining <= 0.0)
+        Terminate("AGB dust recoil would exhaust stellar mass");
+      for(int k = 0; k < 3; ++k)
+        Sp->P[star_idx].Vel[k] -= dust_mass_per_particle / remaining *
+            (Sp->P[new_idx].Vel[k] - Sp->P[star_idx].Vel[k]);
+    }
+
 }
 
 if(n_created != n_create)

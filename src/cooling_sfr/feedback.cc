@@ -22,6 +22,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <vector>
+#include <utility>
+#include <unordered_map>
+#include <string>
 #include <mpi.h>
 #include <stdio.h>
 
@@ -36,11 +39,15 @@
 #include "../time_integration/timestep.h"
 #include "../time_integration/driftfac.h"
 #include "agb_yields.h"
+#include "agb_feedback_math.h"
+#include "agb_distributed_recipients.h"
+#include <exception>
 #include "snii_yields.h"
 
 #ifdef DUST
 #include "../dust/dust.h"
 #endif
+
 
 constexpr int spatial_hash_config::MIN_CELLS_PER_DIM;
 constexpr int spatial_hash_config::MAX_CELLS_PER_DIM;
@@ -134,6 +141,14 @@ struct ElementYields
   double Fe = 0.0;
 };
 
+struct StellarDustPartition
+{
+    double carbon_dust   = 0.0;
+    double silicate_dust = 0.0;
+    double total_dust    = 0.0;
+    double gas_metals    = 0.0;
+};
+
 // Return the immutable initial SSP mass represented by a PartType4 particle.
 // IMF-integrated SNII/HN, LRN, and AGB rates/yields are all normalized per
 // unit initial stellar-population mass, not per unit surviving stellar mass.
@@ -178,13 +193,7 @@ static constexpr double FB_SIL_FRAC_FE = 0.14345218;
 // Must match MIN_DUST_PARTICLE_MASS in dust.cc.
 static constexpr double FB_MIN_STELLAR_DUST_MASS = 1e-10;
 
-struct StellarDustPartition
-{
-    double carbon_dust   = 0.0;
-    double silicate_dust = 0.0;
-    double total_dust    = 0.0;
-    double gas_metals    = 0.0;
-};
+
 
 // AGB condensation diagnostics. These are local-task counters and are
 // reported with the existing per-window feedback diagnostics below.
@@ -222,7 +231,9 @@ static StellarDustPartition partition_stellar_ejecta_for_dust(
     ElementYields &elem_gas,
     double dust_yield_fraction,
     double target_carbon_fraction,
-    bool use_element_resolved_silicate_limits)
+    bool use_element_resolved_silicate_limits,
+    bool apply_mass_floor = true,
+    bool record_diagnostics = true)
 {
     StellarDustPartition result;
 
@@ -253,7 +264,7 @@ static StellarDustPartition partition_stellar_ejecta_for_dust(
     double requested_total_dust =
         MZ_total_code * dust_fraction;
 
-    if(requested_total_dust <
+    if(apply_mass_floor && requested_total_dust <
        FB_MIN_STELLAR_DUST_MASS)
     {
         return result;
@@ -339,10 +350,10 @@ static StellarDustPartition partition_stellar_ejecta_for_dust(
                 requested_carbon,
                 std::max(0.0, elem_gas.C));
 
-        agb_dust_partition_count++;
+        agb_dust_partition_count += record_diagnostics ? 1 : 0;
 
         if(result.carbon_dust < requested_carbon * (1.0 - 1e-12))
-            agb_dust_carbon_limited_count++;
+            agb_dust_carbon_limited_count += record_diagnostics ? 1 : 0;
 
         const double tracked_metals =
             std::max(0.0, elem_gas.C)  +
@@ -397,14 +408,14 @@ static StellarDustPartition partition_stellar_ejecta_for_dust(
                 std::max(0.0, silicate_available));
 
         if(requested_silicate <= silicate_available)
-            agb_dust_silicate_target_count++;
+            agb_dust_silicate_target_count += record_diagnostics ? 1 : 0;
         else if(silicate_from_O <= silicate_from_Mg &&
                 silicate_from_O <= silicate_from_proxy)
             agb_dust_silicate_O_count++;
         else if(silicate_from_Mg <= silicate_from_proxy)
             agb_dust_silicate_Mg_count++;
         else
-            agb_dust_silicate_proxy_count++;
+            agb_dust_silicate_proxy_count += record_diagnostics ? 1 : 0;
     }
 
     result.total_dust =
@@ -414,11 +425,11 @@ static StellarDustPartition partition_stellar_ejecta_for_dust(
     // The requested mass may exceed the numerical particle-mass floor while
     // the reservoir-limited mass does not. In that case leave all ejecta in
     // the gas phase rather than removing metals without spawning dust.
-    if(result.total_dust > 0.0 &&
+    if(apply_mass_floor && result.total_dust > 0.0 &&
        result.total_dust < FB_MIN_STELLAR_DUST_MASS)
     {
         if(!use_element_resolved_silicate_limits)
-            agb_dust_below_min_count++;
+            agb_dust_below_min_count += record_diagnostics ? 1 : 0;
 
         result.carbon_dust   = 0.0;
         result.silicate_dust = 0.0;
@@ -1035,21 +1046,44 @@ void find_feedback_neighbors_tree(simparticles *Sp, ngbtree * /*Tree*/,
 {
   *n_ngb = 0;
   double h = *smoothing_length;
-  if(h <= 0.0) h = get_local_smoothing_length_tree(Sp, nullptr, star_idx);
-  if(h <= 0.0) { *smoothing_length = 0.0; return; }
-
-  if(!gas_hash.is_built) {
-    FB_PRINT("ERROR: Spatial hash not built — this should not happen.\n");
-    *smoothing_length = h;
-    return;
-  }
-
-  const double search_radius = 2.0 * h;
-  gas_hash.find_neighbors(Sp, star_idx, search_radius, ngb_list, distances, n_ngb, max_ngb);
+  if(h <= 0.0)
+    h = get_local_smoothing_length_tree(Sp, nullptr, star_idx);
   *smoothing_length = h;
+  if(!(h > 0.0) || !std::isfinite(h) || max_ngb <= 0)
+    return;
+
+  // Select live gas; cached local indices can change type or be reordered.
+  std::vector<std::pair<double, int>> candidates;
+  const double radius2 = 4.0 * h * h;
+
+  for(int j = 0; j < Sp->NumGas; ++j)
+    {
+      if(Sp->P[j].getType() != 0 || Sp->P[j].getMass() <= 0.0)
+        continue;
+
+      double d[3];
+      Sp->nearest_image_intpos_to_pos(
+          Sp->P[j].IntPos, Sp->P[star_idx].IntPos, d);
+
+      const double r2 = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+      if(r2 <= radius2)
+        candidates.emplace_back(r2, j);
+    }
+
+  std::sort(candidates.begin(), candidates.end());
+  const int count = std::min(max_ngb, (int)candidates.size());
+
+  for(int k = 0; k < count; ++k)
+    {
+      ngb_list[k] = candidates[k].second;
+      distances[k] = std::sqrt(candidates[k].first);
+    }
+
+  *n_ngb = count;
 }
 
-static void gather_neighbors(simparticles *Sp,
+
+static void gather_neighbors_rc1_reference(simparticles *Sp,
                              ngbtree *Tree,
                              domain<simparticles> *D,
                              int star_i,
@@ -1234,6 +1268,13 @@ static void gather_neighbors(simparticles *Sp,
     ngb.resize(n_found);
     dist.resize(n_found);
 }
+
+static void gather_neighbors(simparticles *Sp,ngbtree *Tree,domain<simparticles> *D,
+                             int star_i,std::vector<int> &ngb,std::vector<double> &dist,double &hsml)
+{
+  gather_neighbors_rc1_reference(Sp,Tree,D,star_i,ngb,dist,hsml);
+}
+
 
 // ----------------------- SPH Kernel -----------------------------------------
 
@@ -1808,6 +1849,15 @@ static bool apply_feedback_event(simparticles *Sp,ngbtree *Tree,domain<simpartic
       return false;
   }
 
+  double kernel_weight_sum = 0.0;
+  for(size_t n = 0; n < ngb.size(); ++n) {
+    double w = Sp->P[ngb[n]].getMass()*cubic_spline_kernel(dist[n],hsml);
+    if(!std::isfinite(w) || w < 0) Terminate("Invalid feedback kernel weight");
+    kernel_weight_sum += w;
+  }
+  if(!std::isfinite(kernel_weight_sum) || kernel_weight_sum <= 0.0)
+    return false;
+
   if(is_SNII)
       diag_add_sn(E_code * All.UnitEnergy_in_cgs);
   else
@@ -1906,8 +1956,651 @@ static void try_release_reservoir(
 
 // ---------------------------- Public API ------------------------------------
 
+// CG07_AGB_TRANSACTION_PROBE_V1: observations only, no particle writes.
+// Current thermal prediction at the stored density; density-entropy SPH only.
+static inline double agb_current_predicted_utherm(simparticles *Sp,int j) {
+  const double factor=pow(Sp->SphP[j].Density*All.cf_a3inv,GAMMA_MINUS1)/GAMMA_MINUS1;
+  return Sp->SphP[j].EntropyPred*factor;
+}
+
+namespace cg_agb_probe {
+enum Metric {
+  gas, metals, mix_energy, ejecta_energy, internal_added, dense_deposit,
+  sf_deposit, inactive_deposit, hot_before, hot_after, recipients,
+  transactions, specific_u_change_mass, prediction_gap_mass,
+  velocity_prediction_gap_energy, radius_mass, relative_v2_mass,
+  tracked_mass, tracked_dense_before, tracked_dense_after,
+  tracked_sf_after_cooling, tracked_rho_ratio_mass,
+  tracked_u_before_mass, tracked_u_after_density_mass,
+  tracked_u_after_cooling_mass, tracked_count, dropped_tracking_mass,
+  invalid_tracking_mass, metric_count
+};
+static double sums[metric_count] = {};
+struct Pending {
+  double dm, rho, u;
+  bool dense;
+  int stage;
+};
+static std::unordered_map<std::uint64_t,Pending> pending;
+static const size_t max_pending = 8192;
+
+static double temperature(simparticles *Sp,int j,double u) {
+  const double X=HYDROGEN_MASSFRAC;
+  const double mu=4.0/(1+3*X+4*X*Sp->SphP[j].Ne);
+  return GAMMA_MINUS1*u*All.UnitVelocity_in_cm_per_s*
+      All.UnitVelocity_in_cm_per_s*mu*PROTONMASS/BOLTZMANN;
+}
+
+static void record(simparticles *Sp,int j,double dm,double distance,
+                   double uold,const agb_feedback::MixedGas &mixed,
+                   const double ve[3]) {
+  if(!(dm>0)) return;
+  const double m=Sp->P[j].getMass();
+  const double rho=Sp->SphP[j].Density;
+  const double vfac=All.ComovingIntegrationOn?All.cf_a2inv:1.;
+  const double a=All.ComovingIntegrationOn?All.Time:1.;
+  double rel2=0,gap2=0;
+  for(int k=0;k<3;++k) {
+    const double dv=Sp->SphP[j].VelPred[k]-ve[k];rel2+=dv*dv;
+    const double dg=Sp->P[j].Vel[k]-Sp->SphP[j].VelPred[k];gap2+=dg*dg;
+  }
+  const bool dense=rho*All.cf_a3inv>=All.PhysDensThresh;
+  sums[gas]+=dm;
+  sums[mix_energy]+=.5*m*dm/(m+dm)*rel2*vfac;
+  sums[ejecta_energy]+=dm*All.MinEgySpec;
+  sums[internal_added]+=(m+dm)*mixed.u-m*uold;
+  sums[dense_deposit]+=dense?dm:0;
+  sums[sf_deposit]+=Sp->SphP[j].Sfr>0?dm:0;
+  sums[inactive_deposit]+=Sp->TimeBinSynchronized[Sp->P[j].getTimeBinHydro()]?0:dm;
+  sums[hot_before]+=temperature(Sp,j,uold)>=1e5?dm:0;
+  sums[hot_after]+=temperature(Sp,j,mixed.u)>=1e5?dm:0;
+  sums[recipients]+=1;
+  sums[specific_u_change_mass]+=dm*(mixed.u-uold);
+  sums[prediction_gap_mass]+=dm*std::abs((double)Sp->SphP[j].EntropyPred-
+      (double)Sp->SphP[j].Entropy)/std::max(std::abs((double)Sp->SphP[j].Entropy),1e-100);
+  sums[velocity_prediction_gap_energy]+=.5*dm*gap2*vfac;
+  sums[radius_mass]+=dm*distance*a/All.HubbleParam;
+  sums[relative_v2_mass]+=dm*rel2*vfac;
+  const std::uint64_t id=(std::uint64_t)Sp->P[j].ID.get();
+  auto it=pending.find(id);
+  if(it==pending.end() && pending.size()>=max_pending) {
+    sums[dropped_tracking_mass]+=dm;return;
+  }
+  double carried=it==pending.end()?0:it->second.dm;
+  // Multiple deposits before an active update are combined. The baseline
+  // state below is the latest deposit's post-mix state, not the first one.
+  pending[id]={carried+dm,rho,mixed.u,dense,0};
+}
+}
+
+void agb_probe_before_domain(void) {
+  for(const auto &kv:cg_agb_probe::pending)
+    cg_agb_probe::sums[cg_agb_probe::dropped_tracking_mass]+=kv.second.dm;
+  cg_agb_probe::pending.clear();
+}
+
+void agb_probe_observe(simparticles *Sp,int stage) {
+  using namespace cg_agb_probe;
+  if(pending.empty()) return;
+  for(int n=0;n<Sp->TimeBinsHydro.NActiveParticles;++n) {
+    int j=Sp->TimeBinsHydro.ActiveParticleList[n];
+    if(j<0 || j>=Sp->NumGas || Sp->P[j].getType()!=0) continue;
+    auto it=pending.find((std::uint64_t)Sp->P[j].ID.get());
+    if(it==pending.end()) continue;
+    Pending &p=it->second;
+    const double rho=Sp->SphP[j].Density,u=agb_current_predicted_utherm(Sp,j);
+    if(!std::isfinite(rho)||rho<=0||!std::isfinite(u)||u<=0) {
+      sums[invalid_tracking_mass]+=p.dm;pending.erase(it);continue;
+    }
+    if(stage==1 && p.stage==0) {
+      sums[tracked_mass]+=p.dm;
+      sums[tracked_dense_before]+=p.dense?p.dm:0;
+      sums[tracked_dense_after]+=rho*All.cf_a3inv>=All.PhysDensThresh?p.dm:0;
+      sums[tracked_rho_ratio_mass]+=p.dm*rho/p.rho;
+      sums[tracked_u_before_mass]+=p.dm*p.u;
+      sums[tracked_u_after_density_mass]+=p.dm*u;
+      sums[tracked_count]+=1;p.stage=1;
+    } else if(stage==2 && p.stage==1) {
+      sums[tracked_sf_after_cooling]+=Sp->SphP[j].Sfr>0?p.dm:0;
+      sums[tracked_u_after_cooling_mass]+=p.dm*u;
+      pending.erase(it);
+    }
+  }
+}
+
+void agb_probe_flush(simparticles *Sp,MPI_Comm comm) {
+  using namespace cg_agb_probe;
+  static double next_a=0;
+  static bool header=false;
+  if(All.Time<next_a && All.Time<All.TimeMax) return;
+  next_a=All.Time+.01;
+  double global[metric_count]={};
+  MPI_Reduce(sums,global,metric_count,MPI_DOUBLE,MPI_SUM,0,comm);
+  // Instantaneous stored-state census (not a time integral or unique-event
+  // count). Star mass includes pending AGB dust. This precedes dust evolution.
+  double phase[9]={},gphase[9]={};
+  for(int j=0;j<Sp->NumGas;++j) if(Sp->P[j].getType()==0) {
+    double m=Sp->P[j].getMass();phase[0]+=m;
+    if(Sp->SphP[j].Density*All.cf_a3inv>=All.PhysDensThresh)phase[1]+=m;
+    if(Sp->SphP[j].Sfr>0)phase[2]+=m;
+    phase[3]+=Sp->SphP[j].Sfr;
+    const double u=Sp->get_utherm_from_entropy(j);
+    if(std::isfinite(u) && u>0)phase[4]+=m*u;
+  }
+  for(int j=0;j<Sp->NumPart;++j) {
+    if(Sp->P[j].getType()==4)phase[5]+=Sp->P[j].getMass();
+    if(Sp->P[j].getType()==6)phase[6]+=Sp->P[j].getMass();
+  }
+  for(const auto &kv:pending)phase[7]+=kv.second.dm;
+  phase[8]=(double)pending.size();
+  MPI_Reduce(phase,gphase,9,MPI_DOUBLE,MPI_SUM,0,comm);
+  if(All.ThisTask!=0)return;
+  std::string file=std::string(All.OutputDir)+"/agb_coupling_diagnostics.csv";
+  FILE *fp=fopen(file.c_str(),header?"a":"w");
+  if(!fp)Terminate("Cannot open AGB coupling diagnostic CSV");
+  const char *names[metric_count]={
+    "gas_returned_Msun","gas_metals_returned_Msun","mixing_heat_erg",
+    "ejecta_internal_energy_erg","recipient_internal_energy_added_erg",
+    "returned_to_dense_Msun","returned_to_SFRpositive_Msun",
+    "returned_to_inactive_Msun","returned_to_Tge1e5_before_Msun",
+    "returned_to_Tge1e5_after_Msun","recipient_processing_events",
+    "successful_transactions","dm_weighted_delta_u_erg",
+    "dm_weighted_entropy_prediction_fraction_Msun",
+    "gas_velocity_prediction_gap_energy_erg","dm_times_distance_Msun_pkpc",
+    "dm_times_relative_v2_Msun_km2_s2","followed_return_Msun",
+    "followed_dense_before_Msun","followed_dense_after_density_Msun",
+    "followed_SFRpositive_after_cooling_Msun","dm_times_density_ratio_Msun",
+    "dm_times_u_at_deposit_erg","dm_times_u_after_density_erg",
+    "dm_times_u_after_cooling_erg","followed_gas_update_events",
+    "dropped_followup_return_Msun","invalid_followup_return_Msun"};
+  const double mf=All.UnitMass_in_g/SOLAR_MASS/All.HubbleParam;
+  const double ef=All.UnitEnergy_in_cgs/All.HubbleParam;
+  if(!header) {
+    fprintf(fp,"a,mode");
+    for(int i=0;i<metric_count;++i)fprintf(fp,",%s",names[i]);
+    fprintf(fp,",gas_now_Msun,dense_gas_now_Msun,SFRpositive_gas_now_Msun,SFR_now_Msun_yr,gas_internal_energy_now_erg,stars_now_Msun,dust_now_Msun,pending_followup_return_Msun,pending_followup_gas_count\n");
+    header=true;
+  }
+  fprintf(fp,"%.12g,%d",(double)All.Time,All.AGBFeedbackMode);
+  for(int i=0;i<metric_count;++i) {
+    double factor=mf;
+    if(i==mix_energy||i==ejecta_energy||i==internal_added||i==specific_u_change_mass||
+       i==velocity_prediction_gap_energy||i==tracked_u_before_mass||
+       i==tracked_u_after_density_mass||i==tracked_u_after_cooling_mass)factor=ef;
+    if(i==recipients||i==transactions||i==tracked_count)factor=1;
+    if(i==relative_v2_mass)factor=mf*All.UnitVelocity_in_cm_per_s*All.UnitVelocity_in_cm_per_s/1e10;
+    fprintf(fp,",%.12g",global[i]*factor);
+  }
+  for(int i=0;i<9;++i)fprintf(fp,",%.12g",gphase[i]*(i==3||i==8?1:(i==4?ef:mf)));
+  fprintf(fp,"\n");fclose(fp);
+}
+
+// Age-dependent AGB transport. Pending dust remains in stellar mass until
+// a fixed-mass packet is emitted; no mass disappears into an external ledger.
+// Isolated correctness reference. All ranks enter events in the same ID order.
+#include "rc1_gas_index.h"
+#include "rc1_gas_geometry.h"
+#if !defined(PERIODIC) || defined(LONG_X_BITS) || defined(LONG_Y_BITS) || defined(LONG_Z_BITS) || defined(GRAVITY_TALLBOX) || defined(ONEDIMS) || defined(TWODIMS) || defined(POSITIONS_IN_128BIT)
+#error "Spatial AGB experiment supports only the frozen 3D cubic periodic configuration"
+#endif
+namespace cg_agb_transport {
+using Geometry=cg_rc1_geometry::Tree<MyIntPosType>;
+static cg_rc1_gas_index::Index *active_index=nullptr;
+static Geometry *active_geometry=nullptr;
+static int geometry_numgas=-1;
+static void check_entry(simparticles*Sp,const Geometry::Entry&e) {
+  const int j=e.slot;
+  if(Sp->NumGas!=geometry_numgas || j<0 || j>=Sp->NumGas || Sp->P[j].getType()!=0 ||
+      (std::uint64_t)Sp->P[j].ID.get()!=e.id)
+    Terminate("AGB geometry membership changed inside a synchronized window");
+  for(int k=0;k<3;++k)if(Sp->P[j].IntPos[k]!=e.x[k])
+    Terminate("AGB gas position changed inside a synchronized window");
+}
+struct IndexWindow {
+  cg_rc1_gas_index::Index index;
+  Geometry geometry;
+  explicit IndexWindow(simparticles *Sp) {
+    if(active_index || active_geometry)Terminate("Nested AGB index window");
+    index.build(Sp->NumGas,
+      [Sp](int j){return (std::uint64_t)Sp->P[j].ID.get();},
+      [Sp](int j){return Sp->P[j].getType();});
+    active_index=&index;
+    {
+      geometry_numgas=Sp->NumGas;
+      std::vector<Geometry::Entry> entries;
+      for(int j=0;j<Sp->NumGas;++j)if(Sp->P[j].getType()==0) {
+        Geometry::Entry e;e.slot=j;e.id=(std::uint64_t)Sp->P[j].ID.get();
+        for(int k=0;k<3;++k)e.x[k]=Sp->P[j].IntPos[k];
+        entries.push_back(e);
+      }
+      geometry.build(std::move(entries));active_geometry=&geometry;
+    }
+  }
+  void validate(simparticles*Sp) {
+    if(active_geometry){
+      if(Sp->NumGas!=geometry_numgas)Terminate("AGB gas count changed inside geometry window");
+      geometry.validate([Sp](const Geometry::Entry&e){check_entry(Sp,e);});
+    }
+  }
+  ~IndexWindow(){active_index=nullptr;active_geometry=nullptr;geometry_numgas=-1;}
+};
+static MPI_Comm comm;
+static int owner=-1;
+static int reference_local_index(simparticles *Sp,std::uint64_t id) {
+  for(int j=0;j<Sp->NumGas;++j)
+    if(Sp->P[j].getType()==0 && (std::uint64_t)Sp->P[j].ID.get()==id)return j;
+  return -1;
+}
+static int local_index(simparticles *Sp,std::uint64_t id) {
+  if(!active_index)return reference_local_index(Sp,id);
+  return active_index->find(id,Sp->NumGas,
+    [Sp](int j){return (std::uint64_t)Sp->P[j].ID.get();},
+    [Sp](int j){return Sp->P[j].getType();});
+}
+static std::vector<cg_agb_distributed::Candidate> scan(simparticles*Sp,const MyIntPosType*position,int rank) {
+  std::vector<cg_agb_distributed::Candidate> local;
+  for(int j=0;j<Sp->NumGas;++j)if(Sp->P[j].getType()==0 && Sp->P[j].getMass()>0) {
+    double d[3];Sp->nearest_image_intpos_to_pos(Sp->P[j].IntPos,position,d);
+    local.push_back({(std::uint64_t)Sp->P[j].ID.get(),d[0]*d[0]+d[1]*d[1]+d[2]*d[2],Sp->P[j].getMass(),rank});
+  }
+  return local;
+}
+static std::vector<cg_agb_distributed::Candidate> query(simparticles*Sp,const MyIntPosType*position,int rank,bool nearest,double radius2) {
+  if(Sp->NumGas!=geometry_numgas)Terminate("AGB gas count changed before geometry query");
+  auto metric=[Sp](const MyIntPosType*a,const MyIntPosType*b){
+    double d[3];Sp->nearest_image_intpos_to_pos(a,b,d);
+    return d[0]*d[0]+d[1]*d[1]+d[2]*d[2];
+  };
+  auto eligible=[Sp](const Geometry::Entry&e){check_entry(Sp,e);return Sp->P[e.slot].getMass()>0;};
+  std::vector<cg_agb_distributed::Candidate> local;
+  auto append=[&](const Geometry::Entry&e,double d2){
+    if(eligible(e))local.push_back({e.id,d2,Sp->P[e.slot].getMass(),rank});
+  };
+  if(nearest){Geometry::Entry best;double d2;
+    if(active_geometry->nearest(position,metric,eligible,best,d2))append(best,d2);
+  }else active_geometry->radius(position,radius2,metric,append);
+  return local;
+}
+static bool gather(simparticles *Sp,const MyIntPosType *position,
+                   std::vector<int> &ngb,std::vector<double> &distance,
+                   std::vector<double> &weight,double &h,double &sum) {
+  int rank;MPI_Comm_rank(comm,&rank);
+  std::vector<cg_agb_distributed::Candidate> local;
+  if(!active_geometry)local=scan(Sp,position,rank);
+  std::vector<cg_agb_distributed::Candidate> nearest_local;
+  if(active_geometry)nearest_local=query(Sp,position,rank,true,0);
+  std::vector<cg_agb_distributed::Candidate> nearest;
+  {nearest=active_geometry?cg_agb_distributed::select(std::move(nearest_local),1,comm):cg_agb_distributed::select(local,1,comm);}
+  if(nearest.empty())return false;
+  h=0;
+  if(rank==nearest[0].owner) {
+    int j=local_index(Sp,nearest[0].id);
+    if(j<0)Terminate("Distributed AGB nearest gas is missing");
+    h=Sp->SphP[j].Hsml;
+  }
+  MPI_Bcast(&h,1,MPI_DOUBLE,nearest[0].owner,comm);
+  if(!std::isfinite(h) || h<=0)Terminate("Invalid distributed AGB kernel scale");
+  double radius=2*h;
+  const double physical_cap=All.ComovingIntegrationOn?FEEDBACK_MAX_RADIUS_PKPC*All.HubbleParam/All.Time:FEEDBACK_MAX_RADIUS_PKPC*All.HubbleParam;
+  double cap=std::max(radius,std::min(FEEDBACK_MAX_RADIUS_FACTOR*radius,physical_cap));
+  std::vector<cg_agb_distributed::Candidate> selected;
+  for(int iter=0;;++iter) {
+    std::vector<cg_agb_distributed::Candidate> inside;
+    if(active_geometry)inside=query(Sp,position,rank,false,radius*radius);
+    else for(auto &p:local)if(p.r2<=radius*radius)inside.push_back(p);
+    {selected=cg_agb_distributed::select(inside,MAX_KERNEL_NEIGHBORS,comm);}
+    if(selected.size()>=(size_t)MIN_FEEDBACK_NEIGHBORS || radius>=cap || iter>=FEEDBACK_MAX_KERNEL_ITERS)break;
+    double next=std::min(radius*FEEDBACK_KERNEL_GROWTH,cap);
+    if(!(next>radius))break;
+    radius=next;
+  }
+  h=.5*radius;sum=0;
+  for(auto &p:selected) {
+    const double w=p.mass*cubic_spline_kernel(std::sqrt(p.r2),h);
+    if(!std::isfinite(w) || w<0)Terminate("Invalid distributed AGB weight");
+    sum+=w;
+    if(p.owner==rank && w>0) {
+      int j=local_index(Sp,p.id);if(j<0)Terminate("Distributed AGB recipient is missing");
+      ngb.push_back(j);distance.push_back(std::sqrt(p.r2));weight.push_back(w);
+    }
+  }
+  return std::isfinite(sum) && sum>0;
+}
+}
+
+static bool deposit_agb_gas(simparticles *Sp, ngbtree *,domain<simparticles> *,int star,
+                            double gas_mass,double gas_metals,const ElementYields &input_elem)
+{
+  int rank;MPI_Comm_rank(cg_agb_transport::comm,&rank);
+  if(cg_agb_transport::owner<0)Terminate("AGB deposit outside collective event schedule");
+  double wire[13]={};MyIntPosType position[3]={};
+  if(rank==cg_agb_transport::owner) {
+    if(star<0 || star>=Sp->NumPart || Sp->P[star].getType()!=4)Terminate("Invalid distributed AGB donor");
+    wire[0]=gas_mass;wire[1]=gas_metals;wire[2]=Sp->P[star].getMass();
+    for(int k=0;k<3;++k){wire[3+k]=Sp->P[star].Vel[k];position[k]=Sp->P[star].IntPos[k];}
+    wire[6]=input_elem.C;wire[7]=input_elem.N;wire[8]=input_elem.O;wire[9]=input_elem.Ne;
+    wire[10]=input_elem.Mg;wire[11]=input_elem.Si;wire[12]=input_elem.Fe;
+  }
+  MPI_Bcast(wire,13,MPI_DOUBLE,cg_agb_transport::owner,cg_agb_transport::comm);
+  MPI_Bcast(position,sizeof(position),MPI_BYTE,cg_agb_transport::owner,cg_agb_transport::comm);
+  gas_mass=wire[0];gas_metals=wire[1];const double donor_mass=wire[2];
+  ElementYields elem;elem.C=wire[6];elem.N=wire[7];elem.O=wire[8];elem.Ne=wire[9];
+  elem.Mg=wire[10];elem.Si=wire[11];elem.Fe=wire[12];
+  if(gas_mass==0)return true;
+  std::vector<int> ngb;std::vector<double> distances,w;double hsml=0,sum=0;
+  if(!cg_agb_transport::gather(Sp,position,ngb,distances,w,hsml,sum))return false;
+  if(!std::isfinite(gas_mass) || !std::isfinite(gas_metals) ||
+     gas_metals < 0 || gas_mass < gas_metals ||
+     donor_mass <= gas_mass)
+    Terminate("Invalid AGB gas/mass budget");
+  double ejecta_v[3]={wire[3],wire[4],wire[5]};
+  // Cold unresolved AGB ejecta: configured minimum specific thermal energy.
+  // No SN-like thermal energy is added. Relative bulk kinetic energy is mixed.
+  const double ejecta_u = All.MinEgySpec;
+  const double vfac = All.ComovingIntegrationOn ? All.cf_a2inv : 1.0;
+  std::vector<agb_feedback::MixedGas> mixed(ngb.size());
+  // Preflight all recipients before modifying any of them.
+  for(size_t n=0;n<ngb.size();++n) {
+    if(w[n] == 0) continue;
+    const int j=ngb[n];
+    if(!std::isfinite(Sp->SphP[j].Density) || Sp->SphP[j].Density <= 0)
+      Terminate("Invalid density before AGB mass deposition");
+    const double old_mass=Sp->P[j].getMass();
+    if(!std::isfinite(Sp->SphP[j].MassMetallicity) ||
+       Sp->SphP[j].MassMetallicity < 0 || Sp->SphP[j].MassMetallicity > old_mass*(1+1e-6))
+      Terminate("Invalid gas metals before AGB deposition");
+    const double fractions[] = {Sp->SphP[j].GasCarbonMassFraction,
+      Sp->SphP[j].GasNitrogenMassFraction, Sp->SphP[j].GasOxygenMassFraction,
+      Sp->SphP[j].GasNeonMassFraction, Sp->SphP[j].GasMagnesiumMassFraction,
+      Sp->SphP[j].GasSiliconMassFraction, Sp->SphP[j].GasIronMassFraction};
+    for(double x : fractions)
+      if(!std::isfinite(x) || x < 0 || x > 1)
+        Terminate("Invalid gas elemental fraction before AGB deposition");
+    double v[3],vp[3];
+    for(int k=0;k<3;++k) {v[k]=Sp->P[j].Vel[k];vp[k]=Sp->SphP[j].VelPred[k];}
+    mixed[n] = agb_feedback::mix_gas(Sp->P[j].getMass(), gas_mass*w[n]/sum,
+        agb_current_predicted_utherm(Sp,j), ejecta_u, v, vp, ejecta_v, vfac);
+    const double candidate_prediction=mixed[n].u*GAMMA_MINUS1/
+        pow(Sp->SphP[j].Density*All.cf_a3inv,GAMMA_MINUS1);
+    // Reproduce storage rounding before checking the base-state impulse.
+    const decltype(Sp->SphP[j].EntropyPred) stored_prediction=candidate_prediction;
+    const double candidate_base=(double)Sp->SphP[j].Entropy+
+        ((double)stored_prediction-(double)Sp->SphP[j].EntropyPred);
+    if(!std::isfinite(candidate_prediction) || candidate_prediction<=0 ||
+       !std::isfinite(candidate_base) || candidate_base<=0)
+      Terminate("Invalid time-centered AGB entropy preflight");
+  }
+  // A fatal preflight on any owner aborts the communicator before commit.
+  MPI_Barrier(cg_agb_transport::comm);
+  if(rank==cg_agb_transport::owner) {
+    cg_agb_probe::sums[cg_agb_probe::transactions]+=1;
+    cg_agb_probe::sums[cg_agb_probe::metals]+=gas_metals;
+  }
+  double transferred_momentum[3] = {0,0,0};
+  for(size_t n=0;n<ngb.size();++n) {
+    if(w[n] == 0) continue;
+    const int j=ngb[n];
+    const double f=w[n]/sum, old=Sp->P[j].getMass(), mass=mixed[n].mass;
+    cg_agb_probe::record(Sp,j,gas_mass*f,distances[n],
+        agb_current_predicted_utherm(Sp,j),mixed[n],ejecta_v);
+#define AGB_MIX_ELEMENT(member, source) \
+    Sp->SphP[j].member = (old*Sp->SphP[j].member + f*elem.source)/mass
+    AGB_MIX_ELEMENT(GasCarbonMassFraction,C);
+    AGB_MIX_ELEMENT(GasNitrogenMassFraction,N);
+    AGB_MIX_ELEMENT(GasOxygenMassFraction,O);
+    AGB_MIX_ELEMENT(GasNeonMassFraction,Ne);
+    AGB_MIX_ELEMENT(GasMagnesiumMassFraction,Mg);
+    AGB_MIX_ELEMENT(GasSiliconMassFraction,Si);
+    AGB_MIX_ELEMENT(GasIronMassFraction,Fe);
+#undef AGB_MIX_ELEMENT
+    Sp->SphP[j].MassMetallicity += f*gas_metals;
+    Sp->SphP[j].Metallicity = Sp->SphP[j].MassMetallicity/mass;
+    Sp->P[j].Metallicity = Sp->SphP[j].Metallicity;
+    Sp->P[j].setMass(mass);
+    for(int k=0;k<3;++k) {
+      const double old_momentum = old*Sp->SphP[j].VelPred[k];
+      Sp->P[j].Vel[k]=mixed[n].velocity[k];
+      Sp->SphP[j].VelPred[k]=mixed[n].predicted_velocity[k];
+      // Debit the donor using the realized current-prediction momentum.
+      // Stored midpoint momenta belong to different clocks on inactive gas.
+      transferred_momentum[k] += mass*Sp->SphP[j].VelPred[k]-old_momentum;
+    }
+    // Apply the current-time impulse to BOTH entropy time levels; preserve
+    // their drift/kick offset instead of resetting an inactive prediction.
+    const double base_before=Sp->SphP[j].Entropy;
+    const double prediction_before=Sp->SphP[j].EntropyPred;
+    Sp->set_entropy_from_utherm(mixed[n].u,j);
+    const double prediction_after=Sp->SphP[j].EntropyPred;
+    Sp->SphP[j].Entropy=base_before+(prediction_after-prediction_before);
+    if(!std::isfinite((double)Sp->SphP[j].Entropy) || Sp->SphP[j].Entropy<=0 ||
+       !std::isfinite(prediction_after) || prediction_after<=0)
+      Terminate("Invalid time-centered AGB entropy commit");
+    set_thermodynamic_variables_safe(Sp,j);
+  }
+  double global_momentum[3];
+  MPI_Allreduce(transferred_momentum,global_momentum,3,MPI_DOUBLE,MPI_SUM,cg_agb_transport::comm);
+  if(rank==cg_agb_transport::owner) {
+    const double new_star_mass=donor_mass-gas_mass;
+    Sp->P[star].setMass(new_star_mass);
+    const double stored_mass=Sp->P[star].getMass();
+    for(int k=0;k<3;++k)Sp->P[star].Vel[k]=(donor_mass*ejecta_v[k]-global_momentum[k])/stored_mass;
+  }
+  return true;
+}
+
+// Conservative reference policy: cumulative AGB transactions occur only in
+// the end-of-step window after every occupied gravity and hydro bin has closed.
+// No inactive stellar predictor or force-history reconstruction is assumed.
+namespace cg_agb_sync {
+static bool open=false,closed=false;
+static integertime epoch=-1;
+static MPI_Comm comm;
+static long long commits=0;
+static double max_noninitial_interval_myr=0;
+}
+void agb_begin_closed_feedback_window(simparticles *Sp,MPI_Comm comm) {
+#if !defined(HIERARCHICAL_GRAVITY) || !defined(TREEPM_NOTIMESPLIT)
+  Terminate("Synchronized AGB reference requires its audited hierarchical common-clock TreePM build");
+#else
+  int local=1,global=0;
+  for(int p=0;p<Sp->NumPart;++p) {
+    if(Sp->P[p].getMass()==0)continue;
+    const int b=Sp->P[p].TimeBinGrav;
+    if(b<0 || b>=TIMEBINS)Terminate("Invalid gravity bin in AGB clock gate");
+    if(b>0 && (All.Ti_Current%(((integertime)1)<<b)!=0 || !Sp->TimeBinSynchronized[b]))local=0;
+    if(Sp->P[p].getType()==0) {
+      const int h=Sp->P[p].getTimeBinHydro();
+      if(h<0 || h>=TIMEBINS)Terminate("Invalid hydro bin in AGB clock gate");
+      if(h>0 && (All.Ti_Current%(((integertime)1)<<h)!=0 || !Sp->TimeBinSynchronized[h]))local=0;
+    }
+  }
+  MPI_Allreduce(&local,&global,1,MPI_INT,MPI_MIN,comm);
+  cg_agb_sync::open=true;cg_agb_sync::closed=global;cg_agb_sync::epoch=All.Ti_Current;cg_agb_sync::comm=comm;
+  cg_agb_sync::commits=0;cg_agb_sync::max_noninitial_interval_myr=0;
+#endif
+}
+void agb_end_closed_feedback_window(void) {
+  if(!cg_agb_sync::open || cg_agb_sync::epoch!=All.Ti_Current)Terminate("Invalid AGB feedback window close");
+  long long commits=0;double interval=0;
+  MPI_Allreduce(&cg_agb_sync::commits,&commits,1,MPI_LONG_LONG_INT,MPI_SUM,cg_agb_sync::comm);
+  MPI_Allreduce(&cg_agb_sync::max_noninitial_interval_myr,&interval,1,MPI_DOUBLE,MPI_MAX,cg_agb_sync::comm);
+  int rank;MPI_Comm_rank(cg_agb_sync::comm,&rank);
+  if(!cg_agb_sync::closed && commits)Terminate("AGB committed outside a fully closed state");
+  if(rank==0)printf("[AGB_SYNC_WINDOW] ti=%lld closed=%d commits=%lld max_noninitial_interval_myr=%.12g\n",(long long)All.Ti_Current,(int)cg_agb_sync::closed,commits,interval);
+  cg_agb_sync::open=false;
+}
+
+static void apply_age_dependent_agb(simparticles *Sp, ngbtree *Tree,
+                                     domain<simparticles> *D, int p, double age)
+{
+  auto &star = Sp->P[p];
+  const double previous=star.AGBLastProcessedAgeMyr;
+  if(!std::isfinite(age) || age < 0 || !std::isfinite(previous) ||
+     previous < 0 || previous > age+1e-6 || (star.FeedbackFlag & 2))
+    Terminate("Invalid/legacy age-dependent AGB state for star %lld",(long long)star.ID.get());
+  if(age-previous < All.AGBFeedbackIntervalMyr && All.Time < All.TimeMax) return;
+  if(age <= previous) return;
+  const double Z=star.AGBBirthMetallicity;
+  const double birth=star.StellarBirthMass;
+  if(!std::isfinite(Z) || Z < 0 || !std::isfinite(birth) || birth <= 0)
+    Terminate("Invalid age-dependent AGB birth state");
+  agb_stars_eligible++;
+  AGBIMFYield current=AGB_Yields.get_cumulative_imf_yields(Z,age);
+  AGBIMFYield before=AGB_Yields.get_cumulative_imf_yields(Z,previous);
+  AGBIMFYield full=AGB_Yields.get_imf_yields(Z);
+  const double metals=birth*agb_feedback::increment(current.Z_per_Mstar,before.Z_per_Mstar);
+  const double returned=birth*agb_feedback::increment(current.M_return_per_Mstar,before.M_return_per_Mstar);
+  ElementYields elem;
+  elem.C=birth*agb_feedback::increment(current.C_per_Mstar,before.C_per_Mstar);
+  elem.N=birth*agb_feedback::increment(current.N_per_Mstar,before.N_per_Mstar);
+  elem.O=birth*agb_feedback::increment(current.O_per_Mstar,before.O_per_Mstar);
+  elem.Ne=birth*agb_feedback::increment(current.Ne_per_Mstar,before.Ne_per_Mstar);
+  elem.Mg=birth*agb_feedback::increment(current.Mg_per_Mstar,before.Mg_per_Mstar);
+  if(metals > returned*(1+1e-10) ||
+     elem.C+elem.N+elem.O+elem.Ne+elem.Mg > metals*(1+1e-10))
+    Terminate("AGB interval violates ejecta budget");
+  StellarDustPartition dust;
+  dust.gas_metals=metals;
+  double packet=0;
+  int max_packets=0;
+#ifdef DUST
+  max_packets=std::max(0,All.DustParticlesPerAGB);
+  if(max_packets > 0 && All.DustEnableCreation) {
+    // Full-budget partition is an upper bound on the sum of interval
+    // partitions (minimum availability limits). Use it only for packet size.
+    ElementYields full_elem;
+    full_elem.C=birth*full.C_per_Mstar; full_elem.N=birth*full.N_per_Mstar;
+    full_elem.O=birth*full.O_per_Mstar; full_elem.Ne=birth*full.Ne_per_Mstar;
+    full_elem.Mg=birth*full.Mg_per_Mstar;
+    auto full_dust=partition_stellar_ejecta_for_dust(birth*full.Z_per_Mstar,
+        full_elem,All.DustYieldAGB,0.60,false,/*apply_mass_floor=*/false,/*record_diagnostics=*/false);
+    packet=full_dust.total_dust/max_packets;
+    dust=partition_stellar_ejecta_for_dust(metals,elem,All.DustYieldAGB,
+        0.60,false,/*apply_mass_floor=*/false);
+  }
+#endif
+  const double total = All.AGBFeedbackMode == 2 ? returned : metals;
+  const double gas=total-dust.total_dust;
+  if(!std::isfinite(star.AGBPendingCarbonMass) || star.AGBPendingCarbonMass < 0 ||
+     !std::isfinite(star.AGBPendingSilicateMass) || star.AGBPendingSilicateMass < 0 ||
+     star.AGBDustPacketsCreated < 0 || star.AGBDustPacketsCreated > max_packets)
+    Terminate("Invalid AGB pending dust state");
+  const double pending0=star.AGBPendingCarbonMass+star.AGBPendingSilicateMass;
+  if(star.getMass() <= total+pending0)
+    Terminate("AGB transaction would exhaust stellar mass");
+  if(!deposit_agb_gas(Sp,Tree,D,p,gas,dust.gas_metals,elem)) {
+    agb_deposition_failures++;
+    return; // No ledger or age advanced: entire interval remains pending.
+  }
+  // No reference into P may survive dust creation/particle storage changes.
+  Sp->P[p].AGBPendingCarbonMass+=dust.carbon_dust;
+  Sp->P[p].AGBPendingSilicateMass+=dust.silicate_dust;
+  Sp->P[p].AGBCumulativeReturnedMass+=returned;
+  Sp->P[p].AGBLastProcessedAgeMyr=age;
+#ifdef DUST
+  const double pending=Sp->P[p].AGBPendingCarbonMass+Sp->P[p].AGBPendingSilicateMass;
+  const bool complete=current.M_return_per_Mstar >= full.M_return_per_Mstar*(1-1e-12);
+  auto release=agb_feedback::dust_release(pending,packet,
+       max_packets-Sp->P[p].AGBDustPacketsCreated,complete);
+  if(release.mass >= FB_MIN_STELLAR_DUST_MASS && release.packets > 0) {
+    double cf=Sp->P[p].AGBPendingCarbonMass/pending;
+    const double emitted=create_dust_particles_from_feedback(Sp,p,
+        release.mass*cf,release.mass*(1-cf),2,release.packets,true);
+    if(std::abs(emitted-release.mass) > 1e-12*std::max(release.mass,1e-30))
+      Terminate("AGB dust packet creation failed conservation check");
+    Sp->P[p].setMass(Sp->P[p].getMass()-emitted);
+    // Saturation protects roundoff only; both components are debited in
+    // exactly the same ratio used to construct the actual dust particles.
+    Sp->P[p].AGBPendingCarbonMass=std::max(0.0,Sp->P[p].AGBPendingCarbonMass-emitted*cf);
+    Sp->P[p].AGBPendingSilicateMass=std::max(0.0,Sp->P[p].AGBPendingSilicateMass-emitted*(1-cf));
+    Sp->P[p].AGBDustPacketsCreated+=release.packets;
+  }
+#endif
+  ++cg_agb_sync::commits;
+  if(previous>0)cg_agb_sync::max_noninitial_interval_myr=std::max(cg_agb_sync::max_noninitial_interval_myr,age-previous);
+  agb_event_count++;
+  agb_total_metals_g+=metals*All.UnitMass_in_g;
+  diag_add_agb(0.0);
+  if(All.FeedbackDebugLevel >= 2)
+    printf("[AGB_AGE|T=%d] ID=%lld age=[%.9g,%.9g] mode=%d gas=%.12g metals=%.12g pending_dust=%.12g return=%.12g\n",
+       All.ThisTask,(long long)Sp->P[p].ID.get(),previous,age,All.AGBFeedbackMode,
+       gas,metals,Sp->P[p].AGBPendingCarbonMass+Sp->P[p].AGBPendingSilicateMass,returned);
+}
+
+static void apply_distributed_agb_pass(simparticles *Sp,ngbtree *Tree,
+                                     domain<simparticles> *D,MPI_Comm comm) {
+  cg_agb_transport::comm=comm;
+  int rank,size;MPI_Comm_rank(comm,&rank);MPI_Comm_size(comm,&size);
+  if(!cg_agb_sync::open || cg_agb_sync::epoch!=All.Ti_Current)
+    Terminate("AGB scheduler called outside its post-kick feedback window");
+  if(!cg_agb_sync::closed)return; // Leave all mass, age and packet state pending.
+  for(int j=0;j<Sp->NumGas;++j)if(Sp->P[j].getType()==0)
+    for(int k=0;k<3;++k) {
+      const double v=Sp->P[j].Vel[k],vp=Sp->SphP[j].VelPred[k];
+      if(!std::isfinite(v)||!std::isfinite(vp)||std::abs(v-vp)>1e-5*std::max(1.,std::max(std::abs(v),std::abs(vp))))
+        Terminate("Gas velocity clocks disagree at full AGB synchronization");
+    }
+  // Geometry is evaluated at the current drift time on every gas owner.
+  // Recipient velocity impulses preserve their kick offset.
+  // All donor gravity kicks have closed; stored donor velocity is current.
+  Sp->drift_all_particles();
+  std::vector<std::uint64_t> ids;std::vector<int> indices;std::vector<double> ages;
+  for(int p=0;p<Sp->NumPart;++p)if(Sp->P[p].getType()==4) {
+    const double age=get_stellar_age_Myr(Sp->P[p].StellarAge,0.0);
+    const double before=Sp->P[p].AGBLastProcessedAgeMyr;
+    if(!std::isfinite(age)||!std::isfinite(before)||before<0||before>age+1e-6 || (Sp->P[p].FeedbackFlag&2))
+      Terminate("Invalid distributed AGB eligibility state");
+    if(age>before && (age-before>=All.AGBFeedbackIntervalMyr || All.Time>=All.TimeMax)) {
+      ids.push_back((std::uint64_t)Sp->P[p].ID.get());indices.push_back(p);ages.push_back(age);
+    }
+  }
+  long long clock_local[2]={0,0},clock_global[2]={0,0};
+  for(int p:indices) {
+    if(!Sp->TimeBinSynchronized[(int)Sp->P[p].TimeBinGrav])++clock_local[0];
+#if defined(PMGRID) && defined(PERIODIC) && !defined(TREEPM_NOTIMESPLIT)
+    if(All.PM_Ti_endstep!=All.Ti_Current)++clock_local[1];
+#endif
+  }
+  MPI_Allreduce(clock_local,clock_global,2,MPI_LONG_LONG,MPI_SUM,comm);
+  if(rank==0 && (clock_global[0] || clock_global[1]))
+    printf("[AGB_DONOR_CLOCK_AUDIT] ti=%lld unsynchronized_gravity=%lld between_PM_closings=%lld; stored donor velocity is not proven current\n",
+      (long long)All.Ti_Current,clock_global[0],clock_global[1]);
+  if(ids.size()>1000000)Terminate("Reference AGB scheduler event limit");
+  int n=(int)ids.size();std::vector<int> counts(size),offset(size);MPI_Allgather(&n,1,MPI_INT,counts.data(),1,MPI_INT,comm);
+  long long total=0;for(int r=0;r<size;++r){offset[r]=(int)total;total+=counts[r];}
+  if(total>1000000)Terminate("Reference AGB scheduler global event limit");
+  std::vector<std::uint64_t> all_ids(total);std::vector<int> all_indices(total);std::vector<double> all_ages(total);
+  MPI_Allgatherv(ids.data(),n,MPI_UINT64_T,all_ids.data(),counts.data(),offset.data(),MPI_UINT64_T,comm);
+  MPI_Allgatherv(indices.data(),n,MPI_INT,all_indices.data(),counts.data(),offset.data(),MPI_INT,comm);
+  MPI_Allgatherv(ages.data(),n,MPI_DOUBLE,all_ages.data(),counts.data(),offset.data(),MPI_DOUBLE,comm);
+  struct Event{std::uint64_t id;int owner,index;double age;};std::vector<Event> events;
+  for(int r=0;r<size;++r)for(int i=offset[r];i<offset[r]+counts[r];++i)events.push_back({all_ids[i],r,all_indices[i],all_ages[i]});
+  std::sort(events.begin(),events.end(),[](const Event&a,const Event&b){return a.id<b.id;});
+  for(size_t i=1;i<events.size();++i)if(events[i-1].id==events[i].id)Terminate("Duplicate distributed AGB donor ID");
+  cg_agb_transport::IndexWindow index_window(Sp);
+  for(auto &event:events) {
+    cg_agb_transport::owner=event.owner;
+    try {
+      if(rank==event.owner)apply_age_dependent_agb(Sp,Tree,D,event.index,event.age);
+      else {ElementYields empty;deposit_agb_gas(Sp,Tree,D,-1,0,0,empty);}
+    }catch(const std::exception &e){Terminate("Distributed AGB transaction failure: %s",e.what());}
+  }
+  index_window.validate(Sp);
+  cg_agb_transport::owner=-1;
+}
+
 void init_stellar_feedback(void)
 {
+  if(All.AGBFeedbackMode != 2) Terminate("Time-centered AGB pilot requires mode 2");
+  if(All.ThisTask == 0) printf("[AGB_THERMAL_UPDATE] current_prediction_increment; mixing heat retained\n");
+  if(All.AGBFeedbackMode < 0 || All.AGBFeedbackMode > 2 ||
+     !std::isfinite(All.AGBFeedbackIntervalMyr) || All.AGBFeedbackIntervalMyr <= 0)
+    Terminate("AGBFeedbackMode must be 0..2; AGBFeedbackIntervalMyr must be positive");
+  if(All.SnapFormat != 3) Terminate("AGB pilot requires HDF5 snapshots (SnapFormat=3)");
+  if(All.ThisTask == 0)
+    printf("[AGB_MODEL] version=4 mode=%d interval_Myr=%.9g; pending dust is included in stellar mass\n",
+           All.AGBFeedbackMode,All.AGBFeedbackIntervalMyr);
+
 #ifdef FEEDBACK
   // Print banner on task 0
   if(All.ThisTask == 0)
@@ -1922,6 +2615,7 @@ void init_stellar_feedback(void)
       printf("[FEEDBACK] ERROR: Failed to load AGB yields from '%s'\n", All.AGBYieldFile);
       printf("[FEEDBACK] AGB feedback will be DISABLED\n");
     }
+    if(All.AGBFeedbackMode > 0) Terminate("Age-dependent AGB requires its yield table");
   } else {
     if(All.ThisTask == 0)
       printf("[FEEDBACK] AGB yields loaded from '%s'\n", All.AGBYieldFile);
@@ -2613,7 +3307,9 @@ void apply_stellar_feedback(
         // 2b) AGB enrichment.
         // ================================================================
 
-        if(AGB_Yields.is_table_loaded() &&
+        // Age-dependent AGB is processed collectively after the SN/local star pass.
+
+        if(All.AGBFeedbackMode == 0 && AGB_Yields.is_table_loaded() &&
            age_Myr >= MIN_AGB_TIME &&
            !(Sp->P[p].FeedbackFlag & 2))
         {
@@ -2925,6 +3621,8 @@ void apply_stellar_feedback(
             agb_stars_checked++;
 
     } // end star loop
+    if(AGB_Yields.is_table_loaded() && All.AGBFeedbackMode>0)
+      apply_distributed_agb_pass(Sp,Tree,D,comm);
 
 
     // ====================================================================

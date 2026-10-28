@@ -52,6 +52,8 @@ int CheckpointDebugLevel;   // 0=off, 1=detailed output
 
 #ifdef FEEDBACK
   int FeedbackDebugLevel;  // 0=off, 1=detailed output
+  int AGBFeedbackMode;      // 0=legacy, 1=age-dependent metals, 2=age-dependent total mass
+  double AGBFeedbackIntervalMyr; // minimum stellar-age increment between updates
   char AGBYieldFile[MAXLEN_PATH];
   char SNIIYieldFile[MAXLEN_PATH];
   char HypernovaYieldFile[MAXLEN_PATH];

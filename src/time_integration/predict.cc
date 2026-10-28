@@ -11,6 +11,7 @@
 
 #include "gadgetconfig.h"
 
+#include <gsl/gsl_math.h>
 #include <math.h>
 #include <mpi.h>
 #include <stdio.h>
@@ -388,11 +389,46 @@ if(time1 < time0)
 #endif
         }
 
-      SphP->EntropyPred += SphP->DtEntropy * dt_entr;
+      /* Form all predicted scalars before committing them.  Density and
+       * smoothing length obey
+       *
+       *   d rho / dt = -DivVel rho,       d h / dt = DivVel h / NUMDIMS.
+       *
+       * Integrating these relations for the stored, constant DivVel keeps
+       * rho positive and preserves rho * h^NUMDIMS during an inactive
+       * particle's drift.  The former forward-Euler prediction could make a
+       * perfectly finite expanding particle acquire negative density whenever
+       * DivVel * dt_drift exceeded unity.  A later emergency density reset
+       * then converted diffuse gas into an artificial high-pressure particle
+       * and seeded the thermal/timestep runaway seen in CG01.
+       *
+       * Invalid results are still fatal.  They must never be replaced with
+       * arbitrary constants because doing so changes the physical state. */
+      const double entropy_pred_new = SphP->EntropyPred + SphP->DtEntropy * dt_entr;
+      const double volume_log_change = SphP->DivVel * dt_drift;
+      const double density_new = SphP->Density * exp(-volume_log_change);
+      const double hsml_new = SphP->Hsml * exp(volume_log_change / NUMDIMS);
 
-      SphP->Density += SphP->DtDensity * dt_drift;
+      if(!gsl_finite(entropy_pred_new) || entropy_pred_new <= 0 ||
+         !gsl_finite(density_new) || density_new <= 0 ||
+         !gsl_finite(hsml_new) || hsml_new <= 0)
+        Terminate(
+            "Invalid SPH drift prediction: ID=%lld time0=%lld time1=%lld "
+            "dt_entr=%g dt_drift=%g "
+            "DivVel=%g DivVelDt=%g "
+            "EntropyPred=%g DtEntropy=%g EntropyPredNew=%g "
+            "Density=%g DtDensity=%g DensityNew=%g "
+            "Hsml=%g DtHsml=%g HsmlNew=%g\n",
+            (long long)P->ID.get(), (long long)time0, (long long)time1,
+            dt_entr, dt_drift,
+            (double)SphP->DivVel, volume_log_change,
+            (double)SphP->EntropyPred, (double)SphP->DtEntropy, entropy_pred_new,
+            (double)SphP->Density, (double)SphP->DtDensity, density_new,
+            (double)SphP->Hsml, (double)SphP->DtHsml, hsml_new);
 
-      SphP->Hsml += SphP->DtHsml * dt_drift;
+      SphP->EntropyPred = entropy_pred_new;
+      SphP->Density     = density_new;
+      SphP->Hsml        = hsml_new;
 
 #ifdef PRESSURE_ENTROPY_SPH
       SphP->PressureSphDensity += SphP->DtPressureSphDensity * dt_drift;

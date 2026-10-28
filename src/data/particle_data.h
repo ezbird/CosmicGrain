@@ -58,6 +58,16 @@ struct particle_data
 
   // Unprocessed stellar-feedback energy in code energy units.
   double EnergyReservoir;
+
+  // Stellar-population age through which AGB ejecta were deposited.
+  // Physical Myr; advance only after a successful transaction.
+  double AGBLastProcessedAgeMyr;
+  double AGBBirthMetallicity;
+  // Pending dust stays in the star's dynamical mass until spawned.
+  double AGBPendingCarbonMass;
+  double AGBPendingSilicateMass;
+  double AGBCumulativeReturnedMass; // table-predicted mass processed, code units
+  int AGBDustPacketsCreated;
 #endif
 
   copyable_atomic<integertime> Ti_Current; /**< current time on integer timeline */

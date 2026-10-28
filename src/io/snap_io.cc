@@ -155,6 +155,33 @@ void snap_io::init_basic(simparticles *Sp_ptr)
              STARS_ONLY, /* completed stellar-feedback channels and tranches */
              0, 0, 0, 0, 0, 0, 0);
 
+  init_field("AGBA", "AGBLastProcessedAgeMyr",
+             MEM_DOUBLE, FILE_DOUBLE,
+             READ_IF_PRESENT, 1, A_P,
+             &Sp->P[0].AGBLastProcessedAgeMyr, NULL,
+             STARS_ONLY, /* last successfully processed AGB age, physical Myr */
+             0, 0, 0, 0, 0, 0, 0);
+
+  init_field("AGBZ", "AGBBirthMetallicity", MEM_DOUBLE, FILE_DOUBLE,
+             READ_IF_PRESENT, 1, A_P, &Sp->P[0].AGBBirthMetallicity, NULL,
+             STARS_ONLY, 0, 0, 0, 0, 0, 0, 0);
+
+  init_field("AGBC", "AGBPendingCarbonMass", MEM_DOUBLE, FILE_DOUBLE,
+             READ_IF_PRESENT, 1, A_P, &Sp->P[0].AGBPendingCarbonMass, NULL,
+             STARS_ONLY, 0, 0, 0, 0, 0, 0, 0);
+
+  init_field("AGBS", "AGBPendingSilicateMass", MEM_DOUBLE, FILE_DOUBLE,
+             READ_IF_PRESENT, 1, A_P, &Sp->P[0].AGBPendingSilicateMass, NULL,
+             STARS_ONLY, 0, 0, 0, 0, 0, 0, 0);
+
+  init_field("AGBR", "AGBCumulativeReturnedMass", MEM_DOUBLE, FILE_DOUBLE,
+             READ_IF_PRESENT, 1, A_P, &Sp->P[0].AGBCumulativeReturnedMass, NULL,
+             STARS_ONLY, 0, 0, 0, 0, 0, 0, 0);
+
+  init_field("AGBN", "AGBDustPacketsCreated", MEM_INT, FILE_INT,
+             READ_IF_PRESENT, 1, A_P, &Sp->P[0].AGBDustPacketsCreated, NULL,
+             STARS_ONLY, 0, 0, 0, 0, 0, 0, 0);
+
 #endif /* FEEDBACK */
 
   init_field("Z   ", "Metallicity",
@@ -406,6 +433,12 @@ void snap_io::read_ic(const char *fname)
   Sp->TotNumPart = 0;
 
   int num_files = find_files(fname, fname);
+#if defined(FEEDBACK) && defined(STARFORMATION)
+  if(header.npartTotal[4] > 0 && All.ICFormat != 3 &&
+     (All.RestartFlag == RST_BEGIN || All.RestartFlag == RST_STARTFROMSNAP))
+    Terminate("AGB pilot requires HDF5 metadata when loading existing stars");
+#endif
+
 
   reset_io_byte_count();
 
@@ -1014,6 +1047,12 @@ void snap_io::read_file_header(const char *fname, int filenr, int readTask, int 
  */
 void snap_io::write_header_fields(hid_t handle)
 {
+#ifdef FEEDBACK
+  int agb_version = 4;
+  write_scalar_attribute(handle, "CosmicGrainAGBVersion", &agb_version, H5T_NATIVE_INT);
+  write_scalar_attribute(handle, "CosmicGrainAGBMode", &All.AGBFeedbackMode, H5T_NATIVE_INT);
+#endif
+
 #ifdef GADGET2_HEADER
   write_vector_attribute(handle, "NumPart_ThisFile", header.npart, H5T_NATIVE_UINT, NTYPES);
 #else
@@ -1074,6 +1113,30 @@ void snap_io::read_header_fields(const char *fname)
 #endif
 
   read_vector_attribute(handle, "NumPart_Total", header.npartTotal, H5T_NATIVE_UINT64, ntypes);
+#if defined(FEEDBACK) && defined(STARFORMATION)
+  if(header.npart[4] > 0 &&
+     (All.RestartFlag == RST_BEGIN || All.RestartFlag == RST_STARTFROMSNAP))
+    {
+      int version = -1, mode = -1;
+      if(H5Aexists(handle, "CosmicGrainAGBVersion") <= 0 ||
+         H5Aexists(handle, "CosmicGrainAGBMode") <= 0)
+        Terminate("AGB pilot cannot load legacy stars: missing model metadata in %s", fname);
+      read_scalar_attribute(handle, "CosmicGrainAGBVersion", &version, H5T_NATIVE_INT);
+      read_scalar_attribute(handle, "CosmicGrainAGBMode", &mode, H5T_NATIVE_INT);
+      if(version != 4 || mode != All.AGBFeedbackMode)
+        Terminate("AGB model mismatch in %s: version=%d mode=%d", fname, version, mode);
+      const char *required[] = {
+        "/PartType4/StellarBirthMass", "/PartType4/FeedbackFlag",
+        "/PartType4/StellarFormationTime", "/PartType4/EnergyReservoir",
+        "/PartType4/AGBLastProcessedAgeMyr", "/PartType4/AGBBirthMetallicity",
+        "/PartType4/AGBPendingCarbonMass", "/PartType4/AGBPendingSilicateMass",
+        "/PartType4/AGBCumulativeReturnedMass", "/PartType4/AGBDustPacketsCreated"};
+      for(const char *field : required)
+        if(H5Lexists(hdf5_file, field, H5P_DEFAULT) <= 0)
+          Terminate("Missing AGB state %s in %s", field, fname);
+    }
+#endif
+
 
 #if defined(MERGERTREE) && !defined(GADGET2_HEADER)
   if(snap_type == MOST_BOUND_PARTICLE_SNAPHOT_REORDERED)

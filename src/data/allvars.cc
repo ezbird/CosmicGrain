@@ -206,6 +206,8 @@ void global_data_all_processes::register_parameters(void)
 
 #ifdef FEEDBACK
   add_param("FeedbackDebugLevel", &FeedbackDebugLevel, PARAM_INT, PARAM_FIXED);
+  add_param("AGBFeedbackMode", &AGBFeedbackMode, PARAM_INT, PARAM_FIXED);
+  add_param("AGBFeedbackIntervalMyr", &AGBFeedbackIntervalMyr, PARAM_DOUBLE, PARAM_FIXED);
   add_param("AGBYieldFile", AGBYieldFile, PARAM_STRING, PARAM_CHANGEABLE);
   add_param("SNIIYieldFile", SNIIYieldFile, PARAM_STRING, PARAM_CHANGEABLE);
   add_param("HypernovaYieldFile", HypernovaYieldFile, PARAM_STRING, PARAM_CHANGEABLE);

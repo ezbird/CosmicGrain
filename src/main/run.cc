@@ -11,6 +11,8 @@
 
 // clang-format off
 #include "gadgetconfig.h"
+#include <cstdlib>
+#include <string>
 // clang-format on
 
 #include <ctype.h>
@@ -41,6 +43,11 @@
 
 #ifdef FEEDBACK
 #include "../cooling_sfr/feedback.h"
+void agb_probe_before_domain(void);
+void agb_probe_observe(simparticles *,int);
+void agb_probe_flush(simparticles *,MPI_Comm);
+void agb_begin_closed_feedback_window(simparticles *,MPI_Comm);
+void agb_end_closed_feedback_window(void);
 #endif
 
 #ifdef DUST
@@ -70,6 +77,15 @@ extern spatial_hash_zoom gas_hash, star_hash, dust_hash;
  */
 void sim::run(void)
 {
+#ifdef FEEDBACK
+  if(std::getenv("CG_AGB_MPI_SELFTEST") || std::getenv("CG_AGB_SSP_SELFTEST") ||
+     std::getenv("CG_AGB_EVOLUTION_TEST") || std::getenv("CG_AGB_DONOR_SELFTEST") ||
+     std::getenv("CG_AGB_SYNC_TEST_TIMESTEPS") || std::getenv("CG_RC1_NEIGHBOR_MODE") ||
+     std::getenv("CG_RC1_PERF_CALL_LIMIT"))
+    Terminate("Diagnostic test switches are forbidden in the production build");
+  if(!All.ComovingIntegrationOn || All.AGBFeedbackMode!=2 || All.TimeBegin!=0.01 || All.TimeMax!=1.0)
+    Terminate("Production RC1 requires cosmological mode 2 with TimeBegin=0.01 and TimeMax=1");
+#endif
 #if defined(NGENIC_TEST) && defined(PERIODIC) && defined(PMGRID)
   snap_io Snap(&Sp, Communicator, All.SnapFormat);             /* get an I/O object */
   Snap.write_snapshot(All.SnapshotFileCount, NORMAL_SNAPSHOT); /* write snapshot file */
@@ -155,6 +171,9 @@ void sim::run(void)
       #ifdef DEBUG_MD5
         Logs.log_debug_md5("C");
       #endif
+#ifdef FEEDBACK
+        agb_probe_before_domain();
+#endif
         Domain.domain_decomposition(STANDARD);
 
       #ifdef DEBUG_MD5
@@ -171,6 +190,9 @@ void sim::run(void)
        * synchronization point, which is stored in the list TimeBinsHydro.ActiveParticleList[].
        * This list is reused for the subsequent second and first hydro step. */
       NgbTree.compute_densities();
+#ifdef FEEDBACK
+      agb_probe_observe(&Sp,1);
+#endif
 
       /* if particles have increased their smoothing lengths, this is recorded in parent tree nodes */
       NgbTree.update_maxhsml();
@@ -183,7 +205,13 @@ void sim::run(void)
 
       /* do any extra physics, in a Strang-split way, for the timesteps that are finished */
       MPI_Barrier(Communicator);
+#ifdef FEEDBACK
+      agb_begin_closed_feedback_window(&Sp,Communicator);
+#endif
       calculate_non_standard_physics_end_of_step();
+#ifdef FEEDBACK
+      agb_end_closed_feedback_window();
+#endif
       MPI_Barrier(Communicator);
 
 #ifdef DUST
@@ -318,6 +346,9 @@ void sim::calculate_non_standard_physics_end_of_step(void)
   #ifdef COOLING
   #ifdef STARFORMATION
     CoolSfr.cooling_and_starformation(&Sp);
+#ifdef FEEDBACK
+    agb_probe_observe(&Sp,2);
+#endif
     CoolSfr.sfr_create_star_particles(&Sp);
   #endif
   #endif
@@ -326,6 +357,7 @@ void sim::calculate_non_standard_physics_end_of_step(void)
     const double feedback_begin = MPI_Wtime();
     apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain, Communicator);
     feedback_diag_try_flush(Communicator, /*cadence=*/50);
+    agb_probe_flush(&Sp,Communicator);
 
     FeedbackTimingTotal += MPI_Wtime() - feedback_begin;
     FeedbackTimingCalls++;
@@ -704,6 +736,9 @@ void sim::create_snapshot_if_desired(void)
           gas_hash.is_built = false;
           star_hash.is_built = false;
         #endif
+#ifdef FEEDBACK
+        agb_probe_before_domain();
+#endif
         Domain.domain_decomposition(STANDARD);
         NgbTree.treeallocate(Sp.NumGas, &Sp, &Domain);
         NgbTree.treebuild(Sp.NumGas, NULL);

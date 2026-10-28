@@ -69,7 +69,9 @@ double create_dust_particles_from_feedback(
     int star_idx,
     double carbon_dust_mass,
     double silicate_dust_mass,
-    int feedback_type);
+    int feedback_type,
+    int particle_count_override = -1,
+    bool conserve_agb_momentum = false);
 void spawn_dust_particle(simparticles *Sp, double offset_kpc[3], double dust_mass,
                          double initial_velocity[3], int star_idx, int feedback_type);
 void destroy_dust_particles(simparticles *Sp);

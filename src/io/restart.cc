@@ -395,6 +395,28 @@ void restart::contents_restart_file(int modus)
   else
     Terminate("unknown modus\n");
 
+#ifdef FEEDBACK
+  // Versioned prefix is deliberately incompatible with pre-pilot restarts.
+  // Check BEFORE interpreting either All or particle_data with the new layout.
+  unsigned long long agb_magic = 0x4347414742303034ULL;
+  int agb_mode = All.AGBFeedbackMode;
+  unsigned long long agb_layout[3] = {
+      (unsigned long long)All.get_data_size(),
+      (unsigned long long)sizeof(particle_data),
+      (unsigned long long)sizeof(sph_particle_data)};
+  const int expected_mode = agb_mode;
+  const unsigned long long expected_layout[3] = {
+      agb_layout[0], agb_layout[1], agb_layout[2]};
+  byten(&agb_magic, sizeof(agb_magic), modus);
+  byten(&agb_mode, sizeof(agb_mode), modus);
+  byten(agb_layout, sizeof(agb_layout), modus);
+  if(agb_magic != 0x4347414742303034ULL || agb_mode != expected_mode)
+    Terminate("Incompatible AGB restart: use this pilot's own restart files and unchanged mode");
+  for(int k = 0; k < 3; ++k)
+    if(agb_layout[k] != expected_layout[k])
+      Terminate("Incompatible AGB restart memory layout");
+#endif
+
   /* common data  */
   byten(All.get_data_ptr(), All.get_data_size(), modus);
 

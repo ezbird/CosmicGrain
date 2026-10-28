@@ -2,6 +2,11 @@
 /*
   This performs 2D interpolation that converts MESA stellar evolution models into a fast lookup table,
   allowing the simulation to quickly ask "what yields does a 2.5 Msun, Z=0.015 AGB star produce?" for example
+
+  What we want is for the simulation to be able to ask "what are the total yields of a stellar population with 
+  metallicity Z=0.015?" and get back the total yields of C, N, O, Ne, Mg, and total metals per unit initial stellar mass.
+
+  These need to be released over time, so we also need to know the start and end times of the AGB phase for each stellar mass and metallicity.
 */
 /*******************************************************************************/
 #include "gadgetconfig.h"
@@ -13,6 +18,8 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <cmath>
+#include <stdexcept>
 
 // Global instance
 AGBYieldTable AGB_Yields;
@@ -155,6 +162,7 @@ double AGBYieldTable::integrate_imf_mass(double m1, double m2)
 void AGBYieldTable::build_imf_yield_table()
 {
     imf_yields.clear();
+    imf_models.clear();
 
     if(table.empty() || Z_grid.empty())
         return;
@@ -194,6 +202,7 @@ void AGBYieldTable::build_imf_yield_table()
         double int_Ne = 0.0;
         double int_Mg = 0.0;
         double int_Z  = 0.0;
+        double int_M_return = 0.0;
 
         // Trapezoidal integration across the actual MESA mass grid:
         //
@@ -240,6 +249,12 @@ void AGBYieldTable::build_imf_yield_table()
                 0.5 *
                 (phi_a * a.Z_yield_total +
                  phi_b * b.Z_yield_total) * dm;
+
+            // integrates total returned mass with exactly the same IMF weighting as the metal yields
+            int_M_return +=
+                0.5 *
+                (phi_a * a.M_lost +
+                 phi_b * b.M_lost) * dm;
         }
 
         AGBIMFYield y {};
@@ -251,8 +266,10 @@ void AGBYieldTable::build_imf_yield_table()
         y.Ne_per_Mstar = int_Ne / IMF_MASS_NORM;
         y.Mg_per_Mstar = int_Mg / IMF_MASS_NORM;
         y.Z_per_Mstar  = int_Z  / IMF_MASS_NORM;
+        y.M_return_per_Mstar = int_M_return / IMF_MASS_NORM;
 
         imf_yields.push_back(y);
+        imf_models.push_back(models);
     }
 
     if(!imf_yields.empty())
@@ -319,11 +336,140 @@ AGBIMFYield AGBYieldTable::get_imf_yields(double Z_star)
                 lo.Z_per_Mstar +
                 f * (hi.Z_per_Mstar - lo.Z_per_Mstar);
 
+            result.M_return_per_Mstar =
+                lo.M_return_per_Mstar +
+                f * (hi.M_return_per_Mstar - lo.M_return_per_Mstar);
+
             return result;
         }
     }
 
     return empty;
+}
+
+AGBIMFYield AGBYieldTable::get_cumulative_imf_yields(
+    double Z_star, double age_Myr) const
+{
+    if(!std::isfinite(Z_star) || Z_star < 0.0 ||
+       !std::isfinite(age_Myr) || age_Myr < 0.0)
+        throw std::invalid_argument("Invalid AGB metallicity or age");
+
+    if(imf_yields.empty() ||
+       imf_models.size() != imf_yields.size())
+        throw std::runtime_error("AGB IMF table not initialized");
+
+    // Individual models release their integrated ejecta at t_AGB_end.
+    // Interpolate lifetime and IMF-weighted yield across each mass interval.
+    // Full integration reproduces the original trapezoidal budgets.
+    auto at_grid = [&](size_t iz)
+    {
+        AGBIMFYield out {};
+        out.Z_init = imf_yields[iz].Z_init;
+
+        const auto &models = imf_models[iz];
+        const double norm = integrate_imf_mass(0.08, 100.0);
+
+        for(size_t i = 0; i + 1 < models.size(); ++i)
+        {
+            const auto &a = models[i];
+            const auto &b = models[i + 1];
+
+            const double dm = b.mass_init - a.mass_init;
+            const double ta = a.t_AGB_end;
+            const double tb = b.t_AGB_end;
+
+            if(dm <= 0.0 ||
+               !std::isfinite(ta) || !std::isfinite(tb) ||
+               ta <= 0.0 || tb <= 0.0)
+                throw std::runtime_error(
+                    "Invalid AGB mass/lifetime grid");
+
+            // Fractional coordinate u runs from mass a to mass b.
+            // Include only masses whose lifetime is <= age_Myr.
+            double lo = 0.0;
+            double hi = 1.0;
+
+            if(age_Myr < std::min(ta, tb))
+                continue;
+
+            if(age_Myr < std::max(ta, tb))
+            {
+                const double u = (age_Myr - ta) / (tb - ta);
+
+                if(tb > ta)
+                    hi = u;
+                else
+                    lo = u;
+            }
+
+            const double width = hi - lo;
+            const double slope_weight =
+                0.5 * (hi * hi - lo * lo);
+
+            const double pa = kroupa_imf(a.mass_init);
+            const double pb = kroupa_imf(b.mass_init);
+
+            auto add = [&](double ya, double yb)
+            {
+                return dm *
+                    (pa * ya * width +
+                     (pb * yb - pa * ya) * slope_weight) / norm;
+            };
+
+            out.C_per_Mstar += add(a.C_yield, b.C_yield);
+            out.N_per_Mstar += add(a.N_yield, b.N_yield);
+            out.O_per_Mstar += add(a.O_yield, b.O_yield);
+            out.Ne_per_Mstar += add(a.Ne_yield, b.Ne_yield);
+            out.Mg_per_Mstar += add(a.Mg_yield, b.Mg_yield);
+            out.Z_per_Mstar +=
+                add(a.Z_yield_total, b.Z_yield_total);
+            out.M_return_per_Mstar += add(a.M_lost, b.M_lost);
+        }
+
+        return out;
+    };
+
+    // Match the existing metallicity interpolation and endpoint clamping.
+    size_t lo = 0;
+    size_t hi = 0;
+
+    if(Z_star >= imf_yields.back().Z_init)
+    {
+        lo = hi = imf_yields.size() - 1;
+    }
+    else if(Z_star > imf_yields.front().Z_init)
+    {
+        hi = 1;
+        while(imf_yields[hi].Z_init < Z_star)
+            ++hi;
+        lo = hi - 1;
+    }
+
+    AGBIMFYield result = at_grid(lo);
+    result.Z_init = Z_star;
+
+    if(lo == hi)
+        return result;
+
+    const AGBIMFYield upper = at_grid(hi);
+    const double f =
+        (Z_star - imf_yields[lo].Z_init) /
+        (imf_yields[hi].Z_init - imf_yields[lo].Z_init);
+
+    double AGBIMFYield::* fields[] = {
+        &AGBIMFYield::C_per_Mstar,
+        &AGBIMFYield::N_per_Mstar,
+        &AGBIMFYield::O_per_Mstar,
+        &AGBIMFYield::Ne_per_Mstar,
+        &AGBIMFYield::Mg_per_Mstar,
+        &AGBIMFYield::Z_per_Mstar,
+        &AGBIMFYield::M_return_per_Mstar
+    };
+
+    for(auto field : fields)
+        result.*field += f * (upper.*field - result.*field);
+
+    return result;
 }
 
 void AGBYieldTable::find_mass_bracket(double mass, int& i_low, int& i_high, double& frac) {

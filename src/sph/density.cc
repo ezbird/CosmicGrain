@@ -12,6 +12,7 @@
 #include "gadgetconfig.h"
 
 #include <math.h>
+#include <cmath>
 #include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -447,6 +448,14 @@ void sph::density(int *list, int ntarget)
   MyFloat *Left   = (MyFloat *)Mem.mymalloc("Left", Tp->NumGas * sizeof(MyFloat));
   MyFloat *Right  = (MyFloat *)Mem.mymalloc("Right", Tp->NumGas * sizeof(MyFloat));
 
+  /* Bounds are applied before a density evaluation. A clamped trial must
+   * be evaluated before acceptance; density and its gradients belong to h. */
+  if(!std::isfinite(All.MinGasHsml) || !std::isfinite(All.MaxGasHsml) ||
+     All.MinGasHsml < 0 || All.MaxGasHsml < 0 ||
+     (All.MaxGasHsml > 0 && All.MinGasHsml > All.MaxGasHsml))
+    Terminate("Invalid gas smoothing-length bounds: min=%g max=%g",
+              All.MinGasHsml, All.MaxGasHsml);
+
   int ndensities = ntarget;
 
   for(int i = 0; i < ntarget; i++)
@@ -454,6 +463,15 @@ void sph::density(int *list, int ntarget)
       int target    = list[i];
       targetList[i] = target;
       Left[target] = Right[target] = 0.0;
+      double h = Tp->SphP[target].Hsml;
+      if(!std::isfinite(h) || h <= 0)
+        Terminate("Invalid initial density Hsml: task=%d ID=%llu Hsml=%g",
+                  D->ThisTask, (unsigned long long)Tp->P[target].ID.get(), h);
+      if(All.MinGasHsml > 0 && h < All.MinGasHsml)
+        h = All.MinGasHsml;
+      if(All.MaxGasHsml > 0 && h > All.MaxGasHsml)
+        h = All.MaxGasHsml;
+      Tp->SphP[target].Hsml = h;
     }
 
   int iter = 0;
@@ -501,11 +519,43 @@ void sph::density(int *list, int ntarget)
                 Terminate("P[target].getType() != 0");
 
               sph_particle_data *SphP = Tp->SphP;
+              const double evaluated_h = SphP[target].Hsml;
+              const double raw_density = SphP[target].Density;
+              const double target_mass = Tp->P[target].getMass();
+              const bool at_max = All.MaxGasHsml > 0 && evaluated_h >= All.MaxGasHsml;
+              const bool at_min = All.MinGasHsml > 0 && evaluated_h <= All.MinGasHsml;
+
+              /* A finite zero-density trial may request a larger h, but zero
+               * at the evaluated upper bound is never a usable SPH state. */
+              if(!std::isfinite(target_mass) || target_mass <= 0 ||
+                 !std::isfinite(raw_density) || raw_density < 0 ||
+                 (raw_density == 0 && at_max))
+                {
+                  double pos[3];
+                  Tp->intpos_to_pos(Tp->P[target].IntPos, pos);
+                  Terminate("Invalid density result before thermodynamics: "
+                            "task=%d Ti=%lld iter=%d ID=%llu mass=%g rho=%g "
+                            "evaluated_h=%g min_h=%g max_h=%g "
+                            "EntropyPred=%g DtEntropy=%g DivVelRaw=%g "
+                            "pos=(%g|%g|%g)",
+                            D->ThisTask, (long long)All.Ti_Current, iter,
+                            (unsigned long long)Tp->P[target].ID.get(),
+                            target_mass, raw_density, evaluated_h,
+                            All.MinGasHsml, All.MaxGasHsml,
+                            (double)SphP[target].EntropyPred,
+                            (double)SphP[target].DtEntropy,
+                            (double)SphP[target].DivVel, pos[0], pos[1], pos[2]);
+                }
               if(SphP[target].Density > 0)
                 {
 #ifdef WENDLAND_BIAS_CORRECTION
                   SphP[target].Density -= get_density_bias(SphP[target].Hsml, Tp->P[target].getMass(), All.DesNumNgb);
 #endif
+                  if(!std::isfinite((double)SphP[target].Density) || SphP[target].Density <= 0)
+                    Terminate("Invalid bias-corrected density: task=%d ID=%llu "
+                              "raw_rho=%g corrected_rho=%g evaluated_h=%g mass=%g",
+                              D->ThisTask, (unsigned long long)Tp->P[target].ID.get(),
+                              raw_density, (double)SphP[target].Density, evaluated_h, target_mass);
                   SphP[target].DhsmlDensityFactor *= SphP[target].Hsml / (NUMDIMS * SphP[target].Density);
                   if(SphP[target].DhsmlDensityFactor >
                      -0.9) /* note: this would be -1 if only a single particle at zero lag is found */
@@ -531,7 +581,7 @@ void sph::density(int *list, int ntarget)
                 }
 
 #ifdef PRESSURE_ENTROPY_SPH
-              if(SphP[target].EntropyToInvGammaPred > 0 && SphP[target].PressureSphDensity > 0)
+              if(SphP[target].Density > 0 && SphP[target].EntropyToInvGammaPred > 0 && SphP[target].PressureSphDensity > 0)
                 {
                   SphP[target].DhsmlDerivedDensityFactor *=
                       SphP[target].Hsml / (NUMDIMS * SphP[target].Density * SphP[target].EntropyToInvGammaPred);
@@ -565,7 +615,11 @@ void sph::density(int *list, int ntarget)
                 }
 
               SphP[target].NumNgb = NORM_COEFF * hfac * SphP[target].Density / Tp->P[target].getMass();
-              if(SphP[target].NumNgb < (desnumngb - desnumngbdev) || (SphP[target].NumNgb > (desnumngb + desnumngbdev)))
+              const bool too_few = SphP[target].NumNgb < (desnumngb - desnumngbdev);
+              const bool too_many = SphP[target].NumNgb > (desnumngb + desnumngbdev);
+              /* Accept a finite positive result outside the neighbour target
+               * only when the evaluated h is already at the binding limit. */
+              if((too_few && !at_max) || (too_many && !at_min))
                 {
                   /* need to redo this particle */
                   targetList[npleft++] = target;
@@ -634,54 +688,17 @@ void sph::density(int *list, int ntarget)
                         }
                     }
 
-                          // Apply hard limits of smoothing length from parameter file                         
-                          if(All.MaxGasHsml > 0 && SphP[target].Hsml > All.MaxGasHsml)
-                            {
-                              SphP[target].Hsml = All.MaxGasHsml;
-                              
-                              // If we hit the max, accept whatever neighbors we have
-                              // Remove this particle from the redo list
-                              npleft--;
-                              targetList[npleft] = -1;  // Mark as done
-                              
-                              // IF WE WANT TO SEE IF PARTICLES ARE HITTING THE MaxGasHsml limit:
-                                /*
-                                if(iter == 0)  // Only print on first iteration to avoid spam
-                                  {
-                                    double pos[3];
-                                    Tp->intpos_to_pos(Tp->P[target].IntPos, pos);
-                                    printf("HSML_LIMIT: Particle ID=%llu hit MaxGasHsml=%g at pos=(%g|%g|%g), Ngbs=%g (accepting)\n",
-                                          (unsigned long long)Tp->P[target].ID.get(), All.MaxGasHsml, pos[0], pos[1], pos[2], 
-                                          SphP[target].NumNgb);
-                                  }
-                                */
-                            }
-                        
-
-                }
-
-
-                else
-                {
-                  // Particle has converged successfully!
-                  // Apply MinGasHsml as a final safety check
+                  /* Keep this target on the retry list after clamping. The
+                   * next densities_determine() evaluates at the bounded h. */
+                  if(All.MaxGasHsml > 0 && SphP[target].Hsml > All.MaxGasHsml)
+                    SphP[target].Hsml = All.MaxGasHsml;
                   if(All.MinGasHsml > 0 && SphP[target].Hsml < All.MinGasHsml)
-                  {
                     SphP[target].Hsml = All.MinGasHsml;
-                    
-                    //if(iter == 0)  // Only warn on first iteration
-                    //{
-                    //  double pos[3];
-                    //  Tp->intpos_to_pos(Tp->P[target].IntPos, pos);
-                    //  printf("HSML_FLOOR: Particle ID=%llu Hsml adjusted to minimum %g at pos=(%g|%g|%g), Ngbs=%g\n",
-                    //       (unsigned long long)Tp->P[target].ID.get(), All.MinGasHsml, 
-                    //       pos[0], pos[1], pos[2], SphP[target].NumNgb);
-                    // }
-                  }
+                  if(!std::isfinite((double)SphP[target].Hsml) || SphP[target].Hsml <= 0)
+                    Terminate("Invalid proposed density Hsml: task=%d ID=%llu Hsml=%g",
+                              D->ThisTask, (unsigned long long)Tp->P[target].ID.get(),
+                              (double)SphP[target].Hsml);
                 }
-
-
-
             }
         }
 

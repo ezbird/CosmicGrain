@@ -44,6 +44,9 @@ struct AGBIMFYield {
     double Mg_per_Mstar;
 
     double Z_per_Mstar;
+    
+    // Total returned mass, including metals, per unit initial SSP mass
+    double M_return_per_Mstar;
 };
 
 
@@ -55,6 +58,7 @@ private:
 
     // IMF-integrated SSP yields, tabulated as a function of metallicity.
     std::vector<AGBIMFYield> imf_yields;
+    std::vector<std::vector<AGBYieldEntry>> imf_models;
 
     bool is_loaded;
 
@@ -82,6 +86,9 @@ public:
     // Return IMF-integrated AGB ejecta per unit stellar-population mass
     // at the requested initial stellar metallicity.
     AGBIMFYield get_imf_yields(double Z_star);
+
+    AGBIMFYield get_cumulative_imf_yields(
+        double Z_star, double age_Myr) const;
 
     // Convenience getters.
     double get_total_metal_yield(double mass_msun, double Z_star);
