@@ -11,15 +11,14 @@ Stellar particles retain their birth mass and age in an expanding universe.
 Feedback is therefore delayed rather than deposited entirely when the stellar
 particle forms.
 
-- SNII and hypernova ejecta are released in eight time tranches spanning
-  approximately 3–40 Myr.
+- SNII and hypernova ejecta are released in four time tranches spanning the configured SNII feedback window (approximately 3–40 Myr in the current implementation).
 - AGB enrichment follows the delayed mass return from the stellar population
   and uses IMF-integrated MESA yield tables.
 - The LRN dust channel is injected once with the first SNII tranche rather
-  than repeated in all eight tranches.
+  than repeated in all four tranches.
 - SNII dust sampling is distributed across the full tranche sequence so that
   delayed feedback does not accidentally multiply the requested number of
-  dust superparticles by eight.
+  dust superparticles by four.
 
 `StellarBirthMass` is stored for star particles so the original SSP mass is
 available for diagnostics and future normalization. Do not assume from the
@@ -48,7 +47,7 @@ small temperature increment among every neighbor. The implementation:
 3. evaluates the heating energy of each receiver using its own mass and mean
    molecular weight;
 4. stochastically selects receivers; and
-5. heats selected gas by a fixed \(\Delta T=3.0\times10^6\,\mathrm{K}\).
+5. heats selected gas by a target temperature jump set by the source constant `DELTA_T_TARGET`, currently `1.0e7 K`.
 
 `FeedbackFlag` and `EnergyReservoir` support feedback-state tracking and
 diagnostics. Debug-only temperature and internal-energy limiters should not be

@@ -9,10 +9,10 @@ The analysis scripts use the GADGET conventions stored in each snapshot:
 | Position | comoving \(\mathrm{kpc}/h\) |
 | Physical position | coordinate \(\times a/h\) |
 | Mass | \(10^{10}\,M_\odot/h\) |
-| Grain radius | written to HDF5 in nm; do not convert it a second time |
+| Grain radius | numerical `GrainRadius` values are in nm in the current implementation; do not convert them a second time |
 | Scale factor | `Header/Time` |
 | Redshift | `Header/Redshift` |
-| Hubble parameter | read from the snapshot parameters when required |
+| Hubble parameter | `Parameters/HubbleParam` attribute (not `Header`) |
 
 Always use periodic coordinate differences before centering or measuring
 distances.

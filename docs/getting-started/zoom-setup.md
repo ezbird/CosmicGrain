@@ -11,7 +11,7 @@ at four resolution levels.
 The selected parent-catalog halo IDs are:
 
 ```text
-295  308  441  859  1481  1534
+295  308  441  859  1481  1653
 3352  3879  3886  5834  7723  9235
 ```
 
@@ -189,8 +189,7 @@ zoom remains contamination-free at \(z=0\). Before committing to a long run:
    halo and its analysis aperture.
 
 The \(4096^3\) IC particle counts vary greatly with Lagrangian-region geometry.
-Halo 1534 contains 517,537,024 initial particles, so validity alone does not
-make every highest-resolution run equally practical.
+The highest-resolution ICs can contain hundreds of millions of particles, so validity alone does not make every 4096³ run equally practical. Measure the current IC directly before allocating production resources.
 
 ## Historical note: Halo 569
 

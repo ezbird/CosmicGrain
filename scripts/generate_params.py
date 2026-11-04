@@ -201,12 +201,12 @@ RES_OVERRIDES = {
 
         # Calibration
         "DustGrowthCalibration":      "0.3",
-        "DustShatteringCalibration":  "1.2",    # +20% nudge: coag does not fire at 1024³
-        "DustCoagulationCalibration": "7.0",
+        "DustShatteringCalibration":  "2.0",
+        "DustCoagulationCalibration": "6.0",
 
         # Dust sampling
-        "DustParticlesPerSNII":       "4",
-        "DustParticlesPerAGB":        "4",
+        "DustParticlesPerSNII":       "20",
+        "DustParticlesPerAGB":        "20",
         "DustParticlesPerLRN":        "1",
 
         # Softenings halved
@@ -225,7 +225,7 @@ RES_OVERRIDES = {
         "SofteningComovingClass6":    "3.0",
         "SofteningMaxPhysClass6":     "1.5",
         "MinimumComovingHydroSoftening": "2.0",
-        "MaxSizeTimestep":            "0.0085",
+        "MaxSizeTimestep":            "0.00425",
     },
 
     # ── 2048³ ─────────────────────────────────────────────────────────────────
@@ -284,7 +284,7 @@ RES_OVERRIDES = {
         "SofteningComovingClass6":    "1.5",
         "SofteningMaxPhysClass6":     "0.75",
         "MinimumComovingHydroSoftening": "1.0",
-        "MaxSizeTimestep":            "0.0125",
+        "MaxSizeTimestep":            "0.00425",
     },
 
     # ── 4096³ ─────────────────────────────────────────────────────────────────
@@ -461,7 +461,7 @@ for halo_id in HALO_IDS:
         GRID[label] = {
             **make_switches(11),
             "InitCondFile": f"ICs/halo{halo_id}/IC_halo{halo_id}_zoom_{res}",
-            "OutputDir":    f"halo{halo_id}_output_{res}",
+            "OutputDir": f"halo{halo_id}_output_{res}",
         }
 
 

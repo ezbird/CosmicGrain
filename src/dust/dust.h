@@ -18,7 +18,10 @@
 #define DUST_MIN_TIMEBIN         15
 
 void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mass_formed, int star_idx, double hsml);
-void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt);
+void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt,
+                            double local_DTG, double T_gas);
+void dust_grain_shattering(simparticles *Sp, int dust_idx, int gas_idx, double dt,
+                           double local_DTG, double T_gas);
 
 // ========== GLOBAL DUST STATISTICS ==========
 // Accessible from all dust modules
@@ -79,8 +82,12 @@ void cleanup_invalid_dust_particles(simparticles *Sp);
 
 // Dust dynamics and interaction
 void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator);
-void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double dt);
-int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double dt);
+// T_gas is the nearest gas particle's temperature, computed once per dust
+// particle in update_dust_dynamics() and shared by all processes below.
+void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double dt,
+                             double T_gas);
+int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double dt,
+                         double T_gas);
 void dust_global_synchronization(simparticles *Sp, MPI_Comm Communicator,
                                  long long dust_created,
                                  long long dust_destroyed,
@@ -89,7 +96,8 @@ void dust_global_synchronization(simparticles *Sp, MPI_Comm Communicator,
 // ========== GRAIN GROWTH AND EROSION ==========
 
 // Dust grain growth (subgrid model)
-void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, double dt);
+void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, double dt,
+                               double T_gas);
 
 // Gradual erosion functions
 int erode_dust_grain_thermal(simparticles *Sp, int dust_idx, int nearest_gas_input,

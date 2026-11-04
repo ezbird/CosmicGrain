@@ -24,6 +24,7 @@ The mass removed is
 M_{\star,\rm formed}
 \times
 \left(\frac{M_{\rm dust}}{M_{\rm gas}}\right)_{\rm local}
+\times C_{\rm astr}
 \]
 
 </div>
@@ -32,6 +33,7 @@ where
 
 - \(M_{\star,\rm formed}\) is the stellar mass formed in the star formation event,
 - \((M_{\rm dust}/M_{\rm gas})_{\rm local}\) is the dust-to-gas ratio measured from dust particles within the local search volume, not a global or galaxy-averaged value,
+- \(C_{\rm astr}\) is `DustAstrationCalibration`, and
 - \(\Delta M_{\rm dust}\) is the total dust mass permanently removed from the resolved ISM.
 
 This is mathematically equivalent to removing a fraction \(f_{\rm sf} \approx M_{\star,\rm formed}/M_{\rm gas}\) of the locally sampled dust mass, but the local D/G is recomputed at each star formation event from the dust actually found nearby, rather than assumed from a single associated reservoir.
@@ -58,7 +60,7 @@ Unlike sputtering or shock destruction, astration does **not** return metals to 
 The search radius is set from the gas cell's physical size (derived from its density and mass), capped at the SPH smoothing length. All dust particles found within this radius are treated as locally available for consumption:
 
 - The **local D/G ratio** is computed from the total dust mass found in the search volume divided by the gas particle mass.
-- The total dust mass to consume is `stellar_mass_formed × local D/G`, capped at the total dust mass found.
+- The total dust mass to consume is `stellar_mass_formed × local D/G × DustAstrationCalibration`, capped at the total dust mass found.
 - Consumption is **distributed across all dust particles in the search volume, weighted by inverse distance** to the star-forming gas cell — closer particles lose proportionally more mass.
 - Dust particles whose masses fall below the minimum surviving dust threshold are deleted outright; the remainder simply lose mass.
 
@@ -70,7 +72,7 @@ If no dust particles are found within the search radius, the function exits with
 2. **The search radius is set** from the gas cell's physical radius, capped at its SPH smoothing length.
 3. **Nearby dust particles are located** via a spatial hash neighbor search.
 4. **The local dust-to-gas ratio is computed** from the dust mass found in the search volume.
-5. **Dust mass to consume is calculated** as stellar mass formed × local D/G, capped at the dust mass found.
+5. **Dust mass to consume is calculated** as stellar mass formed × local D/G × `DustAstrationCalibration`, capped at the dust mass found.
 6. **Consumption is distributed** across nearby dust particles, weighted by inverse distance.
 7. **Dust particles below the destruction threshold are deleted**; survivors have their mass reduced.
 8. **Consumed mass and metallicity are transferred to the new star particle.**
@@ -84,6 +86,7 @@ If no dust particles are found within the search radius, the function exits with
 | Parameter | Description |
 |-----------|-------------|
 | `DustEnableAstration` | Enables or disables astration. |
+| `DustAstrationCalibration` | Multiplicative calibration applied to the local-D/G astration mass. |
 | `DUST_MASS_TO_DESTROY` | Minimum surviving dust particle mass before deletion. Shared threshold used across all dust destruction channels, not astration-specific. |
 
 ## Where in the Code?

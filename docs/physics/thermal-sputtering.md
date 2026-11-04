@@ -29,24 +29,24 @@ where
 - \(T\) is the local gas temperature and \(T_0 = 2\times10^6\) K is the characteristic sputtering temperature,
 - \(\omega = 2.5\) is the power-law index of Tielens et al. (1994).
 
-The grain radius then decays according to the exact exponential solution,
+The current implementation evolves the carbonaceous and silicate mass components separately. Each component decays exponentially on its own sputtering timescale,
 
 <div class="cg-equation" markdown="1">
 
 \[
-a_{\rm new} = a \times \exp\left(-\Delta t / \tau_{\rm sp}\right)
+M_{i,\rm new}=M_{i,\rm old}\exp(-\Delta t/\tau_i),
 \]
 
 </div>
 
-**Composition dependence.** Carbonaceous grains have a lower binding energy (4 eV) than silicates (6 eV) and sputter proportionally faster. This is implemented as a linear blend in binding energy weighted by carbon fraction, giving a composition factor that ranges from 1 (pure silicate) to roughly 1.5 (pure carbon).
+with carbon assigned the shorter timescale because of its lower adopted binding energy (4 eV versus 6 eV for silicate). The surviving component masses are recombined, `CarbonMassFraction` is updated, and the representative radius follows the surviving total mass through \(a_{\rm new}=a(M_{\rm new}/M_{\rm old})^{1/3}\). Thus repeated sputtering can make a surviving particle progressively more silicate rich.
 
 **Sublimation.** Independently of gas-driven sputtering, a grain is destroyed instantaneously if its own equilibrium dust temperature exceeds its material sublimation point, \(T_{\rm sublimate} = 1500 + 500 \times {\rm CarbonMassFraction}\) K — silicates sublimate near 1500 K, pure carbon grains near 2000 K.
 
 ### Assumptions
 
 - The Tsai & Mathews (1995) approximation is valid across the full range of gas temperatures and densities a grain may encounter; no separate regime is used for very hot or very dense gas beyond the built-in clamps.
-- Composition affects sputtering rate only through a binding-energy-weighted linear blend between fixed silicate and carbon endpoints.
+- Carbonaceous and silicate mass components are sputtered separately using fixed 4 eV and 6 eV binding-energy factors; the surviving composition is recomputed after erosion.
 - Sputtering is only evaluated once a grain's nearest gas neighbor exceeds a minimum temperature threshold; below that threshold the routine takes no action.
 - Sublimation and gas-driven sputtering are distinct physical triggers but are treated by the same routine and are not distinguished in destruction bookkeeping — both are recorded under the same "thermal" destruction counters.
 - Eroded and fully sputtered mass is returned to the nearest gas particle as metals, consistent with sputtering being a mass-conserving erosion process rather than a sink.
@@ -59,7 +59,7 @@ a_{\rm new} = a \times \exp\left(-\Delta t / \tau_{\rm sp}\right)
 
 Thermal sputtering is evaluated for every dust particle whose nearest gas neighbor exceeds `DustThermalSputteringTemp`, following the drag update in the same particle pass. The sublimation check runs first and unconditionally, ahead of the gas-temperature gate, since it depends only on the grain's own temperature.
 
-For grains that survive sublimation and clear the gas-temperature gate, the exact exponential erosion form is used rather than a linear approximation — required because dust physics runs on a cadence of every 10 gravity steps with a correspondingly scaled Δt, and the linear form would over-erode grains when Δt approaches τ_sp.
+For grains that survive sublimation and clear the gas-temperature gate, the exact exponential erosion form is used rather than a linear approximation — important because dust physics may run on a coarser cadence controlled by `DustUpdateCadence`; the linear form could over-erode grains when the accumulated update interval approaches the sputtering timescale.
 
 Carbonaceous and silicate material are eroded separately. Carbon erodes
 faster in the adopted model, so surviving mass is used to recompute both grain

@@ -64,7 +64,7 @@ Given \(t_{\rm stop}\), the dust velocity relaxes toward the gas velocity via th
 
 <div class="cg-card implementation" markdown="1">
 
-Drag is applied to every live dust particle each time dust physics runs, using the properties of its nearest gas neighbor. The relative velocity, gas density, and gas temperature are used to compute a stopping timescale, and the dust velocity is updated using the exact exponential solution above — valid regardless of the timestep-to-stopping-time ratio, which matters because dust physics runs on a cadence of every 10 gravity steps with a correspondingly scaled \(\Delta t\).
+Drag is applied to every live dust particle each time dust physics runs, using the properties of its nearest gas neighbor. The relative velocity, gas density, and gas temperature are used to compute a stopping timescale, and the dust velocity is updated using the exact exponential solution above — valid regardless of the timestep-to-stopping-time ratio, which matters because dust physics can run on a coarser cadence controlled by `DustUpdateCadence`, with the accumulated physical interval passed to the update.
 
 ### Guards and numerical floors
 

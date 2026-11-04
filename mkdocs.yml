@@ -1,5 +1,5 @@
 site_name: CosmicGrain
-site_description: Live dust evolution for cosmological hydrodynamics simulations
+site_description: Dust evolution for GADGET-4 cosmological simulations
 site_url: https://docs.cosmicgrain.space
 
 repo_name: ezbird/CosmicGrain
@@ -7,12 +7,10 @@ repo_url: https://github.com/ezbird/CosmicGrain
 
 theme:
   name: material
-  logo: assets/cosmicgrain-logo.svg
-
   palette:
     scheme: slate
-    primary: deep purple
-    accent: teal
+    primary: custom
+    accent: custom
 
   features:
     - navigation.tabs
@@ -88,15 +86,31 @@ nav:
   - Analysis:
       - Overview: analysis/index.md
       - Snapshots: analysis/snapshots.md
+      - Dust Particle Fields: analysis/dust-particle-fields.md
+      - Grain-Size Distributions: analysis/grain-size-distributions.md
+      - Composition & Provenance: analysis/composition-provenance.md
+      - Dust Ratios: analysis/dust-ratios.md
+      - Spatial Maps: analysis/spatial-maps.md
+      - Extinction & R(V): analysis/extinction-rv.md
+      - Synthetic Observations & SKIRT: analysis/synthetic-observations.md
       - Halo Catalogs: analysis/halo-catalogs.md
-      - Python Scripts: analysis/python-scripts.md
-      - Dust Distributions: analysis/dust-distributions.md
       - Radial Profiles: analysis/radial-profiles.md
-      - Figures & SKIRT: analysis/figures.md
+      - Python Scripts: analysis/python-scripts.md
 
   - Validation:
       - Overview: validation/index.md
       - MUSIC2 IC Suite: validation/ic-suite.md
+      - Resolution & Gas Smoothing Length: validation/resolution.md
+
+  - Developer Guide:
+      - Overview: developer/index.md
+      - Code Architecture: developer/architecture.md
+      - Source Tree: developer/source-tree.md
+      - Particle Types: developer/particle-types.md
+      - Time Integration: developer/time-integration.md
+      - Adding New Physics: developer/adding-new-physics.md
+      - Coding Conventions: developer/coding-conventions.md
+      - API Reference: developer/api-reference.md
 
   - Reference:
       - Overview: reference/index.md
@@ -104,17 +118,5 @@ nav:
       - Compile Flags: reference/compile-flags.md
       - Parameters: reference/parameters.md
       - Units: reference/units.md
-
-#  - Developer Guide:
-#      - Overview: developer/index.md
-#      - Code Architecture: developer/architecture.md
-#      - Source Tree: developer/source-tree.md
-#      - Particle Types: developer/particle-types.md
-#      - Time Integration: developer/time-integration.md
-#      - Adding New Physics: developer/adding-new-physics.md
-#      - Coding Conventions: developer/coding-conventions.md
-#      - API Reference: developer/api-reference.md
-
-extra_javascript:
-  - javascripts/mathjax.js
-  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+      - Source-level Constants: reference/constants.md
+      - Equation Map: reference/equations.md

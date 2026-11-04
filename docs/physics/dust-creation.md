@@ -32,10 +32,10 @@ where
 - \(M_{\rm dust}\) is the newly created dust mass.
 
 Separate source prescriptions are used for SNII, AGB stars, and luminous red
-novae (LRNe). SNII/hypernova feedback is delayed over eight tranches rather
+novae (LRNe). In the audited source, SNII/hypernova feedback is delayed over four tranches rather
 than injected in a single instantaneous event. LRN dust is created once with
 the first SNII tranche; SNII dust sampling is divided across the tranche
-sequence so the requested particle count is not multiplied by eight. The
+sequence so the requested total particle sampling is not multiplied by four. The
 absolute LRN normalization remains under active calibration.
 
 ### Assumptions
@@ -46,7 +46,7 @@ absolute LRN normalization remains under active calibration.
 - Dust is represented by superparticles rather than individual grains.
 - Each superparticle represents an ensemble of physical grains.
 - Metals condensed into dust are removed from the gas phase.
-- The condensed dust mass is drawn from a single nearest gas cell rather than distributed across a neighborhood.
+- Gas-phase ejecta are deposited by the stellar-feedback machinery; the dust-spawning routine receives the already partitioned carbonaceous and silicate dust masses.
 
 </div>
 
@@ -60,16 +60,16 @@ condensed mass is limited by the available carbon and silicate-forming
 material. The requested number of dust superparticles is distributed across
 the full source event.
 
-Rather than storing dust as an abundance field on nearby gas cells, the code creates entirely new **PartType6** particles. The single nearest gas cell (within a 2.0 kpc search radius) is updated simultaneously so that metals incorporated into dust are removed from the gas phase, preserving mass conservation. A safety floor prevents the gas particle's mass from being driven to zero or negative if the condensed dust mass would otherwise exceed it.
+Rather than storing dust as an abundance field, the code creates entirely new **PartType6** particles. Elemental partitioning between gas-phase ejecta and condensed dust is performed in `feedback.cc` **before** the PartType6 spawning routine is called. `create_dust_particles_from_feedback()` then only creates the dust representatives; it does not independently remove material from a nearest gas particle. This separation is important when tracing mass and element conservation.
 
 ### Numerical floors
 
 Two floors, hardcoded in `dust.cc` rather than exposed as parameters, prevent creation of negligible or numerically fragile particles:
 
 - If the total dust mass produced by an event falls below `MIN_DUST_PARTICLE_MASS` (10⁻¹⁰ M☉), no dust particles are created at all.
-- If dividing the total dust mass among `n_dust_particles` would leave less than 10⁻¹⁵ M☉ per particle, creation is skipped for that event.
+- If the requested sampling would produce representatives below a local `1e-15` code-mass floor, the routine **reduces the number of superparticles** rather than discarding the dust mass. At least one representative is retained for an event that already passed the total-mass floor.
 
-Both are silent no-ops — low-yield feedback events simply produce no dust, which is expected behavior rather than a bug.
+Thus the total-mass floor can suppress a negligible creation event, while the per-representative floor changes numerical sampling rather than the physical dust mass.
 
 ### Algorithm
 
@@ -77,21 +77,21 @@ Both are silent no-ops — low-yield feedback events simply produce no dust, whi
 2. **The stellar source channel is identified** (SNII, AGB, or LRN where applicable).
 3. **The dust yield is computed** using the corresponding condensation efficiency, and checked against the total-mass floor.
 4. **The number of dust superparticles is determined** and the per-particle mass is checked against the per-particle floor.
-5. **The nearest gas cell is located** (within a 2.0 kpc search radius) and condensed metals are removed from its mass and metallicity, subject to a safety floor.
-6. **Each dust particle is initialized** with placeholder properties, then immediately assigned its feedback-type-specific grain radius, carbon fraction, and grain type.
+5. **Gas-phase and condensed ejecta are partitioned by the feedback module**, which deposits the gas-phase share through the feedback machinery.
+6. **Each dust particle is initialized** with the source-specific representative radius and source tag; its carbon fraction is computed from the carbonaceous and silicate dust masses passed by the feedback calculation.
 7. **Particle bookkeeping is updated** (IDs, particle type, timestep bin, softening, diagnostics).
 8. **The new PartType6 particles enter the simulation** and evolve through subsequent dust physics.
 
 ### Initial Particle Properties
 
-Grain radius, carbon fraction, and grain type are hardcoded per feedback channel and are not adjustable via the parameter file. Initial velocity is parameter-driven and is applied as an isotropic random **kick added to the parent star's velocity**, not an absolute velocity.
+Representative birth radius and source tag are hardcoded per feedback channel. The **target** birth composition is source-specific, but the actual `CarbonMassFraction` written to each new particle is computed from the element-limited carbonaceous and silicate dust masses delivered by the feedback calculation. Initial velocity is parameter-driven and is applied as an isotropic random **kick added to the parent star's velocity**, not an absolute velocity.
 
 | Quantity | SNII | AGB | LRN | Configurable? |
 |-----------|------:|------:|------:|:------:|
 | Grain radius | 10 nm | 100 nm | 10 nm | No (hardcoded) |
-| Carbon fraction | 0.10 | 0.60 target | 0.10 | No (hardcoded) |
+| Carbon fraction | 0.10 target, element-limited | 0.60 target, element-limited | 0.10 | Target hardcoded |
 | `DustSource` | 0 | 1 | 2 | No |
-| Initial velocity kick | `DustVelocitySNII` | `DustVelocityAGB` | source prescription | Partly |
+| Initial velocity kick | `DustVelocitySNII` | `DustVelocityAGB` | `DustVelocityLRN` | Yes |
 
 The current AGB target is 60% carbon and 40% silicate, subject to the
 available carbon and total-metal budget. LRN dust is 10% carbon and 90%
@@ -110,6 +110,7 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
 | `DustYieldAGB` | AGB condensation efficiency |
 | `DustVelocitySNII` | Initial SNII velocity kick |
 | `DustVelocityAGB` | Initial AGB velocity kick |
+| `DustVelocityLRN` | Initial LRN velocity kick |
 | `DustParticlesPerSNII` | Number of particles created per SNII event |
 | `DustParticlesPerAGB` | Number of particles created per AGB event |
 | `DustParticlesPerLRN` | Number of particles created per LRN event |
@@ -119,6 +120,8 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
 | `DustOffsetMaxSNII` | Maximum SNII birth offset |
 | `DustOffsetMinAGB` | Minimum AGB birth offset |
 | `DustOffsetMaxAGB` | Maximum AGB birth offset |
+| `DustOffsetMinLRN` | Minimum LRN birth offset |
+| `DustOffsetMaxLRN` | Maximum LRN birth offset |
 
 ## Where in the Code?
 
@@ -128,15 +131,13 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
 
 - **Dust creation routines**
   - `create_dust_particles_from_feedback()`
-    - Computes dust production from stellar ejecta, reduces the nearest gas cell's mass and metallicity, spawns the new particles, and overwrites their grain radius, carbon fraction, and grain type with feedback-type-specific values.
+    - Receives already partitioned carbonaceous and silicate dust masses, chooses the numerical sampling, and spawns PartType6 representatives with source-specific radii/tags and composition derived from those masses.
   - `spawn_dust_particle()`
     - Allocates a new PartType6 particle with placeholder grain properties, assigns its position (star position plus a random offset), initial velocity, unique ID, softening class, and CMB-floor dust temperature. Its placeholder grain properties are overwritten by the calling routine immediately after.
 
 - **Supporting routines**
-  - Neighbor search
-    - `find_nearest_gas_particle()` identifies the single nearest gas cell receiving stellar ejecta.
-  - Particle bookkeeping
-    - Updates particle arrays, timestep bins, softening classes, and diagnostic counters.
+  - `spawn_dust_particle()` handles allocation, birth offset, velocity, ID, softening, timestep-bin insertion, and initial temperature.
+  - Particle bookkeeping updates the particle arrays and creation diagnostics.
 
 ### `src/cooling_sfr/feedback.cc`
 
@@ -148,12 +149,7 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
 
 ## Current Calibration Status
 
-The current controlled configuration requests four SNII, six AGB, and one LRN
-dust superparticle per complete source event. These are sampling controls, not
-physical event rates or dust yields. The LRN source channel is implemented and
-produces explicitly tagged particles, but its integrated yield normalization
-is still being investigated; quantitative LRN dust-budget predictions remain
-provisional.
+`DustParticlesPerSNII`, `DustParticlesPerAGB`, and `DustParticlesPerLRN` are numerical sampling controls, not physical event rates or dust yields. Their values belong to the run parameter file rather than to the code definition. The LRN source channel is implemented and produces explicitly tagged particles; its quantitative normalization is controlled by `DustLRNRatePerCCSN` and `DustLRNDustMassMsun` and should be reported with the run.
 
 ## Primary References
 

@@ -6,9 +6,7 @@ not a sufficient resource estimate.
 
 ## Initial-condition size
 
-The accepted suite ranges from 2.12 million particles for halo 3879 at
-\(512^3\) to 517.54 million for halo 1534 at \(4096^3\). Measure each file
-directly before choosing MPI tasks, memory limits, or storage allocations.
+The accepted suite spans from a few million particles in the smallest \(512^3\)-equivalent zooms to hundreds of millions in the largest high-resolution ICs. Measure each file directly before choosing MPI tasks, memory limits, or storage allocations.
 
 ## Dust time bins
 

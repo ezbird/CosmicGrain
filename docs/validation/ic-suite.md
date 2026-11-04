@@ -56,7 +56,7 @@ FINAL STATUS: PASS
 ```
 
 Initial particle counts range from 2,120,948 (halo 3879 at \(512^3\)) to
-517,537,024 (halo 1534 at \(4096^3\)). This range reflects the different
+hundreds of millions at \(4096^3\). This range reflects the different
 volumes and geometries of the refined Lagrangian regions; it is not itself a
 validation failure.
 

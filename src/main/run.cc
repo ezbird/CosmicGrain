@@ -83,8 +83,17 @@ void sim::run(void)
      std::getenv("CG_AGB_SYNC_TEST_TIMESTEPS") || std::getenv("CG_RC1_NEIGHBOR_MODE") ||
      std::getenv("CG_RC1_PERF_CALL_LIMIT"))
     Terminate("Diagnostic test switches are forbidden in the production build");
-  if(!All.ComovingIntegrationOn || All.AGBFeedbackMode!=2 || All.TimeBegin!=0.01 || All.TimeMax!=1.0)
-    Terminate("Production RC1 requires cosmological mode 2 with TimeBegin=0.01 and TimeMax=1");
+// Preserve the production RC1 requirements while allowing a legitimate
+// snapshot restart to begin at the snapshot's cosmological scale factor.
+if(!All.ComovingIntegrationOn || All.AGBFeedbackMode != 2 || All.TimeMax != 1.0)
+  Terminate("Production RC1 requires cosmological integration, AGB mode 2, and TimeMax=1");
+
+if(All.RestartFlag != RST_STARTFROMSNAP && All.TimeBegin != 0.01)
+  Terminate("Production RC1 requires TimeBegin=0.01 except for snapshot restarts");
+
+if(All.RestartFlag == RST_STARTFROMSNAP &&
+   (!(All.TimeBegin > 0.0) || !(All.TimeBegin < All.TimeMax)))
+  Terminate("Snapshot restart requires 0 < TimeBegin < TimeMax");
 #endif
 #if defined(NGENIC_TEST) && defined(PERIODIC) && defined(PMGRID)
   snap_io Snap(&Sp, Communicator, All.SnapFormat);             /* get an I/O object */
@@ -387,11 +396,24 @@ void sim::configure_dust_update_cadence(void)
    * include variables stored outside All.
    */
   MPI_Bcast(&DustUpdateCadence, 1, MPI_INT, 0, Communicator);
+  MPI_Bcast(&DustShatteringFragmentSlope, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustShatteringMaxFragmentFraction, 1, MPI_DOUBLE, 0, Communicator);
 
   if(DustUpdateCadence < 1 || DustUpdateCadence > 1000000)
     Terminate(
         "Invalid DustUpdateCadence=%d; expected an integer in [1,1000000]",
         DustUpdateCadence);
+  if(!std::isfinite(DustShatteringFragmentSlope) ||
+     !(DustShatteringFragmentSlope > 0.0))
+    Terminate(
+        "Invalid DustShatteringFragmentSlope=%g; expected a finite value > 0",
+        DustShatteringFragmentSlope);
+  if(!std::isfinite(DustShatteringMaxFragmentFraction) ||
+     !(DustShatteringMaxFragmentFraction > 0.0) ||
+     !(DustShatteringMaxFragmentFraction < 1.0))
+    Terminate(
+        "Invalid DustShatteringMaxFragmentFraction=%g; expected a finite value in (0,1)",
+        DustShatteringMaxFragmentFraction);
 
   if(DustAccumulatedSyncPoints < 0 ||
      DustAccumulatedPhysicalTime < 0.0 ||
@@ -891,8 +913,14 @@ void sim::create_snapshot_if_desired(void)
 
         if(All.DumpFlag_nextoutput)
           {
-            snap_io Snap(&Sp, Communicator, All.SnapFormat);             /* get an I/O object */
-            Snap.write_snapshot(All.SnapshotFileCount, NORMAL_SNAPSHOT); /* write snapshot file */
+            snap_io Snap(&Sp, Communicator, All.SnapFormat);
+            Snap.write_snapshot(All.SnapshotFileCount, NORMAL_SNAPSHOT);
+
+#ifdef DUST
+            // Collective diagnostics after a completed normal snapshot.
+            // All MPI ranks must participate in print_dust_statistics().
+            print_dust_statistics(&Sp, Communicator);
+#endif
           }
 
 #ifdef FOF

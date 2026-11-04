@@ -29,8 +29,8 @@ Optional flags, useful for debugging stellar feedback energy deposition:
 | `FEEDBACK_LIMIT_DULOG` | Clamps \|Δlog₁₀ u\| per heating event — useful when diagnosing runaway temperatures from feedback. |
 | `FEEDBACK_T_CAP` | Applies a soft temperature cap for debugging; not intended for production runs. |
 
-The current zoom build also uses `PERIODIC`, `DOUBLEPRECISION=1`,
-`ADAPTIVE_HYDRO_SOFTENING`, `WENDLAND_C4`, `PM_ZOOM_OPTIMIZED`,
+The `Config.sh` supplied for the current source audit uses `PERIODIC`, `DOUBLEPRECISION=2`,
+`ADAPTIVE_HYDRO_SOFTENING`, `CUBIC_SPLINE_KERNEL`, `PM_ZOOM_OPTIMIZED`,
 `TREEPM_NOTIMESPLIT`, and resolution-appropriate `PMGRID`/`HRPMGRID`.
 
 </div>

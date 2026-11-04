@@ -1,28 +1,45 @@
 # Compile-Time Configuration
 
-The following flags define the standard seven-type cosmological zoom build.
-Exact production configurations should be archived with every run.
+CosmicGrain is compiled as a GADGET-4-based code. The authoritative build for a particular simulation is its archived `Config.sh`; runtime dust processes are then selected with the `DustEnable*` parameters.
+
+## Required CosmicGrain structure
 
 | Flag | Purpose |
 | --- | --- |
-| `NTYPES=7` | Enables the seventh particle type used by dust |
-| `DUST` | Compiles CosmicGrain dust creation and evolution |
-| `COOLING` | Enables radiative gas cooling |
-| `STARFORMATION` | Enables star formation |
-| `FEEDBACK` | Enables stellar feedback and delayed enrichment |
-| `METALS` | Enables metallicity/element tracking |
-| `IDS_64BIT` | Prevents particle-ID overflow as dust particles are spawned |
-| `PERIODIC` | Periodic cosmological volume |
-| `DOUBLEPRECISION=1` | Double-precision core calculations |
-| `ADAPTIVE_HYDRO_SOFTENING` | Adaptive gas gravitational softening |
-| `WENDLAND_C4` | Adopted SPH kernel |
-| `PMGRID` / `HRPMGRID` | Particle-mesh settings for the zoom calculation |
-| `PM_ZOOM_OPTIMIZED` | Optimized zoom PM treatment |
-| `TREEPM_NOTIMESPLIT` | Adopted TreePM time integration option |
+| `NTYPES=7` | Provides particle type 6 for dust superparticles. |
+| `DUST` | Compiles the CosmicGrain dust data structures, snapshot fields, creation/evolution routines, and integration hooks. |
 
-Debug-only feedback limiters such as `FEEDBACK_LIMIT_DULOG` and
-`FEEDBACK_T_CAP` are diagnostics, not default production physics.
+For the current galaxy-formation implementation, the supplied configuration also enables `COOLING`, `STARFORMATION`, `FEEDBACK`, and `METALS`, which provide the gas cooling, star formation, delayed stellar feedback/enrichment, and elemental reservoirs used by the dust model.
 
-After compilation, inspect the startup configuration and `[DUST_FLAGS]`
-summary. A successful compilation does not guarantee that runtime dust flags
-or parameter names are correct.
+## Configuration in the audited source checkout
+
+The `Config.sh` supplied for this audit currently enables, among other options:
+
+```text
+PERIODIC
+NTYPES=7
+SELFGRAVITY
+EVALPOTENTIAL
+PMGRID=512
+FFT_COLUMN_BASED
+PM_ZOOM_OPTIMIZED
+TREEPM_NOTIMESPLIT
+HIERARCHICAL_GRAVITY
+INDIVIDUAL_GRAVITY_SOFTENING=4
+ADAPTIVE_HYDRO_SOFTENING
+CUBIC_SPLINE_KERNEL
+COOLING
+STARFORMATION
+FEEDBACK
+METALS
+DUST
+POSITIONS_IN_64BIT
+DOUBLEPRECISION=2
+IDS_64BIT
+```
+
+This is a description of the **uploaded checkout**, not a claim that every CosmicGrain run must use those numerical choices. In particular, PM resolution, kernel choice, precision mode, softening configuration, and other GADGET-4 options may legitimately differ between experiments.
+
+## Important distinction
+
+Do not copy compile flags from a paper, an old parameter generator, or this documentation and assume they describe a particular simulation. Archive the exact `Config.sh` used to build that executable. The current source checkout, for example, uses the cubic-spline kernel and `DOUBLEPRECISION=2`; older CosmicGrain configurations have used different choices.

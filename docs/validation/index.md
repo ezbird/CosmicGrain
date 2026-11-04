@@ -54,6 +54,29 @@ The surviving dust mass inside 30 pkpc is \(1.743\times10^3\,M_\odot\), about 0.
 
 The convergence program therefore repeats the same diagnostics at 1024³, 2048³, and 4096³-equivalent zoom resolution.
 
+
+## Recent regression fixes
+
+The current validation baseline includes several fixes that materially changed
+what should be considered a trustworthy production run:
+
+- the legacy instantaneous enrichment contribution was removed from the active
+  enrichment path in favor of the delayed stellar-feedback treatment;
+- stellar metallicity bookkeeping was corrected to use the intended hydrogen
+  mass fraction convention;
+- dust state and cadence bookkeeping across restarts was repaired and is now
+  explicitly serialized/tested; and
+- snapshot continuation includes dust-ID and particle-state safeguards before
+  the initial domain decomposition.
+
+Because enrichment changes can strongly alter the dust budget even when gas and
+stellar masses change modestly, results produced before these fixes should not
+be mixed quantitatively with the current production baseline without a targeted
+comparison.
+
+See [Resolution and gas smoothing length](resolution.md) for the separate
+`MinGasHsml` convergence tests.
+
 ## Current caveats
 
 1. **512³-equivalent zooms are validation runs.** Internal galaxy structure, D/G, D/Z, dust morphology, and dust transport require resolution testing.

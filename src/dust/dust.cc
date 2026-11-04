@@ -14,9 +14,11 @@
 #include <gsl/gsl_math.h>
 #include <math.h>
 #include <mpi.h>
+#include <numeric>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
 #include "../dust/dust.h"
 #include "../cooling_sfr/feedback.h"
 #include "../cooling_sfr/spatial_hash_zoom.h"
@@ -59,7 +61,8 @@
 extern double get_random_number(void);
 
 // ── Forward declarations ──────────────────────────────────────────────────────
-void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, double dt);
+void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, double dt,
+                               double T_gas);
 static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
                                          int nearest_gas, long long *counter,
                                          double *mass_counter);
@@ -89,6 +92,215 @@ extern spatial_hash_zoom gas_hash;
 extern spatial_hash_zoom star_hash;
 extern spatial_hash_zoom dust_hash;
 extern void rebuild_feedback_spatial_hash(simparticles *Sp, double dust_search_radius, MPI_Comm comm);
+
+struct dust_dg_query
+{
+  int dust_index;
+  MyIntPosType center[3];
+  double radius;
+};
+
+struct dust_dg_result
+{
+  int dust_index;
+  double gas_mass;
+  double dust_mass;
+};
+
+static void extend_dust_dg_bounds(simparticles *Sp, int particle_idx,
+                                  double bounds[7])
+{
+  double pos[3];
+  Sp->intpos_to_pos(Sp->P[particle_idx].IntPos, pos);
+  for(int d = 0; d < 3; d++)
+    {
+      bounds[d] = std::min(bounds[d], pos[d]);
+      bounds[d + 3] = std::max(bounds[d + 3], pos[d]);
+    }
+  bounds[6] = 1.0;
+}
+
+static bool dust_dg_sphere_intersects_bounds(const double center[3], double radius,
+                                             const double bounds[7])
+{
+  if(bounds[6] == 0.0)
+    return false;
+
+  int min_shift = 0, max_shift = 0;
+#ifdef PERIODIC
+  min_shift = -1;
+  max_shift = 1;
+#endif
+  const double radius2 = radius * radius;
+  for(int sx = min_shift; sx <= max_shift; sx++)
+    for(int sy = min_shift; sy <= max_shift; sy++)
+      for(int sz = min_shift; sz <= max_shift; sz++)
+        {
+          double image[3] = {center[0], center[1], center[2]};
+#ifdef PERIODIC
+          image[0] += sx * All.BoxSize;
+          image[1] += sy * All.BoxSize;
+          image[2] += sz * All.BoxSize;
+#endif
+          double distance2 = 0.0;
+          for(int d = 0; d < 3; d++)
+            {
+              const double nearest =
+                  std::max(bounds[d], std::min(bounds[d + 3], image[d]));
+              const double delta = image[d] - nearest;
+              distance2 += delta * delta;
+            }
+          if(distance2 <= radius2)
+            return true;
+        }
+  return false;
+}
+
+static std::vector<int> dust_dg_byte_counts(const std::vector<int> &counts,
+                                             size_t record_size,
+                                             std::vector<int> &displacements)
+{
+  std::vector<int> byte_counts(counts.size());
+  displacements.resize(counts.size());
+  long long total_bytes = 0;
+  for(size_t i = 0; i < counts.size(); i++)
+    {
+      const long long bytes = (long long)counts[i] * record_size;
+      if(bytes > 2147483647LL || total_bytes > 2147483647LL)
+        Terminate("dust D/G exchange exceeds MPI_Alltoallv integer limits");
+      byte_counts[i] = (int)bytes;
+      displacements[i] = (int)total_bytes;
+      total_bytes += bytes;
+    }
+  if(total_bytes > 2147483647LL)
+    Terminate("dust D/G exchange exceeds MPI_Alltoallv integer limits");
+  return byte_counts;
+}
+
+static void estimate_local_dust_to_gas_ratio(
+    simparticles *Sp, const std::vector<double> &radii,
+    MPI_Comm Communicator, std::vector<double> &local_DTG)
+{
+  int n_task = 1;
+  MPI_Comm_size(Communicator, &n_task);
+
+  double local_bounds[7] = {1e30, 1e30, 1e30, -1e30, -1e30, -1e30, 0.0};
+  for(const auto &cell : gas_hash.cells)
+    for(int particle_idx : cell.second)
+      if(Sp->P[particle_idx].getType() == 0)
+        extend_dust_dg_bounds(Sp, particle_idx, local_bounds);
+  for(const auto &cell : dust_hash.cells)
+    for(int particle_idx : cell.second)
+      if(Sp->P[particle_idx].getType() == DUST_PARTICLE_TYPE &&
+         Sp->P[particle_idx].getMass() > DUST_MASS_TO_DESTROY &&
+         Sp->P[particle_idx].ID.get() != 0)
+        extend_dust_dg_bounds(Sp, particle_idx, local_bounds);
+
+  std::vector<double> task_bounds((size_t)n_task * 7);
+  MPI_Allgather(local_bounds, 7, MPI_DOUBLE, task_bounds.data(), 7, MPI_DOUBLE,
+                Communicator);
+
+  std::vector<std::vector<dust_dg_query> > requests((size_t)n_task);
+  for(size_t dust_idx = 0; dust_idx < radii.size(); dust_idx++)
+    {
+      if(!(radii[dust_idx] > 0.0))
+        continue;
+      dust_dg_query query;
+      query.dust_index = (int)dust_idx;
+      for(int d = 0; d < 3; d++)
+        query.center[d] = Sp->P[dust_idx].IntPos[d];
+      query.radius = radii[dust_idx];
+
+      double center[3];
+      Sp->intpos_to_pos(query.center, center);
+      for(int task = 0; task < n_task; task++)
+        if(dust_dg_sphere_intersects_bounds(
+               center, query.radius, &task_bounds[(size_t)task * 7]))
+          requests[task].push_back(query);
+    }
+
+  std::vector<int> send_counts((size_t)n_task), recv_counts((size_t)n_task);
+  for(int task = 0; task < n_task; task++)
+    {
+      if(requests[task].size() > (size_t)2147483647)
+        Terminate("too many dust D/G neighborhood requests for MPI");
+      send_counts[task] = (int)requests[task].size();
+    }
+  MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT,
+               Communicator);
+
+  std::vector<int> send_displacements, recv_displacements;
+  const std::vector<int> send_bytes =
+      dust_dg_byte_counts(send_counts, sizeof(dust_dg_query), send_displacements);
+  const std::vector<int> recv_bytes =
+      dust_dg_byte_counts(recv_counts, sizeof(dust_dg_query), recv_displacements);
+  const int n_send = std::accumulate(send_counts.begin(), send_counts.end(), 0);
+  const int n_recv = std::accumulate(recv_counts.begin(), recv_counts.end(), 0);
+  std::vector<dust_dg_query> send_queries((size_t)n_send);
+  std::vector<dust_dg_query> recv_queries((size_t)n_recv);
+  dust_dg_query empty_query = {};
+  for(int task = 0; task < n_task; task++)
+    std::copy(requests[task].begin(), requests[task].end(),
+              send_queries.begin() + send_displacements[task] /
+                                         (int)sizeof(dust_dg_query));
+  const void *send_query_data =
+      send_queries.empty() ? static_cast<const void *>(&empty_query)
+                           : static_cast<const void *>(send_queries.data());
+  void *recv_query_data =
+      recv_queries.empty() ? static_cast<void *>(&empty_query)
+                           : static_cast<void *>(recv_queries.data());
+  MPI_Alltoallv(send_query_data, send_bytes.data(), send_displacements.data(),
+                MPI_BYTE, recv_query_data, recv_bytes.data(),
+                recv_displacements.data(), MPI_BYTE, Communicator);
+
+  std::vector<dust_dg_result> send_results((size_t)n_recv);
+  for(int i = 0; i < n_recv; i++)
+    {
+      send_results[i].dust_index = recv_queries[i].dust_index;
+      send_results[i].gas_mass = gas_hash.sum_mass_in_sphere(
+          Sp, recv_queries[i].center, recv_queries[i].radius, 0);
+      send_results[i].dust_mass = dust_hash.sum_mass_in_sphere(
+          Sp, recv_queries[i].center, recv_queries[i].radius, DUST_PARTICLE_TYPE);
+    }
+
+  std::vector<int> result_send_displacements, result_recv_displacements;
+  const std::vector<int> result_send_bytes =
+      dust_dg_byte_counts(recv_counts, sizeof(dust_dg_result),
+                          result_send_displacements);
+  const std::vector<int> result_recv_bytes =
+      dust_dg_byte_counts(send_counts, sizeof(dust_dg_result),
+                          result_recv_displacements);
+  std::vector<dust_dg_result> recv_results((size_t)n_send);
+  dust_dg_result empty_result = {};
+  const void *send_result_data =
+      send_results.empty() ? static_cast<const void *>(&empty_result)
+                           : static_cast<const void *>(send_results.data());
+  void *recv_result_data =
+      recv_results.empty() ? static_cast<void *>(&empty_result)
+                           : static_cast<void *>(recv_results.data());
+  MPI_Alltoallv(send_result_data, result_send_bytes.data(),
+                result_send_displacements.data(), MPI_BYTE,
+                recv_result_data, result_recv_bytes.data(),
+                result_recv_displacements.data(), MPI_BYTE, Communicator);
+
+  std::vector<double> gas_mass(radii.size(), 0.0);
+  std::vector<double> dust_mass(radii.size(), 0.0);
+  for(int i = 0; i < n_send; i++)
+    {
+      const int dust_idx = recv_results[i].dust_index;
+      if(dust_idx < 0 || (size_t)dust_idx >= radii.size())
+        Terminate("invalid dust index returned by D/G neighbor exchange");
+      gas_mass[dust_idx] += recv_results[i].gas_mass;
+      dust_mass[dust_idx] += recv_results[i].dust_mass;
+    }
+
+  local_DTG.assign(radii.size(), 0.0);
+  for(size_t i = 0; i < radii.size(); i++)
+    if(radii[i] > 0.0 && std::isfinite(gas_mass[i]) &&
+       std::isfinite(dust_mass[i]) && gas_mass[i] > 0.0 &&
+       dust_mass[i] > 0.0)
+      local_DTG[i] = std::max(1e-6, std::min(0.1, dust_mass[i] / gas_mass[i]));
+}
 
 // ── Module-level statistics ───────────────────────────────────────────────────
 // These accumulate over the entire run on each task and are reduced to
@@ -615,14 +827,11 @@ static double sample_shattering_fragment_radius(double parent_radius_nm,
  *
  *          dM/da ∝ a^(3-q).
  *
- * For the first controlled experiment we use:
+ * The fragment spectrum is controlled by runtime parameters:
  *
- *          q                  = 3.3
- *          maximum fragment  = 0.8 * parent radius
+ *          q                  = DustShatteringFragmentSlope
+ *          maximum fragment  = DustShatteringMaxFragmentFraction
  *          minimum fragment  = DustMinGrainSize
- *
- * These values should remain fixed for the first old-vs-new comparison so
- * that ONLY the fragment-size outcome differs from the previous model.
  *
  *
  * MASS / COMPOSITION CONSERVATION
@@ -643,22 +852,12 @@ static double sample_shattering_fragment_radius(double parent_radius_nm,
  * mass means the superparticle represents a larger number of individual
  * physical grains.
  */
-void dust_grain_shattering(simparticles *Sp,
-                           int dust_idx,
-                           int gas_idx,
-                           double dt)
+void dust_grain_shattering(simparticles *Sp, int dust_idx, int gas_idx, double dt,
+                           double local_DTG, double T_gas)
 {
-    // =========================================================================
-    // Fragment-spectrum parameters
-    // =========================================================================
-    //
-    // Keep hard-coded for the FIRST controlled run.
-    //
-    // Once validated, these could become parameter-file quantities such as
-    // DustShatteringFragmentSlope and DustShatteringMaxFragmentFraction.
-    //
-    const double fragment_q            = 3.3;  // 3.3 value from Hirashita 2010 and others
-    const double fragment_max_fraction = 0.80;
+    const double fragment_q = DustShatteringFragmentSlope;
+    const double fragment_max_fraction =
+        DustShatteringMaxFragmentFraction;
 
 
     // =========================================================================
@@ -670,6 +869,7 @@ void dust_grain_shattering(simparticles *Sp,
     static long long shat_failed_dens = 0;
     static long long shat_failed_size = 0;
     static long long shat_passed      = 0;
+    static long long shat_failed_dtg  = 0;
 
     // Fragment-radius diagnostics: event counts.
     static long long frag_1_10   = 0;
@@ -704,7 +904,7 @@ void dust_grain_shattering(simparticles *Sp,
         DUST_PRINT(
             "[SHAT_DIAG] calls=%lld "
             "failed: vel=%lld(%.1f%%) dens=%lld(%.1f%%) "
-            "size=%lld(%.1f%%) "
+            "size=%lld(%.1f%%) dtg=%lld(%.1f%%) "
             "passed=%lld(%.1f%%)\n",
 
             shat_calls,
@@ -717,6 +917,9 @@ void dust_grain_shattering(simparticles *Sp,
 
             shat_failed_size,
             100.0 * shat_failed_size / shat_calls,
+
+            shat_failed_dtg,
+            100.0 * shat_failed_dtg / shat_calls,
 
             shat_passed,
             100.0 * shat_passed / shat_calls
@@ -778,24 +981,104 @@ if(shat_passed > 0)
     }
 
     // =========================================================================
-    // Gas properties
-    // =========================================================================
-
-    double gas_density_cgs = dust_gas_density_cgs(Sp, gas_idx);
-    double n_H             = dust_gas_nH_cgs(Sp, gas_idx);
-
-    double T_gas =
-        get_temperature_from_entropy(
-            Sp,
-            gas_idx
-        );
-
-
-    // =========================================================================
-    // Gate 1: turbulent velocity threshold
+    // Gate ordering
     // =========================================================================
     //
-    // Existing treatment retained unchanged.
+    // Gates run cheapest-first: grain validity is two array reads, density
+    // needs only SphP[].Density, and the velocity gate (which needs T_gas and
+    // a sqrt) runs last.  Every gate is a pure early return, so the order does
+    // not change which grains shatter, only which counter a rejected call is
+    // attributed to.  The velocity gate has rejected 0% of calls in
+    // production runs (T_gas >~ 150 K everywhere dust lives), but is retained
+    // for physical correctness in very cold gas.
+
+
+    // =========================================================================
+    // Gate 1: grain validity
+    // =========================================================================
+
+    double a =
+        Sp->DustP[dust_idx].
+        GrainRadius;
+
+    double M_dust =
+        Sp->P[dust_idx].
+        getMass();
+
+    if(a <= All.DustMinGrainSize ||
+       M_dust <= 0.0 ||
+       !isfinite(a) ||
+       !isfinite(M_dust))
+    {
+        shat_failed_size++;
+        return;
+    }
+
+
+    // =========================================================================
+    // Additional fragment-spectrum validity check
+    // =========================================================================
+    //
+    // If the maximum allowed fragment is at/below DustMinGrainSize, there is no resolved
+    // fragment interval available. Do nothing rather than destroy the entire
+    // superparticle.
+    //
+
+    double maximum_fragment_radius =
+        fragment_max_fraction *
+        a;
+
+    if(maximum_fragment_radius <=
+       All.DustMinGrainSize)
+    {
+        shat_failed_size++;
+        return;
+    }
+
+
+    // =========================================================================
+    // Gate 2: density regime
+    // =========================================================================
+    //
+    // Shattering operates in diffuse gas.
+    // Coagulation operates in dense gas.
+    //
+
+    double n_H = dust_gas_nH_cgs(Sp, gas_idx);
+
+    double DustClumpingFactor =
+        dust_clumping_factor(
+            n_H,
+            Sp->SphP[gas_idx].Sfr >
+            DUST_SFR_EPS
+        );
+
+    double n_eff =
+        n_H *
+        DustClumpingFactor;
+
+    if(n_eff >
+       All.DustCollisionDensityThresh)
+    {
+        shat_failed_dens++;
+        return;
+    }
+
+
+    // ── Validate local DTG ────────────────────────────────────────────────────
+    // local_DTG is the same MPI-combined neighborhood estimate used by
+    // coagulation, passed in from update_dust_dynamics(). Both processes
+    // now use the same DTG measure for consistency.
+    if(!isfinite(local_DTG) || !(local_DTG > 0.0))
+    {
+        shat_failed_dtg++;
+        return;
+    }
+
+
+    // =========================================================================
+    // Gate 3: turbulent velocity threshold
+    // =========================================================================
     //
     // Sound speed is used as the turbulence proxy.
     //
@@ -805,6 +1088,8 @@ if(shat_passed > 0)
     //   pure carbon   ~ 2 km/s
     //
     // CarbonMassFraction linearly interpolates between those limits.
+    //
+    // T_gas is computed once per particle in update_dust_dynamics().
     //
 
     double cs_cgs =
@@ -832,142 +1117,47 @@ if(shat_passed > 0)
         return;
     }
 
-
-    // =========================================================================
-    // Gate 2: density regime
-    // =========================================================================
+    // ── Trayford et al. (2026) Eq. 9 shattering timescale ────────────────────
+    // Adapted for CosmicGrain's continuous grain radius.
     //
-    // Existing treatment retained unchanged.
+    // τ_sh = 54.1 Myr × (DTG/0.01)^-1 × (a/0.1μm) × f(n_H)
     //
-    // Shattering operates in diffuse gas.
-    // Coagulation operates in dense gas.
+    // where f(n_H) changes slope at n_H = 1 cm^-3:
+    //   f = n_H^-1       for n_H < 1 cm^-3  (collision rate ∝ density)
+    //   f = n_H^(-1/3)   for n_H >= 1 cm^-3 (grains more coupled to turbulence)
     //
-
-    double DustClumpingFactor =
-        dust_clumping_factor(
-            n_H,
-            Sp->SphP[gas_idx].Sfr >
-            DUST_SFR_EPS
-        );
-
-    double n_eff =
-        n_H *
-        DustClumpingFactor;
-
-    if(n_eff >
-       All.DustCollisionDensityThresh)
-    {
-        shat_failed_dens++;
-        return;
-    }
-
-
-    // =========================================================================
-    // Gate 3: grain validity
-    // =========================================================================
-
-    double a =
-        Sp->DustP[dust_idx].
-        GrainRadius;
-
-    double M_dust =
-        Sp->P[dust_idx].
-        getMass();
-
-    if(a <= All.DustMinGrainSize ||
-       M_dust <= 0.0 ||
-       !isfinite(a) ||
-       !isfinite(M_dust))
-    {
-        shat_failed_size++;
-        return;
-    }
-
-
-    // =========================================================================
-    // Additional fragment-spectrum validity check
-    // =========================================================================
+    // Note: n_H here is the UNCLUMPED physical density, consistent with
+    // Trayford's treatment of shattering as a diffuse-gas process.
+    // Coagulation uses clumped n_eff; shattering uses raw n_H.
     //
-    // If 0.8*a is already at/below DustMinGrainSize, there is no resolved
-    // fragment interval available. Do nothing rather than destroy the entire
-    // superparticle.
-    //
+    // The velocity threshold gate above (v_turb > v_shatter) handles the
+    // turbulent velocity requirement explicitly via a Poisson process, which
+    // is more rigorous than Trayford's implicit velocity folding into the
+    // timescale normalization. We therefore drop the velocity_factor term.
 
-    double maximum_fragment_radius =
-        fragment_max_fraction *
-        a;
+    double a_micron = a / 1000.0;  // nm -> micron
 
-    if(maximum_fragment_radius <=
-       All.DustMinGrainSize)
-    {
-        shat_failed_size++;
-        return;
-    }
-
-
-    // =========================================================================
-    // Existing shattering timescale
-    // =========================================================================
-    //
-    // IMPORTANT:
-    //
-    // We intentionally leave this unchanged for the first controlled test.
-    //
-    // This isolates the experiment to ONLY:
-    //
-    //      deterministic a/3
-    //
-    // versus
-    //
-    //      sampled fragment spectrum.
-    //
-
-    double dust_to_gas =
-        M_dust /
-        Sp->P[gas_idx].
-        getMass();
-
-    if(dust_to_gas <= 0.0 ||
-       !isfinite(dust_to_gas))
-    {
-        shat_failed_size++;
-        return;
-    }
-
-    double v_excess =
-        v_turb_kms -
-        v_shatter_kms;
-
-    double velocity_factor =
-        1.0 +
-        v_excess /
-        v_shatter_kms;
-
-    double a_micron =
-        a /
-        1000.0;
+    // Density factor: collision rate dependence on gas density.
+    // Floor at 1e-4 cm^-3 to avoid divergence in very diffuse CGM.
+    double density_factor;
+    if(n_H < 1.0)
+        density_factor = 1.0 / std::max(n_H, 1e-4);
+    else
+        density_factor = pow(n_H, -1.0 / 3.0);
 
     double tau_shat_yr =
-        1.0e8 *
-        (1.0 / dust_to_gas) *
-        (a_micron / 0.1) /
-        velocity_factor;
-
-    tau_shat_yr *=
+        54.1e6 *
+        (0.01 / local_DTG) *
+        (a_micron / 0.1) *
+        density_factor *
         All.DustShatteringCalibration;
 
-    // Existing physical/numerical limits.
+    // Physical and numerical limits.
     tau_shat_yr =
-        std::max(
-            tau_shat_yr,
-            1.0e6
-        );
+        std::max(tau_shat_yr, 1.0e6);
 
     tau_shat_yr =
-        std::min(
-            tau_shat_yr,
-            1.0e10
-        );
+        std::min(tau_shat_yr, 1.0e10);
 
     double tau_shat =
         tau_shat_yr *
@@ -1491,7 +1681,8 @@ static double calculate_drag_timescale(double grain_radius_nm, double grain_dens
  *
  * Returns 1 if the dust particle was destroyed by sputtering, 0 otherwise.
  */
-int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double dt)
+int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double dt,
+                         double T_gas)
 {
   if(!All.DustEnableDrag) return 0;
   if(nearest_gas < 0) return 0;
@@ -1518,7 +1709,6 @@ int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double
                              Sp->P[nearest_gas].Vel[2] };
   double gas_density_cgs= dust_gas_density_cgs(Sp, nearest_gas);
   double n_H            = dust_gas_nH_cgs(Sp, nearest_gas);
-  double T_gas          = get_temperature_from_entropy(Sp, nearest_gas);
   // ── Step 3: Relative velocity ─────────────────────────────────────────────
   double vrel_x = Sp->P[dust_idx].Vel[0] - gas_vel[0];
   double vrel_y = Sp->P[dust_idx].Vel[1] - gas_vel[1];
@@ -1673,6 +1863,7 @@ double dust_mass_per_particle =
 
 // ── Spawn ─────────────────────────────────────────────────────────────────
 int n_created = 0;
+double star_mass_remaining = Sp->P[star_idx].getMass();
 
 for(int n = 0; n < n_create; n++) {
 
@@ -1746,14 +1937,17 @@ for(int n = 0; n < n_create; n++) {
 
   if(conserve_agb_momentum)
     {
-      // Caller debits dust mass after return. During this call the star
-      // still contains all yet-to-be-debited dust. Account sequentially.
-      const double remaining = Sp->P[star_idx].getMass() - (n + 1) * dust_mass_per_particle;
-      if(remaining <= 0.0)
+      const double star_mass_after = star_mass_remaining - dust_mass_per_particle;
+      if(star_mass_after <= 0.0 || !std::isfinite(star_mass_after))
         Terminate("AGB dust recoil would exhaust stellar mass");
-      for(int k = 0; k < 3; ++k)
-        Sp->P[star_idx].Vel[k] -= dust_mass_per_particle / remaining *
-            (Sp->P[new_idx].Vel[k] - Sp->P[star_idx].Vel[k]);
+      for(int k = 0; k < 3; ++k) {
+        const double star_vel_before = Sp->P[star_idx].Vel[k];
+        const double dust_vel = Sp->P[new_idx].Vel[k];
+        Sp->P[star_idx].Vel[k] =
+            (star_mass_remaining * star_vel_before - dust_mass_per_particle * dust_vel) /
+            star_mass_after;
+      }
+      star_mass_remaining = star_mass_after;
     }
 
 }
@@ -1922,6 +2116,9 @@ void spawn_dust_particle(simparticles *Sp, double offset_kpc[3], double dust_mas
   Sp->DustP[new_idx].DustSource      = 2;
   // Initial dust temperature: CMB floor (T_CMB ∝ (1+z))
   Sp->DustP[new_idx].DustTemperature = 2.7 / All.Time;
+  // No cached DTG yet: computed on this particle's first dust call.
+  Sp->DustP[new_idx].LocalDTG = 0.0f;
+  Sp->DustP[new_idx].DTGAge   = 0;
   Sp->P[new_idx].StellarAge  = All.Time;
   Sp->P[new_idx].Ti_Current  = All.Ti_Current;
   Sp->P[new_idx].TimeBinHydro = 0;  // dust does not participate in SPH hydro
@@ -2376,7 +2573,8 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
  *
  * References: Hollenbach & McKee 1979, Draine & Lee 1984, Mathis+1983, Draine+2007.
  */
-void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double dt)
+void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double dt,
+                             double T_gas)
 {
   // If dust cooling is disabled, only enforce the CMB floor
   if(!All.DustEnableCooling) {
@@ -2402,7 +2600,6 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
   double T_CMB  = 2.7 / All.Time;
   double T_dust = Sp->DustP[dust_idx].DustTemperature;
   if(T_dust <= 0.0 || !isfinite(T_dust)) T_dust = T_CMB;
-  double T_gas       = get_temperature_from_entropy(Sp, gas_idx);
   double n_H         = dust_gas_nH_cgs(Sp, gas_idx);
   // ── Emission coefficient C_emit ───────────────────────────────────────────
   double C_emit = 4.0 * M_PI * a_cm * a_cm * Q_eff * sigma_SB / pow(T_ref, beta_eff);
@@ -2539,19 +2736,122 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     DUST_PRINT("=========================\n");
     verified = true;
   }
+  std::vector<int> nearest_gas_by_particle((size_t)Sp->NumPart, -1);
+  std::vector<double> gas_distance_by_particle((size_t)Sp->NumPart, -1.0);
+  std::vector<double> coagulation_radius_by_particle((size_t)Sp->NumPart, 0.0);
+  for(int i = 0; i < Sp->NumPart; i++) {
+    if(Sp->P[i].getType() != DUST_PARTICLE_TYPE ||
+       Sp->P[i].getMass() <= DUST_MASS_TO_DESTROY)
+      continue;
+
+    double dist_kpc = -1.0;
+    const int nearest_gas = find_nearest_gas_particle(Sp, i, 10.0, &dist_kpc);
+    if(nearest_gas < 0)
+      continue;
+
+    nearest_gas_by_particle[i] = nearest_gas;
+    gas_distance_by_particle[i] = dist_kpc;
+    const double association_radius =
+        std::max(2.0, std::min((double)Sp->SphP[nearest_gas].Hsml, 10.0));
+    if(dist_kpc <= association_radius)
+      coagulation_radius_by_particle[i] = association_radius;
+  }
+
+  // ── Local DTG with staggered per-particle caching ─────────────────────────
+  // DTG changes on growth/destruction timescales (tens to hundreds of Myr),
+  // much slower than the dust cadence, so each particle's neighborhood DTG is
+  // recomputed only every DTG_REFRESH_INTERVAL dust calls and reused between.
+  //
+  // The cache lives in DustP[] (LocalDTG, DTGAge) so it travels with the
+  // particle through domain exchange.  An earlier task-local map keyed by ID
+  // missed ~95% of the time because the near-every-step domain decomposition
+  // moves most dust to a different task between dust calls.
+  //
+  // DTGAge counts dust calls since the last recompute: a particle reuses its
+  // cache while DTGAge < DTG_REFRESH_INTERVAL - 1, so each refreshes exactly
+  // once every DTG_REFRESH_INTERVAL calls.  Particles without a valid cache
+  // (new dust, snapshot starts, pre-cache restart files, failed estimates)
+  // refresh immediately and take their array index as the phase, so a batch of
+  // them (e.g. every particle after a restart) does not fall due together.  Unassociated particles have their cache
+  // invalidated, since a value from an earlier association may be stale.
+  static constexpr int DTG_REFRESH_INTERVAL = 10;
+
+  std::vector<double> local_DTG((size_t)Sp->NumPart, 0.0);
+  long long n_dtg_refreshed = 0, n_dtg_cached = 0;
+  double t_dtg_start = MPI_Wtime();
+  if(All.DustEnableCoagulation || All.DustEnableShattering) {
+    std::vector<double> refresh_radius((size_t)Sp->NumPart, 0.0);
+    std::vector<char> had_valid_cache((size_t)Sp->NumPart, 0);
+    for(int i = 0; i < Sp->NumPart; i++) {
+      if(Sp->P[i].getType() != DUST_PARTICLE_TYPE) continue;
+      dust_data &dp = Sp->DustP[i];
+      if(!(coagulation_radius_by_particle[i] > 0.0)) {
+        dp.LocalDTG = 0.0f;
+        dp.DTGAge = 0;
+        continue;
+      }
+      const bool valid = isfinite(dp.LocalDTG) && dp.LocalDTG > 0.0f &&
+                         dp.DTGAge >= 0;
+      had_valid_cache[i] = valid;
+      if(valid && dp.DTGAge < DTG_REFRESH_INTERVAL - 1) {
+        local_DTG[i] = dp.LocalDTG;
+        dp.DTGAge++;
+        n_dtg_cached++;
+      } else {
+        refresh_radius[i] = coagulation_radius_by_particle[i];
+        n_dtg_refreshed++;
+      }
+    }
+
+    // Collective: every task must call this even if it has nothing to refresh.
+    std::vector<double> fresh_DTG;
+    estimate_local_dust_to_gas_ratio(Sp, refresh_radius, Communicator, fresh_DTG);
+
+    for(int i = 0; i < Sp->NumPart; i++) {
+      if(!(refresh_radius[i] > 0.0)) continue;
+      local_DTG[i] = fresh_DTG[i];
+      dust_data &dp = Sp->DustP[i];
+      dp.LocalDTG = (isfinite(fresh_DTG[i]) && fresh_DTG[i] > 0.0)
+                        ? (float)fresh_DTG[i] : 0.0f;
+      dp.DTGAge = had_valid_cache[i] ? 0 : i % DTG_REFRESH_INTERVAL;
+    }
+  }
+  double t_dtg_local = MPI_Wtime() - t_dtg_start;
+
+  double t_dtg_max = 0.0, t_dtg_sum = 0.0;
+  long long dtg_counts_local[2] = {n_dtg_refreshed, n_dtg_cached};
+  long long dtg_counts_sum[2] = {0, 0};
+  int n_tasks_dtg = 1;
+  MPI_Comm_size(Communicator, &n_tasks_dtg);
+  MPI_Reduce(&t_dtg_local, &t_dtg_max, 1, MPI_DOUBLE, MPI_MAX, 0, Communicator);
+  MPI_Reduce(&t_dtg_local, &t_dtg_sum, 1, MPI_DOUBLE, MPI_SUM, 0, Communicator);
+  MPI_Reduce(dtg_counts_local, dtg_counts_sum, 2, MPI_LONG_LONG, MPI_SUM, 0,
+             Communicator);
+  if(All.ThisTask == 0 && dust_call_count % 10 == 0)
+    printf("[DTG_TIMING|Step=%d] estimate_local_DTG: "
+           "max=%.3f s  mean=%.3f s  n_dust=%lld  refreshed=%lld cached=%lld\n",
+           All.NumCurrentTiStep,
+           t_dtg_max,
+           t_dtg_sum / n_tasks_dtg,
+           global_count,
+           dtg_counts_sum[0], dtg_counts_sum[1]);
+
   // ── Main dust loop ────────────────────────────────────────────────────────
   for(int i = 0; i < Sp->NumPart; i++) {
     if(Sp->P[i].getType() != DUST_PARTICLE_TYPE) continue;
     if(Sp->P[i].getMass() <= DUST_MASS_TO_DESTROY) continue;
-    double dist_kpc = -1.0;
-    int nearest_gas = find_nearest_gas_particle(Sp, i, 10.0, &dist_kpc);
+    const double dist_kpc = gas_distance_by_particle[i];
+    const int nearest_gas = nearest_gas_by_particle[i];
     if(nearest_gas < 0) continue;
+    // Gas temperature is shared by every process below.  Dust routines never
+    // modify gas entropy, density, or Ne, so computing it once is exact.
+    const double T_gas = get_temperature_from_entropy(Sp, nearest_gas);
     // Temperature update — needs gas properties, so runs whenever drag or
     // cooling is active (both read the gas entropy).
     if(All.DustEnableCooling || All.DustEnableDrag)
-      update_dust_temperature(Sp, i, nearest_gas, dt);
+      update_dust_temperature(Sp, i, nearest_gas, dt, T_gas);
 
-    dust_gas_interaction(Sp, i, nearest_gas, dt);
+    dust_gas_interaction(Sp, i, nearest_gas, dt, T_gas);
     dust_radiation_pressure(Sp, i, nearest_gas, dt);
     
     // Growth, coagulation, and shattering require a resolved local gas
@@ -2563,17 +2863,15 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     // retain 2 kpc as a floor, and cap at the existing 10-kpc nearest-gas
     // search radius so this change cannot create arbitrarily long-range
     // coupling in diffuse CGM gas.
-    const double local_dust_gas_radius =
-        std::max(2.0,
-                 std::min((double)Sp->SphP[nearest_gas].Hsml, 10.0));
+    const double local_dust_gas_radius = coagulation_radius_by_particle[i];
 
-    if(dist_kpc <= local_dust_gas_radius) {
+    if(local_dust_gas_radius > 0.0 && dist_kpc <= local_dust_gas_radius) {
       if(All.DustEnableGrowth)
-        dust_grain_growth_subgrid(Sp, i, nearest_gas, dt);
+        dust_grain_growth_subgrid(Sp, i, nearest_gas, dt, T_gas);
       if(All.DustEnableCoagulation)
-        dust_grain_coagulation(Sp, i, nearest_gas, dt);
+        dust_grain_coagulation(Sp, i, nearest_gas, dt, local_DTG[i], T_gas);
       if(All.DustEnableShattering)
-        dust_grain_shattering(Sp, i, nearest_gas, dt);
+        dust_grain_shattering(Sp, i, nearest_gas, dt, local_DTG[i], T_gas);
     }
   }
   // ── Periodic diagnostics (every 500 steps, task 0) ───────────────────────
@@ -2747,6 +3045,17 @@ double calculate_velocity_difference(simparticles *Sp, int dust_idx, int gas_idx
  *
  * Must be called collectively (all tasks), but only rank 0 prints.
  */
+// Cumulative coagulation diagnostics, local to each MPI task.
+// Combined across tasks by print_dust_statistics().
+static long long CoagCalls = 0;
+static long long CoagFailedDensity = 0;
+static long long CoagFailedTemperature = 0;
+static long long CoagFailedSize = 0;
+static long long CoagFailedDTG = 0;
+static long long CoagGrown = 0;
+static long long CoagLargeUpdates = 0;
+static double CoagMaxFractionalIncrease = 0.0;
+
 void print_dust_statistics(simparticles *Sp, MPI_Comm Communicator)
 {
   // ── Per-task accumulation ─────────────────────────────────────────────────
@@ -2815,6 +3124,19 @@ void print_dust_statistics(simparticles *Sp, MPI_Comm Communicator)
   MPI_Reduce(&TotalMassErodedByShock,    &g_MassErodShock,             1, MPI_DOUBLE,    MPI_SUM, 0, Communicator);
   MPI_Reduce(&TotalDustMassAstrated,     &g_MassAstrated,              1, MPI_DOUBLE,    MPI_SUM, 0, Communicator);
   MPI_Reduce(&TotalSizeReductionShattering,&g_SizeReductionShattering, 1, MPI_DOUBLE,    MPI_SUM, 0, Communicator);
+  // Global coagulation diagnostics (cumulative since initialization).
+  long long coag_local[7] = {
+      CoagCalls, CoagFailedDensity, CoagFailedTemperature,
+      CoagFailedSize, CoagFailedDTG, CoagGrown, CoagLargeUpdates
+  };
+  long long coag_global[7] = {0};
+  double coag_max_global = 0.0;
+
+  MPI_Reduce(coag_local, coag_global, 7, MPI_LONG_LONG,
+             MPI_SUM, 0, Communicator);
+  MPI_Reduce(&CoagMaxFractionalIncrease, &coag_max_global, 1,
+             MPI_DOUBLE, MPI_MAX, 0, Communicator);
+
   // Print coagulation histogram (every 500 steps, all tasks)
   print_coag_histogram(Communicator);
   if(All.ThisTask != 0) return;
@@ -2888,6 +3210,13 @@ void print_dust_statistics(simparticles *Sp, MPI_Comm Communicator)
     DUST_PRINT("  Shock events / live particles: %.3f  (target < 0.5)\n",
                (double)g_NDustDestrByShock / global_dust_count);
   DUST_PRINT("STATISTICS Coagulation events: %lld\n", g_NCoag);
+  DUST_PRINT("[COAG_GLOBAL] calls=%lld dens_reject=%lld temp_reject=%lld "
+             "size_reject=%lld dtg_reject=%lld grown=%lld subcycled=%lld "
+             "max_requested_da_over_a=%.3e\n",
+             coag_global[0], coag_global[1], coag_global[2],
+             coag_global[3], coag_global[4], coag_global[5], coag_global[6],
+             coag_max_global);
+
   DUST_PRINT("STATISTICS Shattering events: %lld (avg da=%.2f nm/event)\n",
              g_NShatter,
              g_NShatter > 0 ? g_SizeReductionShattering / g_NShatter : 0.0);
@@ -3303,127 +3632,119 @@ double dust_clumping_factor(double n_H, int is_star_forming)
   if(n_H > 0.05 * n_sf) return 1.5;
   return 1.0;
 }
-// ═══════════════════════════════════════════════════════════════════════════════
-// dust_grain_coagulation
-// ═══════════════════════════════════════════════════════════════════════════════
-/**
- * Grow grains via coagulation in dense cold gas.
- *
- * ... [existing docstring through the "3000 K temperature ceiling" paragraph
- *      unchanged] ...
- *
- * COMPOSITION EVOLUTION: since this model conserves the superparticle's total
- * mass (only GrainRadius grows), there's no literal mass transfer to blend
- * composition with. Instead, the ACTUALLY-APPLIED volume growth this event
- * (size_ratio^3 - 1, after the 1.2x cap -- not the raw pre-cap swept_fraction)
- * is reused as the mixing weight toward a local, mass-weighted ambient
- * CarbonMassFraction computed from nearby dust particles (dust_hash, same
- * infrastructure erode_dust_from_sn_shocks/consume_dust_by_astration already
- * use). This is the first mechanism able to move CarbonMassFraction UPWARD as
- * well as down -- sputtering and shock destruction are purely destructive
- * (carbon depletes, silicate-richness only increases); coagulation is what
- * makes genuine hybridization possible, e.g. an SNII/LRN-born grain (birth
- * CF=0.1) picking up real carbon from nearby AGB-sourced dust (birth CF=0.6).
- *
- * The blend CF_new = (1-w)*CF_old + w*CF_ambient is guaranteed to stay in
- * [0,1] automatically -- w in [0, 0.728] since size_ratio is capped at 1.2,
- * and CF_ambient in [0,1] since it's a mass-weighted average of values each
- * already in [0,1]. No extra clamping needed.
- */
-void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt)
+
+// ============================================================================
+// DUST COAGULATION: continuous-radius, local-DTG Trayford-inspired model
+// ============================================================================
+// Literature basis:
+//   Trayford et al. (2025), MNRAS, doi:10.1093/mnras/staf2040,
+//   Section 3.5.2, Equation (10), adapting Aoyama et al. (2017).
+//
+//   tau_co = 27.1 Myr * (a / 0.1 micron) * (DTG / 0.01)^(-1)
+//          * (v_co / 0.1 km/s)^(-1) * (n_H_eff / 10 cm^-3)^(-1).
+//
+// Trayford uses a two-size-bin mass-transfer model (a_S = 0.01 micron)
+// and v_co = 0.2 km/s. CosmicGrain instead follows a continuous radius
+// for each fixed-mass dust superparticle. This is NOT Trayford's exact
+// two-bin algorithm or a full grain-grain collision-kernel solution.
+//
+// DTG is estimated from dust and gas superparticle masses within the local
+// association sphere, combined across MPI ranks and clamped to [1e-6, 0.1].
+// DustCoagulationCalibration multiplies the timescale (1 = uncalibrated).
+//
+// Representative-grain closure: da/dt = a/(3*tau_co). Because tau_co is
+// proportional to a at fixed environment, integrate exactly over dt:
+//   a_new = a_old * (1 + dt/(3*tau_co(a_old))).
+// Each numerical substep is limited to 20% radius growth; the full timestep
+// is integrated unless the physical maximum radius is reached.
+// Superparticle mass and composition are unchanged: microscopic grain
+// number decreases as radius increases. No fictitious carbon mixing.
+// ============================================================================
+void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt,
+                            double local_DTG, double T_gas)
 {
-  if(!All.DustEnableCoagulation) return;
-  // Diagnostic counters
-  static int coag_calls = 0, coag_failed_dens = 0, coag_failed_temp = 0;
-  static int coag_failed_size = 0, coag_passed = 0;
-  coag_calls++;
-  if(coag_calls % 50000 == 0 && All.ThisTask == 0)
-    DUST_PRINT("[COAG_DIAG] calls=%d  failed: dens=%d(%.1f%%) temp=%d(%.1f%%) "
-               "size=%d(%.1f%%)  passed=%d(%.1f%%)\n",
-               coag_calls,
-               coag_failed_dens, 100.0 * coag_failed_dens / coag_calls,
-               coag_failed_temp, 100.0 * coag_failed_temp / coag_calls,
-               coag_failed_size, 100.0 * coag_failed_size / coag_calls,
-               coag_passed,      100.0 * coag_passed      / coag_calls);
+  if(!All.DustEnableCoagulation || !(dt > 0.0) || !isfinite(dt)) return;
 
-  // ── Gate 1: density ───────────────────────────────────────────────────────
-  double n_H              = dust_gas_nH_cgs(Sp, gas_idx);
-  double DustClumpingFactor= dust_clumping_factor(n_H, Sp->SphP[gas_idx].Sfr > DUST_SFR_EPS);
-  double n_eff            = n_H * DustClumpingFactor;
-  if(n_eff < All.DustCollisionDensityThresh) { coag_failed_dens++; return; }
+  ++CoagCalls;
 
-  // ── Gate 2: temperature ───────────────────────────────────
-  double T_gas = get_temperature_from_entropy(Sp, gas_idx);
-  if(T_gas > 3000.0) { coag_failed_temp++; return; }
+  const double n_H = dust_gas_nH_cgs(Sp, gas_idx);
+  const bool is_star_forming = Sp->SphP[gas_idx].Sfr > DUST_SFR_EPS;
+  const double clumping = dust_clumping_factor(n_H, is_star_forming);
+  const double n_eff = n_H * clumping;
+  if(!isfinite(n_eff) || n_eff < All.DustCollisionDensityThresh ||
+     !(n_eff > 0.0)) { ++CoagFailedDensity; return; }
 
-  // ── Gate 3: grain validity and size cap ───────────────────────────────────
-  double a      = Sp->DustP[dust_idx].GrainRadius;
-  double M_dust = Sp->P[dust_idx].getMass();
-  if(a <= 0.0 || M_dust <= 0.0 || !isfinite(a) || !isfinite(M_dust)) return;
-  if(a >= All.DustMaxGrainSize) { coag_failed_size++; return; }
-  coag_passed++;
-
-  // ── Coagulation timescale ─────────────────────────────────────────────────
-  double a_micron    = a / 1000.0;  // nm → µm
-  double tau_coag_yr = 1e7 * (100.0 / n_eff) * (0.1 / a_micron);
-  tau_coag_yr       *= All.DustCoagulationCalibration;
-  tau_coag_yr        = std::max(tau_coag_yr, 1e6);
-  tau_coag_yr        = std::min(tau_coag_yr, 1e9);
-  double tau_coag = tau_coag_yr * SEC_PER_YEAR / All.UnitTime_in_s;
-
-  // ── Size update — mass-conserving ─────────────────────────────────────────
-  double swept_fraction = 1.0 - exp(-dt / tau_coag);
-  double size_ratio     = std::min(1.2, pow(1.0 + swept_fraction, 1.0/3.0));
-  double a_new = a * size_ratio;
-  if(a_new > All.DustMaxGrainSize) a_new = All.DustMaxGrainSize;
-  if(!isfinite(a_new) || a_new <= a) return;
-
-  // ── Composition mixing: local ambient CarbonMassFraction ──────────────────────
-  double CF_old = Sp->DustP[dust_idx].CarbonMassFraction;
-  double CF_new = CF_old;  // default: no ambient dust found, no change
-  double search_radius = (double)Sp->SphP[gas_idx].Hsml;
-  double CF_ambient = CF_old;
-  double w = 0.0;
-
-  // This should maybe be resolution dependent!
-  const int MAX_COAG_NEIGHBORS = 512;
-  int    neighbor_indices[MAX_COAG_NEIGHBORS];
-  double neighbor_distances[MAX_COAG_NEIGHBORS];
-  int    n_neighbors = 0;
-  dust_hash.find_neighbors(Sp, dust_idx, search_radius,
-                           neighbor_indices, neighbor_distances,
-                           &n_neighbors, MAX_COAG_NEIGHBORS);
-  if(n_neighbors > 0) {
-    double mass_sum = 0.0, cf_mass_sum = 0.0;
-    for(int k = 0; k < n_neighbors; k++) {
-      int j = neighbor_indices[k];
-      if(j == dust_idx) continue;  // exclude self from the ambient average
-      if(Sp->P[j].getType() != DUST_PARTICLE_TYPE) continue;
-      double mj = Sp->P[j].getMass();
-      if(mj <= 0.0) continue;
-      if(Sp->DustP[j].GrainRadius <= 0.0 || !isfinite(Sp->DustP[j].GrainRadius)) continue;
-      mass_sum    += mj;
-      cf_mass_sum += mj * Sp->DustP[j].CarbonMassFraction;
-    }
-      if(mass_sum > 0.0) {
-        CF_ambient = cf_mass_sum / mass_sum;
-        w = pow(a_new / a, 3.0) - 1.0;
-        CF_new = (1.0 - w) * CF_old + w * CF_ambient;
-      }
+  // Effective-EOS star-forming temperatures do not resolve cold clouds.
+  // Retain the original T < 3000 K gate for non-star-forming gas.
+  if(!is_star_forming && (!isfinite(T_gas) || T_gas > 3000.0)) {
+    ++CoagFailedTemperature;
+    return;
   }
-  Sp->DustP[dust_idx].GrainRadius    = a_new;  // mass conserved; only radius changes
-  Sp->DustP[dust_idx].CarbonMassFraction = (float)CF_new;
-  NCoagulationEvents++;
+
+  const double a_nm = Sp->DustP[dust_idx].GrainRadius;
+  const double M_dust = Sp->P[dust_idx].getMass();
+  if(!isfinite(a_nm) || !(a_nm > 0.0) || !isfinite(M_dust) ||
+     !(M_dust > 0.0) ||
+     a_nm >= All.DustMaxGrainSize) {
+    ++CoagFailedSize;
+    return;
+  }
+  if(!isfinite(local_DTG) || !(local_DTG > 0.0)) {
+    ++CoagFailedDTG;
+    return;
+  }
+
+  // Trayford et al. (2025), Eq. 10; DTG is the MPI-combined mass ratio
+  // inside the resolved dust-gas association sphere.
+  const double v_co_kms = 0.2;
+  const double tau0_yr = 27.1e6;
+  const double calibration = All.DustCoagulationCalibration;
+  if(!isfinite(calibration) || !(calibration > 0.0)) return;
+  const double tau_co_yr = tau0_yr * (a_nm / 100.0)
+      * (0.01 / local_DTG) * (0.1 / v_co_kms)
+      * (10.0 / n_eff) * calibration;
+  if(!isfinite(tau_co_yr) || !(tau_co_yr > 0.0)) return;
+
+  // update_dust_dynamics() receives elapsed physical time in code units.
+  const double tau_co_code = tau_co_yr * SEC_PER_YEAR / All.UnitTime_in_s;
+  if(!isfinite(tau_co_code) || !(tau_co_code > 0.0)) return;
+
+  // Subcycle so no numerical increment exceeds 20%. Since tau_co is
+  // proportional to radius, this reproduces the exact fixed-environment
+  // continuous-radius solution while preserving a bounded per-step update.
+  const double fractional_increase = dt / (3.0 * tau_co_code);
+  if(!isfinite(fractional_increase) || !(fractional_increase > 0.0))
+    return;
+
+  CoagMaxFractionalIncrease =
+      std::max(CoagMaxFractionalIncrease, fractional_increase);
+
+  const bool subcycled = fractional_increase > 0.2;
+  double remaining_dt = dt;
+  double a_new = a_nm;
+  while(remaining_dt > 0.0 && a_new < All.DustMaxGrainSize) {
+    const double tau_substep_code = tau_co_code * (a_new / a_nm);
+    if(!isfinite(tau_substep_code) || !(tau_substep_code > 0.0))
+      return;
+    const double substep_dt = std::min(remaining_dt, 0.6 * tau_substep_code);
+    const double substep_fraction = substep_dt / (3.0 * tau_substep_code);
+    if(!isfinite(substep_fraction) || !(substep_fraction > 0.0))
+      return;
+    a_new = std::min(All.DustMaxGrainSize, a_new * (1.0 + substep_fraction));
+    remaining_dt -= substep_dt;
+  }
+
+  if(!isfinite(a_new) || !(a_new > a_nm)) return;
+
+  Sp->DustP[dust_idx].GrainRadius = a_new;
+  ++NCoagulationEvents;
+  ++CoagGrown;
+  if(subcycled) ++CoagLargeUpdates;
   record_coagulation_event(n_H, n_eff);
-  if(All.ThisTask == 0 && (NCoagulationEvents <= 100 || NCoagulationEvents % 10000 == 0))
-      DUST_PRINT("[COAGULATION] event=%lld a_nm_old=%.1f a_nm_new=%.1f M_dust_code=%.3e "
-                "n_H_cm3=%.2f n_eff_cm3=%.2f clumping_factor=%.0f T_gas_K=%.0f "
-                "tau_coag_Myr=%.1f swept_fraction=%.3e  CF: %.6f -> %.6f  CF_ambient=%.4f  mix_w=%.3e (n_neighbors=%d)\n",
-                NCoagulationEvents, a, a_new, M_dust,
-                n_H, n_eff, DustClumpingFactor, T_gas,
-                tau_coag_yr / 1e6, swept_fraction,
-                CF_old, CF_new, CF_ambient, w, n_neighbors);
+
+
 }
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // dust_grain_growth_subgrid
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -3459,7 +3780,8 @@ void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double 
  * Because tau_C and tau_sil differ, accretion itself can now evolve composition.
  *
  */
-void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, double dt)
+void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, double dt,
+                               double T_gas)
 {
   if(!All.DustEnableGrowth) return;
   // ── Diagnostics ────────────────────────────────────────────────────────────
@@ -3518,7 +3840,6 @@ void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, doub
     DUST_PRINT("===========================================\n");
   }
   // ── Gate 1: hot gas inhibits accretion ─────────────────────────────────────
-  const double T_gas = get_temperature_from_entropy(Sp, gas_idx);
   if(T_gas > All.DustThermalSputteringTemp) {
     failed_hot++;
     return;

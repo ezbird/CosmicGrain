@@ -17,7 +17,7 @@ Before measuring a galaxy, record:
 
 - `Time`, `Redshift`, `BoxSize`, and the total particle counts;
 - the seven-element particle-type layout;
-- cosmology and `HubbleParam`;
+- cosmology, reading `HubbleParam` from the `Parameters` attributes (not `Header`);
 - whether the snapshot is comoving; and
 - the complete list of fields present for PartTypes 0, 4, and 6.
 

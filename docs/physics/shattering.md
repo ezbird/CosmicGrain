@@ -41,7 +41,7 @@ P_{\rm shatter} = 1 - e^{-\Delta t/\tau_{\rm shat}}
 \]
 </div>
 
-When an event fires, the grain radius is reduced to \(a_{\rm new} = 0.33\,a\), consistent with the mean fragment radius of an MRN \(a^{-3.5}\) fragment distribution (Jones et al. 1996). Total superparticle mass is conserved — the superparticle continues to represent the same total dust mass, now as a population of smaller fragments.
+When an event fires, a representative fragment radius is sampled from a power-law fragment mass distribution. The assumed fragment number distribution is \(dN/da \propto a^{-q}\); multiplying by the individual grain mass (\(\propto a^3\)) gives \(dM/da \propto a^{3-q}\). The sampled radius lies between the minimum grain size and a configurable fraction of the parent radius. Total superparticle mass is conserved — the superparticle continues to represent the same total dust mass, now as a population of smaller fragments.
 
 ### Assumptions
 
@@ -49,7 +49,7 @@ When an event fires, the grain radius is reduced to \(a_{\rm new} = 0.33\,a\), c
 - The velocity threshold blends linearly and continuously between silicate
   and carbon endpoints using the particle's current carbon fraction.
 - Shattering is treated as a genuinely catastrophic, discrete event (Poisson-gated), not a continuous erosion process — physically appropriate since real shattering is triggered by individual high-velocity collisions rather than gradual wear.
-- If the fragmented radius would fall below the minimum grain size, the fragment population is deemed too small to survive as a distinct entity and the entire superparticle dissolves into the gas phase as metals, rather than being clamped at the floor.
+- If the maximum allowed fragment radius is at or below the minimum grain size, no shattering event is applied because there is no resolved fragment interval.
 - Grain-grain shattering physics in the diffuse ISM (Hirashita & Yan 2009) and shock-driven shattering physics (Jones et al. 1994, 1996) are both drawn on here — the threshold velocities and fragment-size relation come from the shock literature, while the overall timescale scaling follows the turbulence-driven treatment.
 
 </div>
@@ -78,13 +78,11 @@ The source code attributes the shattering timescale formula to "Hirashita & Kuo 
 1. **Gate on turbulent velocity** — the local sound-speed proxy must exceed the composition-blended shattering threshold.
 2. **Gate on the shared clumping-boosted effective density** — must be below `DustCollisionDensityThresh` (the diffuse regime).
 3. **Gate on grain validity** — invalid or already-minimal grains are excluded.
-4. **Compute the shattering timescale** from local dust-to-gas ratio, grain size, and velocity excess above threshold.
-5. **Draw a Poisson event** for this timestep; if no event occurs, the grain is left unchanged.
-6. **If an event occurs, compute the fragment radius** as 0.33× the current radius.
-7. **If the fragment radius would fall below the minimum grain size**,
-   dissolve the entire superparticle through the shared dust-to-gas transfer
-   path.
-8. **Otherwise, update the grain radius only** — mass is conserved — and record the event.
+4. **Gate on fragment interval** — skip shattering if the maximum allowed fragment radius is at or below `DustMinGrainSize`.
+5. **Compute the shattering timescale** from local dust-to-gas ratio, grain size, and velocity excess above threshold.
+6. **Draw a Poisson event** for this timestep; if no event occurs, the grain is left unchanged.
+7. **If an event occurs, sample a fragment radius** from \(dM/da \propto a^{3-q}\), between `DustMinGrainSize` and `DustShatteringMaxFragmentFraction` times the parent radius.
+8. **Update the grain radius only** — mass is conserved — and record the event.
 
 </div>
 
@@ -95,9 +93,11 @@ The source code attributes the shattering timescale formula to "Hirashita & Kuo 
 | `DustEnableShattering` | Enables or disables shattering. |
 | `DustCollisionDensityThresh` | Effective density threshold below which shattering is active (and above which coagulation is active — shared between the two modules). |
 | `DustShatteringCalibration` | Multiplicative calibration factor applied to the shattering timescale. |
-| `DustMinGrainSize` | Minimum grain radius; fragments that would fall below this dissolve the superparticle entirely (shared across all dust physics modules). |
+| `DustShatteringFragmentSlope` | Slope \(q\) of the assumed fragment number distribution \(dN/da \propto a^{-q}\); default 3.3, finite and positive. |
+| `DustShatteringMaxFragmentFraction` | Upper fragment-radius limit as a fraction of the parent radius; default 0.80, strictly between 0 and 1. |
+| `DustMinGrainSize` | Minimum allowed fragment radius; if the available fragment interval is empty, the shattering event is skipped (shared across all dust physics modules). |
 
-The 10⁸ yr / 0.1 µm reference scaling in the timescale formula, the 1–2 km/s velocity threshold endpoints, and the 0.33 fragment-radius factor are hardcoded and not currently exposed as parameters.
+The 10⁸ yr / 0.1 µm reference scaling in the timescale formula and the 1–2 km/s velocity threshold endpoints are hardcoded and not currently exposed as parameters.
 
 ## Where in the Code?
 
@@ -107,7 +107,7 @@ The 10⁸ yr / 0.1 µm reference scaling in the timescale formula, the 1–2 km/
 
 - **Shattering routine**
   - `dust_grain_shattering()`
-    - Applies the velocity, density, and validity gates; computes the shattering timescale, draws the stochastic event, and either fragments the grain or dissolves it entirely.
+    - Applies the velocity, density, and validity gates; computes the shattering timescale, draws the stochastic event, and samples a new representative radius on success.
   - `dust_clumping_factor()`
     - Supplies the shared clumping-boosted effective density (documented separately).
   - Shared destruction path
@@ -152,7 +152,7 @@ Source of the composition-dependent velocity thresholds (1–2 km/s) used to gat
 **Jones, A. P., Tielens, A. G. G. M., & Hollenbach, D. J. (1996). *Grain Shattering in Shocks: The Interstellar Grain Size Distribution.* The Astrophysical Journal, 469, 740–764.**
 
 <p class="reference-note">
-Source of the MRN fragment-distribution result motivating the 0.33× fragment-radius factor applied on a successful shattering event.
+Relevant shock-shattering model and fragment-size-distribution reference; the code samples a configurable power-law fragment mass spectrum rather than applying a fixed 0.33× radius.
 </p>
 
 <div class="reference-links">

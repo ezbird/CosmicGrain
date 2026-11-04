@@ -16,6 +16,8 @@
 #include "../io/restart.h"
 
 #include <gsl/gsl_rng.h>
+#include <stddef.h>
+#include <vector>
 #include <math.h>
 #include <mpi.h>
 #include <stdint.h>
@@ -446,10 +448,28 @@ void restart::contents_restart_file(int modus)
     }
 
 #ifdef DUST
-if(Sim->Sp.NumPart > 0)
-{
-    byten(&Sim->Sp.DustP[0], Sim->Sp.NumPart * sizeof(dust_data), modus);
-}
+  /* DustP[] is written in its original (pre-DTG-cache) layout: each record is
+   * truncated at LocalDTG.  This keeps restart files from older executables
+   * readable.  The cache fields follow in an appended block at the end of the
+   * file; see "CosmicGrain DTG cache block" below. */
+  if(Sim->Sp.NumPart > 0)
+    {
+      const size_t legacy_size = offsetof(dust_data, LocalDTG);
+      std::vector<char> legacy((size_t)Sim->Sp.NumPart * legacy_size);
+
+      if(modus == MODUS_WRITE)
+        for(int i = 0; i < Sim->Sp.NumPart; i++)
+          memcpy(&legacy[(size_t)i * legacy_size], &Sim->Sp.DustP[i], legacy_size);
+
+      byten(legacy.data(), legacy.size(), modus);
+
+      if(modus == MODUS_READ)
+        for(int i = 0; i < Sim->Sp.NumPart; i++)
+          {
+            memset(&Sim->Sp.DustP[i], 0, sizeof(dust_data));
+            memcpy(&Sim->Sp.DustP[i], &legacy[(size_t)i * legacy_size], legacy_size);
+          }
+    }
 #endif
 
 #if defined(MERGERTREE) && defined(SUBFIND)
@@ -665,6 +685,69 @@ if(Sim->Sp.NumPart > 0)
           DustNeedsSynchronization = needs_sync;
         }
     }
+#endif
+
+#ifdef DUST
+  /* CosmicGrain DTG cache block.  Appended last and detected by EOF, so files
+   * without it (all restarts written before the cache existed) still load;
+   * their cache simply starts empty and is rebuilt on the first dust call. */
+  {
+    const uint64_t dtg_cache_magic = UINT64_C(0x4347445447434831); /* CGDTGCH1 */
+    const int n = Sim->Sp.NumPart;
+
+    if(modus == MODUS_WRITE)
+      {
+        int32_t count = n;
+        my_fwrite((void *)&dtg_cache_magic, sizeof(dtg_cache_magic), 1, fd);
+        my_fwrite(&count, sizeof(count), 1, fd);
+        std::vector<float> dtg((size_t)n);
+        std::vector<int32_t> age((size_t)n);
+        for(int i = 0; i < n; i++)
+          {
+            dtg[i] = Sim->Sp.DustP[i].LocalDTG;
+            age[i] = Sim->Sp.DustP[i].DTGAge;
+          }
+        if(n > 0)
+          {
+            byten(dtg.data(), dtg.size() * sizeof(float), modus);
+            byten(age.data(), age.size() * sizeof(int32_t), modus);
+          }
+      }
+    else
+      {
+        uint64_t magic = 0;
+        size_t got = fread(&magic, sizeof(magic), 1, fd);
+
+        if(got == 0 && feof(fd))
+          {
+            clearerr(fd);
+            if(All.ThisTask == 0)
+              printf("RESTART: no CosmicGrain DTG cache block; cache starts empty.\n");
+          }
+        else
+          {
+            int32_t count = -1;
+            if(got != 1 || magic != dtg_cache_magic)
+              Terminate("RESTART: invalid CosmicGrain DTG cache block (magic=%llu)",
+                        (unsigned long long)magic);
+            my_fread(&count, sizeof(count), 1, fd);
+            if(count != n)
+              Terminate("RESTART: DTG cache block count=%d does not match NumPart=%d", count, n);
+            std::vector<float> dtg((size_t)n);
+            std::vector<int32_t> age((size_t)n);
+            if(n > 0)
+              {
+                byten(dtg.data(), dtg.size() * sizeof(float), modus);
+                byten(age.data(), age.size() * sizeof(int32_t), modus);
+              }
+            for(int i = 0; i < n; i++)
+              {
+                Sim->Sp.DustP[i].LocalDTG = dtg[i];
+                Sim->Sp.DustP[i].DTGAge = age[i];
+              }
+          }
+      }
+  }
 #endif
 
   fclose(fd);

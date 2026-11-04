@@ -627,6 +627,96 @@ void find_neighbors(simparticles *Sp, int idx, double search_radius,
     *n_neighbors = count;
   }
 
+  double sum_mass_in_sphere(simparticles *Sp, const MyIntPosType *center_intpos,
+                            double search_radius, int part_type) const
+  {
+    if(!is_built || cell_size <= 0.0 || !std::isfinite(search_radius) ||
+       search_radius <= 0.0)
+      return 0.0;
+
+    MyIntPosType center_copy[3] = {
+        center_intpos[0], center_intpos[1], center_intpos[2]};
+    double center[3];
+    Sp->intpos_to_pos(center_copy, center);
+    const double radius2 = search_radius * search_radius;
+    double mass_sum = 0.0;
+
+    int min_shift = 0, max_shift = 0;
+#ifdef PERIODIC
+    min_shift = -1;
+    max_shift = 1;
+#endif
+
+    for(int sx = min_shift; sx <= max_shift; sx++)
+      for(int sy = min_shift; sy <= max_shift; sy++)
+        for(int sz = min_shift; sz <= max_shift; sz++)
+          {
+            double image[3] = {center[0], center[1], center[2]};
+#ifdef PERIODIC
+            image[0] += sx * All.BoxSize;
+            image[1] += sy * All.BoxSize;
+            image[2] += sz * All.BoxSize;
+#endif
+
+            double clamped[3];
+            double outside2 = 0.0;
+            for(int d = 0; d < 3; d++)
+              {
+                clamped[d] = std::max(bbox_min[d], std::min(bbox_max[d], image[d]));
+                const double delta = image[d] - clamped[d];
+                outside2 += delta * delta;
+              }
+            if(outside2 > radius2)
+              continue;
+
+            int n_search = std::min((int)std::ceil(search_radius / cell_size) + 1,
+                                    n_cells_per_dim);
+            int home[3];
+            for(int d = 0; d < 3; d++)
+              home[d] = std::max(
+                  0, std::min(n_cells_per_dim - 1,
+                              (int)std::floor((clamped[d] - bbox_min[d]) / cell_size)));
+
+            for(int dx = -n_search; dx <= n_search; dx++)
+              for(int dy = -n_search; dy <= n_search; dy++)
+                for(int dz = -n_search; dz <= n_search; dz++)
+                  {
+                    const int ix = home[0] + dx;
+                    const int iy = home[1] + dy;
+                    const int iz = home[2] + dz;
+                    if(ix < 0 || ix >= n_cells_per_dim ||
+                       iy < 0 || iy >= n_cells_per_dim ||
+                       iz < 0 || iz >= n_cells_per_dim)
+                      continue;
+
+                    const long long cell_idx = (long long)ix +
+                        n_cells_per_dim * (iy + (long long)n_cells_per_dim * iz);
+                    auto cell = cells.find(cell_idx);
+                    if(cell == cells.end())
+                      continue;
+
+                    for(int particle_idx : cell->second)
+                      {
+                        if(Sp->P[particle_idx].getType() != part_type)
+                          continue;
+
+                        double dxyz[3];
+                        Sp->nearest_image_intpos_to_pos(
+                            Sp->P[particle_idx].IntPos, center_intpos, dxyz);
+                        if(dxyz[0] * dxyz[0] + dxyz[1] * dxyz[1] +
+                               dxyz[2] * dxyz[2] <= radius2)
+                          {
+                            const double mass = Sp->P[particle_idx].getMass();
+                            if(std::isfinite(mass) && mass > 0.0)
+                              mass_sum += mass;
+                          }
+                      }
+                  }
+          }
+
+    return mass_sum;
+  }
+
 
   // ──────────────────────────────────────────────────────────────────────────
   // print_stats()

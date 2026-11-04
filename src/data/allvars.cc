@@ -21,10 +21,11 @@
 #include "../time_integration/driftfac.h"
 
 #ifdef DUST
-/* Parameter-file cadence requested for dust microphysics.  This deliberately
- * remains outside All; cadence progress is stored by restart.cc's versioned
- * CosmicGrain extension instead of changing the legacy All restart layout. */
+/* Keep these parameter-file controls outside All to preserve the legacy
+ * serialized restart layout. */
 int DustUpdateCadence = 10;
+double DustShatteringFragmentSlope = 3.3;
+double DustShatteringMaxFragmentFraction = 0.80;
 #endif
 
 void global_data_all_processes::set_cosmo_factors_for_current_time(void)
@@ -231,6 +232,8 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustCollisionDensityThresh", &DustCollisionDensityThresh, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustCoagulationCalibration", &DustCoagulationCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustShatteringCalibration", &DustShatteringCalibration, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustShatteringFragmentSlope", &DustShatteringFragmentSlope, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustShatteringMaxFragmentFraction", &DustShatteringMaxFragmentFraction, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustMinGrainSize", &DustMinGrainSize, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustMaxGrainSize", &DustMaxGrainSize, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustDebugLevel", &DustDebugLevel, PARAM_INT, PARAM_FIXED);
