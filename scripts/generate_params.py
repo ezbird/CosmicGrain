@@ -115,9 +115,9 @@ ALL_SWITCHES = [
 #   resolution; do not infer the active value from old comments or prior runs.
 #
 # DustShatteringCalibration:
-#   1024³: nudged +20% (1.2) to compensate for absent coagulation.
-#   2048³: coagulation fires; revert the nudge and go below 1.0 to account
-#          for the coagulation/shattering balance at higher n_eff.
+#   1024³: the fiducial comparison uses 2.0 with coagulation calibration 6.0.
+#   2048³: reduce below 1.0 to account for the coagulation/shattering balance
+#          at higher n_eff.
 #   4096³: coagulation yet more active; reduce further to 0.5.
 #
 # DustCollisionDensityThresh:
@@ -192,11 +192,10 @@ RES_OVERRIDES = {
         # Star formation
         "CritPhysDensity": "0.3",
 
-        # Dust collision / shock thresholds
-        # n_amb raised to ~4× the 512³ value: 1024³ resolves moderately dense
-        # ISM clumps; typical SN environment is no longer purely diffuse.
-        # Verified: gives ~300k–600k shock events/window at z~4–6 (physical).
-        "DustCollisionDensityThresh": "100.0",
+        # Fiducial 1024³ dust-processing comparison. Keep the shared collision
+        # threshold at 15 cm^-3 while varying the coagulation/shattering
+        # timescale calibrations from the previous 3.0/2.4 run.
+        "DustCollisionDensityThresh": "15.0",
         "DustShockAmbientDensity":    "0.5",    # cm^-3; R_ST ~ 60 pc
 
         # Calibration
@@ -458,10 +457,13 @@ HALO_RESOLUTIONS = ("512", "1024", "2048", "4096")
 for halo_id in HALO_IDS:
     for res in HALO_RESOLUTIONS:
         label = f"halo{halo_id}_{res}"
+        output_dir = f"halo{halo_id}_output_{res}"
+        if halo_id == 441 and res == "1024":
+            output_dir = "halo441_output_1024_coag6_shat2_lognormal02"
         GRID[label] = {
             **make_switches(11),
             "InitCondFile": f"ICs/halo{halo_id}/IC_halo{halo_id}_zoom_{res}",
-            "OutputDir": f"halo{halo_id}_output_{res}",
+            "OutputDir": output_dir,
         }
 
 
