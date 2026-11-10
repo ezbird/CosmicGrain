@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unordered_map>
 #include <vector>
 #include "../dust/dust.h"
 #include "../cooling_sfr/feedback.h"
@@ -67,6 +68,27 @@ static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
                                          int nearest_gas, long long *counter,
                                          double *mass_counter);
 double dust_clumping_factor(double n_H, int is_star_forming);
+
+static double sample_initial_grain_radius(double median_nm, double sigma_dex)
+{
+  if(!(sigma_dex > 0.0))
+    return std::max(All.DustMinGrainSize,
+                    std::min(All.DustMaxGrainSize, median_nm));
+
+  // Box-Muller draw: log10(radius) is normal with the configured median and
+  // standard deviation in dex.
+  const double u1 = std::max(get_random_number(), 1.0e-12);
+  const double u2 = get_random_number();
+  const double standard_normal =
+      std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * M_PI * u2);
+  const double sampled_nm =
+      median_nm * std::pow(10.0, sigma_dex * standard_normal);
+
+  if(!std::isfinite(sampled_nm))
+    return All.DustMaxGrainSize;
+  return std::max(All.DustMinGrainSize,
+                  std::min(All.DustMaxGrainSize, sampled_nm));
+}
 
 /** Return the proper gas mass density in cgs units.
  *
@@ -177,6 +199,119 @@ static std::vector<int> dust_dg_byte_counts(const std::vector<int> &counts,
   return byte_counts;
 }
 
+// Fine grid used only for the D/G neighborhood sums.
+//
+// The shared feedback hash (gas_hash, dust_hash) has 12-31 kpc cells, while
+// D/G spheres are 2-10 code units, so each query used to scan every particle
+// in cells hundreds of times larger than the sphere.  This grid is rebuilt
+// from the hash contents at every dust call with DTG_GRID_CELL-sized cells
+// and stores each cell's total mass: cells entirely inside the sphere add
+// their total directly, cells entirely outside are skipped, and only cells
+// crossing the sphere surface are scanned particle by particle.  The
+// particle set and the inclusion test match spatial_hash_zoom::
+// sum_mass_in_sphere(), so results agree up to summation-order rounding.
+static constexpr double DTG_GRID_CELL = 2.0;
+
+struct dust_dg_fine_grid
+{
+  struct cell_data
+  {
+    double mass = 0.0;
+    std::vector<int> particles;
+  };
+
+  double cell = 0.0;
+  long long n_per_dim = 0;
+  std::unordered_map<long long, cell_data> cells;
+
+  long long key(long long ix, long long iy, long long iz) const
+  {
+    ix = ((ix % n_per_dim) + n_per_dim) % n_per_dim;
+    iy = ((iy % n_per_dim) + n_per_dim) % n_per_dim;
+    iz = ((iz % n_per_dim) + n_per_dim) % n_per_dim;
+    return ix + n_per_dim * (iy + n_per_dim * iz);
+  }
+
+  void build(simparticles *Sp, const spatial_hash_zoom &hash, int part_type)
+  {
+    // Cells tile the periodic box exactly, so wrapped indices are consistent.
+    n_per_dim = std::max(1LL, (long long)std::floor(All.BoxSize / DTG_GRID_CELL));
+    cell = All.BoxSize / n_per_dim;
+    cells.clear();
+    for(const auto &hash_cell : hash.cells)
+      for(int idx : hash_cell.second)
+        {
+          if(Sp->P[idx].getType() != part_type)
+            continue;
+          const double mass = Sp->P[idx].getMass();
+          if(!std::isfinite(mass) || !(mass > 0.0))
+            continue;
+          double pos[3];
+          Sp->intpos_to_pos(Sp->P[idx].IntPos, pos);
+          cell_data &c = cells[key((long long)std::floor(pos[0] / cell),
+                                   (long long)std::floor(pos[1] / cell),
+                                   (long long)std::floor(pos[2] / cell))];
+          c.mass += mass;
+          c.particles.push_back(idx);
+        }
+  }
+
+  double sum_mass_in_sphere(simparticles *Sp, const MyIntPosType *center_intpos,
+                            double radius) const
+  {
+    if(cells.empty() || !std::isfinite(radius) || !(radius > 0.0))
+      return 0.0;
+    MyIntPosType center_copy[3] = {center_intpos[0], center_intpos[1], center_intpos[2]};
+    double c[3];
+    Sp->intpos_to_pos(center_copy, c);
+    const double radius2 = radius * radius;
+    // Unwrapped cell ranges around the center; a cell's unwrapped box is its
+    // nearest periodic image relative to the center since radius << BoxSize/2.
+    long long lo[3], hi[3];
+    for(int d = 0; d < 3; d++)
+      {
+        lo[d] = (long long)std::floor((c[d] - radius) / cell);
+        hi[d] = (long long)std::floor((c[d] + radius) / cell);
+      }
+    double mass_sum = 0.0;
+    for(long long ix = lo[0]; ix <= hi[0]; ix++)
+      for(long long iy = lo[1]; iy <= hi[1]; iy++)
+        for(long long iz = lo[2]; iz <= hi[2]; iz++)
+          {
+            const auto it = cells.find(key(ix, iy, iz));
+            if(it == cells.end())
+              continue;
+            const long long ic[3] = {ix, iy, iz};
+            double near2 = 0.0, far2 = 0.0;
+            for(int d = 0; d < 3; d++)
+              {
+                const double b0 = ic[d] * cell, b1 = b0 + cell;
+                const double dn = c[d] - std::max(b0, std::min(b1, c[d]));
+                const double df = std::max(std::fabs(c[d] - b0), std::fabs(c[d] - b1));
+                near2 += dn * dn;
+                far2 += df * df;
+              }
+            if(near2 > radius2)
+              continue;
+            // Margin keeps particles within rounding of the surface on the
+            // exact per-particle path.
+            if(far2 < radius2 * (1.0 - 1e-9))
+              {
+                mass_sum += it->second.mass;
+                continue;
+              }
+            for(int idx : it->second.particles)
+              {
+                double dxyz[3];
+                Sp->nearest_image_intpos_to_pos(Sp->P[idx].IntPos, center_intpos, dxyz);
+                if(dxyz[0] * dxyz[0] + dxyz[1] * dxyz[1] + dxyz[2] * dxyz[2] <= radius2)
+                  mass_sum += Sp->P[idx].getMass();
+              }
+          }
+    return mass_sum;
+  }
+};
+
 static void estimate_local_dust_to_gas_ratio(
     simparticles *Sp, const std::vector<double> &radii,
     MPI_Comm Communicator, std::vector<double> &local_DTG)
@@ -253,14 +388,81 @@ static void estimate_local_dust_to_gas_ratio(
                 MPI_BYTE, recv_query_data, recv_bytes.data(),
                 recv_displacements.data(), MPI_BYTE, Communicator);
 
+  static dust_dg_fine_grid gas_grid, dust_grid;
+  gas_grid.build(Sp, gas_hash, 0);
+  dust_grid.build(Sp, dust_hash, DUST_PARTICLE_TYPE);
+
+  // Self-check: for the first queries on each task, compare against the
+  // shared-hash sums.  Only summation order differs, so any relative
+  // difference beyond rounding indicates a bug.
+  static int verify_remaining = 5000;
+  static long long verify_mismatches = 0;
+  static double verify_max_rel = 0.0;
+
   std::vector<dust_dg_result> send_results((size_t)n_recv);
   for(int i = 0; i < n_recv; i++)
     {
       send_results[i].dust_index = recv_queries[i].dust_index;
-      send_results[i].gas_mass = gas_hash.sum_mass_in_sphere(
-          Sp, recv_queries[i].center, recv_queries[i].radius, 0);
-      send_results[i].dust_mass = dust_hash.sum_mass_in_sphere(
-          Sp, recv_queries[i].center, recv_queries[i].radius, DUST_PARTICLE_TYPE);
+      send_results[i].gas_mass = gas_grid.sum_mass_in_sphere(
+          Sp, recv_queries[i].center, recv_queries[i].radius);
+      send_results[i].dust_mass = dust_grid.sum_mass_in_sphere(
+          Sp, recv_queries[i].center, recv_queries[i].radius);
+
+      if(verify_remaining > 0)
+        {
+          verify_remaining--;
+          const double ref[2] = {
+              gas_hash.sum_mass_in_sphere(Sp, recv_queries[i].center,
+                                          recv_queries[i].radius, 0),
+              dust_hash.sum_mass_in_sphere(Sp, recv_queries[i].center,
+                                           recv_queries[i].radius, DUST_PARTICLE_TYPE)};
+          const double got[2] = {send_results[i].gas_mass, send_results[i].dust_mass};
+          for(int k = 0; k < 2; k++)
+            {
+              const double rel = std::fabs(got[k] - ref[k]) /
+                                 std::max(std::fabs(ref[k]), 1e-300);
+              if(ref[k] == 0.0 && got[k] == 0.0)
+                continue;
+              verify_max_rel = std::max(verify_max_rel, rel);
+              if(rel > 1e-10 && ++verify_mismatches <= 10)
+                {
+                  // Brute force over every particle in the shared hash: the
+                  // ground truth for which of the two methods is wrong.
+                  const spatial_hash_zoom &h = (k == 0) ? gas_hash : dust_hash;
+                  const int type = (k == 0) ? 0 : DUST_PARTICLE_TYPE;
+                  const double r2 = recv_queries[i].radius * recv_queries[i].radius;
+                  double brute = 0.0, nearest2 = 1e300;
+                  for(const auto &hc : h.cells)
+                    for(int idx : hc.second)
+                      {
+                        if(Sp->P[idx].getType() != type) continue;
+                        const double mass = Sp->P[idx].getMass();
+                        if(!std::isfinite(mass) || !(mass > 0.0)) continue;
+                        double dxyz[3];
+                        Sp->nearest_image_intpos_to_pos(Sp->P[idx].IntPos,
+                                                        recv_queries[i].center, dxyz);
+                        const double d2 = dxyz[0] * dxyz[0] + dxyz[1] * dxyz[1] + dxyz[2] * dxyz[2];
+                        nearest2 = std::min(nearest2, d2);
+                        if(d2 <= r2) brute += mass;
+                      }
+                  double cpos[3];
+                  MyIntPosType ccopy[3] = {recv_queries[i].center[0], recv_queries[i].center[1],
+                                           recv_queries[i].center[2]};
+                  Sp->intpos_to_pos(ccopy, cpos);
+                  printf("[DTG_GRID_MISMATCH|T=%d] %s grid=%.17g hash=%.17g brute=%.17g r=%g "
+                         "nearest=%g center=(%.2f,%.2f,%.2f) hash_bbox=(%.2f..%.2f, %.2f..%.2f, "
+                         "%.2f..%.2f) cell=%.3f built=%d\n",
+                         All.ThisTask, k == 0 ? "gas" : "dust", got[k], ref[k], brute,
+                         recv_queries[i].radius, sqrt(nearest2), cpos[0], cpos[1], cpos[2],
+                         h.bbox_min[0], h.bbox_max[0], h.bbox_min[1], h.bbox_max[1],
+                         h.bbox_min[2], h.bbox_max[2], h.cell_size, (int)h.is_built);
+                }
+            }
+          if(verify_remaining == 0)
+            printf("[DTG_GRID_VERIFY|T=%d] fine grid checked on 5000 queries: "
+                   "%lld mismatches, max relative difference %.3g\n",
+                   All.ThisTask, verify_mismatches, verify_max_rel);
+        }
     }
 
   std::vector<int> result_send_displacements, result_recv_displacements;
@@ -986,11 +1188,9 @@ if(shat_passed > 0)
     //
     // Gates run cheapest-first: grain validity is two array reads, density
     // needs only SphP[].Density, and the velocity gate (which needs T_gas and
-    // a sqrt) runs last.  Every gate is a pure early return, so the order does
-    // not change which grains shatter, only which counter a rejected call is
-    // attributed to.  The velocity gate has rejected 0% of calls in
-    // production runs (T_gas >~ 150 K everywhere dust lives), but is retained
-    // for physical correctness in very cold gas.
+    // several pow() calls) runs last.  Every gate is a pure early return, so
+    // the order does not change which grains shatter, only which counter a
+    // rejected call is attributed to.
 
 
     // =========================================================================
@@ -1077,41 +1277,65 @@ if(shat_passed > 0)
 
 
     // =========================================================================
-    // Gate 3: turbulent velocity threshold
+    // Gate 3: size-dependent grain velocity threshold
     // =========================================================================
     //
-    // Sound speed is used as the turbulence proxy.
+    // Grain-grain collision velocities in turbulence depend on grain size:
+    // small grains have short stopping times, stay coupled to the gas, and
+    // collide slowly.  We use the turbulence-driven velocity scaling of
+    // Hirashita & Aoyama (2019), based on Yan et al. (2004) and Ormel &
+    // Cuzzi (2007):
     //
-    // Shattering threshold:
+    //   v_gr = 1.1 km/s  M^{3/2} (a / 0.1 um)^{1/2} (T / 1e4 K)^{1/4}
+    //          (n_H / 1 cm^-3)^{-1/4} (rho_gr / 3.5 g cm^-3)^{1/2}
+    //
+    // n_H is the unclumped density, floored at 1e-4 cm^-3 as in the
+    // timescale below.  The material density blends silicate (3.5 g cm^-3)
+    // and graphite (2.24 g cm^-3) by CarbonMassFraction.
+    //
+    // The previous gate compared the size-independent gas sound speed with
+    // the threshold and never rejected anything (vel = 0.0% of calls), so
+    // grains in diffuse gas shattered repeatedly down to DustMinGrainSize.
+    // Grains in [DustMinGrainSize, DustMinGrainSize/0.8] then cannot shatter
+    // again, and with only ~5% of their mass in coagulation-eligible gas they
+    // accumulated there (12% of all dust mass at z=0 in coag6_shat2).  With
+    // this gate, shattering stops at a physical, environment-dependent
+    // critical size instead (~30 nm in the central galaxy ISM for M = 1).
+    //
+    // Shattering threshold (unchanged):
     //
     //   silicate      ~ 1 km/s
     //   pure carbon   ~ 2 km/s
     //
     // CarbonMassFraction linearly interpolates between those limits.
     //
-    // T_gas is computed once per particle in update_dust_dynamics().
+    // The critical size scales as M^-3, so shattering_mach is the most
+    // sensitive choice here.  Keep hard-coded for the first controlled run.
     //
 
-    double cs_cgs =
-        sqrt(
-            BOLTZMANN *
-            T_gas /
-            (0.6 * PROTONMASS)
-        );
-
-    double v_turb_kms =
-        cs_cgs /
-        1.0e5;
+    const double shattering_mach = 1.0;
 
     double CF =
         Sp->DustP[dust_idx].
         CarbonMassFraction;
 
+    double rho_gr =
+        CF * 2.24 +
+        (1.0 - CF) * 3.5;
+
+    double v_grain_kms =
+        1.1 *
+        pow(shattering_mach, 1.5) *
+        sqrt(a / 100.0) *
+        pow(T_gas / 1.0e4, 0.25) *
+        pow(std::max(n_H, 1e-4), -0.25) *
+        sqrt(rho_gr / 3.5);
+
     double v_shatter_kms =
         1.0 + CF;
 
-    if(v_turb_kms <
-       v_shatter_kms)
+    if(!(v_grain_kms >=
+         v_shatter_kms))
     {
         shat_failed_vel++;
         return;
@@ -1130,7 +1354,7 @@ if(shat_passed > 0)
     // Trayford's treatment of shattering as a diffuse-gas process.
     // Coagulation uses clumped n_eff; shattering uses raw n_H.
     //
-    // The velocity threshold gate above (v_turb > v_shatter) handles the
+    // The velocity threshold gate above (v_grain(a) > v_shatter) handles the
     // turbulent velocity requirement explicitly via a Poisson process, which
     // is more rigorous than Trayford's implicit velocity folding into the
     // timescale normalization. We therefore drop the velocity_factor term.
@@ -1375,7 +1599,7 @@ if(shat_passed > 0)
             "n_H_cm3=%.3e "
             "n_eff_cm3=%.3e "
             "T_gas_K=%.0f "
-            "v_turb_kms=%.2f "
+            "v_grain_kms=%.2f "
             "tau_shatter_Myr=%.2f "
             "shatter_probability=%.3e\n",
 
@@ -1397,7 +1621,7 @@ if(shat_passed > 0)
             n_eff,
             T_gas,
 
-            v_turb_kms,
+            v_grain_kms,
 
             tau_shat_yr /
             1.0e6,
@@ -1922,10 +2146,14 @@ for(int n = 0; n < n_create; n++) {
   int new_idx = Sp->NumPart - 1;
 
   if(feedback_type == 1) {
-    Sp->DustP[new_idx].GrainRadius = 10.0;
+    Sp->DustP[new_idx].GrainRadius =
+        sample_initial_grain_radius(DustSNIIInitialRadius,
+                                    DustSNIISizeSigmaDex);
     Sp->DustP[new_idx].DustSource  = 0;
   } else if(feedback_type == 2) {
-    Sp->DustP[new_idx].GrainRadius = 100.0;
+    Sp->DustP[new_idx].GrainRadius =
+        sample_initial_grain_radius(DustAGBInitialRadius,
+                                    DustAGBSizeSigmaDex);
     Sp->DustP[new_idx].DustSource  = 1;
   } else {
     Sp->DustP[new_idx].GrainRadius = 10.0;
@@ -2111,7 +2339,7 @@ void spawn_dust_particle(simparticles *Sp, double offset_kpc[3], double dust_mas
   else
     Sp->P[new_idx].setSofteningClass(All.SofteningClassOfPartType[4]);
   // ── Placeholders — overwritten in create_dust_particles_from_feedback ─────
-  Sp->DustP[new_idx].GrainRadius    = 10.0;
+  Sp->DustP[new_idx].GrainRadius    = All.DustMinGrainSize;
   Sp->DustP[new_idx].CarbonMassFraction = 0.3;
   Sp->DustP[new_idx].DustSource      = 2;
   // Initial dust temperature: CMB floor (T_CMB ∝ (1+z))
@@ -2134,7 +2362,7 @@ void spawn_dust_particle(simparticles *Sp, double offset_kpc[3], double dust_mas
   if(Sp->DustP[new_idx].GrainRadius <= 0.0 || !isfinite(Sp->DustP[new_idx].GrainRadius)) {
     DUST_PRINT("[SPAWN_BUG] GrainRadius invalid (%.3e) for new particle idx=%d — resetting\n",
                Sp->DustP[new_idx].GrainRadius, new_idx);
-    Sp->DustP[new_idx].GrainRadius = 10.0;
+    Sp->DustP[new_idx].GrainRadius = All.DustMinGrainSize;
   }
   Sp->NumPart++;
   GlobalDustCount++;
@@ -2776,6 +3004,14 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   // invalidated, since a value from an earlier association may be stale.
   static constexpr int DTG_REFRESH_INTERVAL = 10;
 
+  // Cumulative histogram of |DTG_new - DTG_cached| / DTG_cached at scheduled
+  // refreshes, i.e. the drift accumulated over DTG_REFRESH_INTERVAL calls.
+  // Used to judge whether the interval can safely be raised.
+  static constexpr int DTG_STALE_NBINS = 6;
+  static const double dtg_stale_edges[DTG_STALE_NBINS - 1] = {0.01, 0.03, 0.1, 0.3, 1.0};
+  static long long dtg_stale_hist[DTG_STALE_NBINS] = {0, 0, 0, 0, 0, 0};
+  static double dtg_stale_sum_rel = 0.0;
+
   std::vector<double> local_DTG((size_t)Sp->NumPart, 0.0);
   long long n_dtg_refreshed = 0, n_dtg_cached = 0;
   double t_dtg_start = MPI_Wtime();
@@ -2811,6 +3047,14 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
       if(!(refresh_radius[i] > 0.0)) continue;
       local_DTG[i] = fresh_DTG[i];
       dust_data &dp = Sp->DustP[i];
+      // Staleness: how far DTG drifted over one full refresh interval.
+      if(had_valid_cache[i] && isfinite(fresh_DTG[i]) && fresh_DTG[i] > 0.0) {
+        const double rel = std::fabs(fresh_DTG[i] - dp.LocalDTG) / dp.LocalDTG;
+        int bin = 0;
+        while(bin < DTG_STALE_NBINS - 1 && rel >= dtg_stale_edges[bin]) bin++;
+        dtg_stale_hist[bin]++;
+        dtg_stale_sum_rel += rel;
+      }
       dp.LocalDTG = (isfinite(fresh_DTG[i]) && fresh_DTG[i] > 0.0)
                         ? (float)fresh_DTG[i] : 0.0f;
       dp.DTGAge = had_valid_cache[i] ? 0 : i % DTG_REFRESH_INTERVAL;
@@ -2835,6 +3079,23 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
            t_dtg_sum / n_tasks_dtg,
            global_count,
            dtg_counts_sum[0], dtg_counts_sum[1]);
+
+  if(dust_call_count % 10 == 0) {
+    long long stale_sum[DTG_STALE_NBINS];
+    double stale_rel_sum = 0.0;
+    MPI_Reduce(dtg_stale_hist, stale_sum, DTG_STALE_NBINS, MPI_LONG_LONG, MPI_SUM, 0,
+               Communicator);
+    MPI_Reduce(&dtg_stale_sum_rel, &stale_rel_sum, 1, MPI_DOUBLE, MPI_SUM, 0, Communicator);
+    long long n_stale = 0;
+    for(int b = 0; b < DTG_STALE_NBINS; b++) n_stale += stale_sum[b];
+    if(All.ThisTask == 0 && n_stale > 0)
+      printf("[DTG_STALENESS] after %d calls (cumulative, n=%lld): mean |dDTG|/DTG=%.3f  "
+             "<1%%=%.1f%% 1-3%%=%.1f%% 3-10%%=%.1f%% 10-30%%=%.1f%% 30-100%%=%.1f%% >100%%=%.1f%%\n",
+             DTG_REFRESH_INTERVAL, n_stale, stale_rel_sum / n_stale,
+             100.0 * stale_sum[0] / n_stale, 100.0 * stale_sum[1] / n_stale,
+             100.0 * stale_sum[2] / n_stale, 100.0 * stale_sum[3] / n_stale,
+             100.0 * stale_sum[4] / n_stale, 100.0 * stale_sum[5] / n_stale);
+  }
 
   // ── Main dust loop ────────────────────────────────────────────────────────
   for(int i = 0; i < Sp->NumPart; i++) {

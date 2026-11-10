@@ -164,6 +164,10 @@ DustOffsetMinLRN               0.01     % kpc; minimum spawn offset from parent 
 DustOffsetMaxLRN               0.05     % kpc; maximum spawn offset from parent star (LRN)
 DustMinGrainSize               1.0      % minimum grain size in nanometers
 DustMaxGrainSize               1000.0    % maximum grain size in nanometers
+DustSNIIInitialRadius          10.0     % nm; median SNII injection radius
+DustSNIISizeSigmaDex            0.2     % dex; log-normal dispersion of SNII injection radii
+DustAGBInitialRadius           100.0    % nm; median AGB injection radius
+DustAGBSizeSigmaDex             0.2     % dex; log-normal dispersion of AGB injection radii
 DustAccommodationCoeff         0.3      % dimensionless; gas-grain thermal coupling efficiency (Hollenbach & McKee 1979)
 DustRadiationPressureEfficiency 1.0     % dimensionless; global scaling factor for radiation pressure force
 

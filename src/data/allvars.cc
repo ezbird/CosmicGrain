@@ -26,6 +26,10 @@
 int DustUpdateCadence = 10;
 double DustShatteringFragmentSlope = 3.3;
 double DustShatteringMaxFragmentFraction = 0.80;
+double DustSNIIInitialRadius = 10.0;
+double DustSNIISizeSigmaDex = 0.4;
+double DustAGBInitialRadius = 100.0;
+double DustAGBSizeSigmaDex = 0.3;
 #endif
 
 void global_data_all_processes::set_cosmo_factors_for_current_time(void)
@@ -234,6 +238,10 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustShatteringCalibration", &DustShatteringCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustShatteringFragmentSlope", &DustShatteringFragmentSlope, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustShatteringMaxFragmentFraction", &DustShatteringMaxFragmentFraction, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustSNIIInitialRadius", &DustSNIIInitialRadius, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustSNIISizeSigmaDex", &DustSNIISizeSigmaDex, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustAGBInitialRadius", &DustAGBInitialRadius, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustAGBSizeSigmaDex", &DustAGBSizeSigmaDex, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustMinGrainSize", &DustMinGrainSize, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustMaxGrainSize", &DustMaxGrainSize, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustDebugLevel", &DustDebugLevel, PARAM_INT, PARAM_FIXED);

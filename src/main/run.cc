@@ -390,14 +390,17 @@ void sim::calculate_non_standard_physics_end_of_step(void)
 void sim::configure_dust_update_cadence(void)
 {
   /*
-   * DustUpdateCadence is read from the active parameter file on task 0.
-   * It lives outside All to preserve compatibility with legacy restart files.
-   * Broadcast it explicitly because All's normal parameter broadcast does not
-   * include variables stored outside All.
+   * These dust controls are read from the active parameter file on task 0.
+   * They live outside All to preserve compatibility with legacy restart files,
+   * so broadcast and validate them explicitly.
    */
   MPI_Bcast(&DustUpdateCadence, 1, MPI_INT, 0, Communicator);
   MPI_Bcast(&DustShatteringFragmentSlope, 1, MPI_DOUBLE, 0, Communicator);
   MPI_Bcast(&DustShatteringMaxFragmentFraction, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustSNIIInitialRadius, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustSNIISizeSigmaDex, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustAGBInitialRadius, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustAGBSizeSigmaDex, 1, MPI_DOUBLE, 0, Communicator);
 
   if(DustUpdateCadence < 1 || DustUpdateCadence > 1000000)
     Terminate(
@@ -414,6 +417,18 @@ void sim::configure_dust_update_cadence(void)
     Terminate(
         "Invalid DustShatteringMaxFragmentFraction=%g; expected a finite value in (0,1)",
         DustShatteringMaxFragmentFraction);
+  if(!std::isfinite(DustSNIIInitialRadius) || !(DustSNIIInitialRadius > 0.0))
+    Terminate("Invalid DustSNIIInitialRadius=%g; expected a finite value > 0",
+              DustSNIIInitialRadius);
+  if(!std::isfinite(DustSNIISizeSigmaDex) || !(DustSNIISizeSigmaDex >= 0.0))
+    Terminate("Invalid DustSNIISizeSigmaDex=%g; expected a finite value >= 0",
+              DustSNIISizeSigmaDex);
+  if(!std::isfinite(DustAGBInitialRadius) || !(DustAGBInitialRadius > 0.0))
+    Terminate("Invalid DustAGBInitialRadius=%g; expected a finite value > 0",
+              DustAGBInitialRadius);
+  if(!std::isfinite(DustAGBSizeSigmaDex) || !(DustAGBSizeSigmaDex >= 0.0))
+    Terminate("Invalid DustAGBSizeSigmaDex=%g; expected a finite value >= 0",
+              DustAGBSizeSigmaDex);
 
   if(DustAccumulatedSyncPoints < 0 ||
      DustAccumulatedPhysicalTime < 0.0 ||
