@@ -276,7 +276,11 @@ void domain<simparticles>::domain_find_total_cost(void)
 
   MPI_Allreduce(MPI_IN_PLACE, sum, 2, MPI_LONG_LONG, MPI_SUM, Communicator);
 
-  NormFactorLoad    = 1.0 / sum[0];
+  /* A communicator can hold no particles (e.g. a SUBFIND sub-group); the
+   * normalisation is then irrelevant.  Guard it explicitly: with -ffast-math
+   * the compiler folds "1.0 / 0 > 0.0" to false, which left MultipleDomains
+   * at 0 and made domain_combine_multipledomains() allocate a negative size. */
+  NormFactorLoad    = sum[0] > 0 ? 1.0 / sum[0] : 1.0;
   NormFactorLoadSph = sum[1] > 0.0 ? 1.0 / sum[1] : 0.0;
 
   MultipleDomains = 0;
@@ -331,7 +335,11 @@ void domain<lcparticles>::domain_find_total_cost(void)
 
   MPI_Allreduce(MPI_IN_PLACE, sum, 2, MPI_LONG_LONG, MPI_SUM, Communicator);
 
-  NormFactorLoad    = 1.0 / sum[0];
+  /* A communicator can hold no particles (e.g. a SUBFIND sub-group); the
+   * normalisation is then irrelevant.  Guard it explicitly: with -ffast-math
+   * the compiler folds "1.0 / 0 > 0.0" to false, which left MultipleDomains
+   * at 0 and made domain_combine_multipledomains() allocate a negative size. */
+  NormFactorLoad    = sum[0] > 0 ? 1.0 / sum[0] : 1.0;
   NormFactorLoadSph = sum[1] > 0.0 ? 1.0 / sum[1] : 0.0;
 
   MultipleDomains = 0;
