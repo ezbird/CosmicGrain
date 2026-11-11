@@ -237,7 +237,9 @@ if(All.RestartFlag == RST_STARTFROMSNAP &&
         force_dust_update = true;
 #endif
 
+      TIMER_START(CPU_DUST);
       advance_dust_physics(force_dust_update);
+      TIMER_STOP(CPU_DUST);
 
       /* Feedback may spawn dust and dust microphysics may destroy it. Compact
        * and rebuild time bins before statistics, snapshots, or another tree
@@ -364,9 +366,11 @@ void sim::calculate_non_standard_physics_end_of_step(void)
 
   #ifdef FEEDBACK
     const double feedback_begin = MPI_Wtime();
+    TIMER_START(CPU_FEEDBACK);
     apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain, Communicator);
     feedback_diag_try_flush(Communicator, /*cadence=*/50);
     agb_probe_flush(&Sp,Communicator);
+    TIMER_STOP(CPU_FEEDBACK);
 
     FeedbackTimingTotal += MPI_Wtime() - feedback_begin;
     FeedbackTimingCalls++;

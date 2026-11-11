@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "../dust/dust.h"
 #include "../cooling_sfr/feedback.h"
@@ -225,6 +226,10 @@ static std::vector<int> dust_dg_byte_counts(const std::vector<int> &counts,
 // sum_mass_in_sphere(), so results agree up to summation-order rounding.
 static constexpr double DTG_GRID_CELL = 2.0;
 
+// Coarse cell (code units) for routing D/G queries between tasks; equal to
+// the largest association radius.
+static constexpr double DTG_ROUTE_CELL = 10.0;
+
 struct dust_dg_fine_grid
 {
   struct cell_data
@@ -327,44 +332,157 @@ struct dust_dg_fine_grid
 
 static void estimate_local_dust_to_gas_ratio(
     simparticles *Sp, const std::vector<double> &radii,
-    MPI_Comm Communicator, std::vector<double> &local_DTG)
+    MPI_Comm Communicator, std::vector<double> &local_DTG,
+    bool occupancy_routing, long long *queries_sent)
 {
   int n_task = 1;
   MPI_Comm_size(Communicator, &n_task);
 
-  double local_bounds[7] = {1e30, 1e30, 1e30, -1e30, -1e30, -1e30, 0.0};
-  for(const auto &cell : gas_hash.cells)
-    for(int particle_idx : cell.second)
-      if(Sp->P[particle_idx].getType() == 0)
-        extend_dust_dg_bounds(Sp, particle_idx, local_bounds);
-  for(const auto &cell : dust_hash.cells)
-    for(int particle_idx : cell.second)
-      if(Sp->P[particle_idx].getType() == DUST_PARTICLE_TYPE &&
-         Sp->P[particle_idx].getMass() > DUST_MASS_TO_DESTROY &&
-         Sp->P[particle_idx].ID.get() != 0)
-        extend_dust_dg_bounds(Sp, particle_idx, local_bounds);
-
-  std::vector<double> task_bounds((size_t)n_task * 7);
-  MPI_Allgather(local_bounds, 7, MPI_DOUBLE, task_bounds.data(), 7, MPI_DOUBLE,
-                Communicator);
+  static dust_dg_fine_grid gas_grid, dust_grid;
+  gas_grid.build(Sp, gas_hash, 0);
+  dust_grid.build(Sp, dust_hash, DUST_PARTICLE_TYPE);
 
   std::vector<std::vector<dust_dg_query> > requests((size_t)n_task);
-  for(size_t dust_idx = 0; dust_idx < radii.size(); dust_idx++)
-    {
-      if(!(radii[dust_idx] > 0.0))
-        continue;
-      dust_dg_query query;
-      query.dust_index = (int)dust_idx;
-      for(int d = 0; d < 3; d++)
-        query.center[d] = Sp->P[dust_idx].IntPos[d];
-      query.radius = radii[dust_idx];
 
-      double center[3];
-      Sp->intpos_to_pos(query.center, center);
+  if(occupancy_routing)
+    {
+      // Each task publishes the DTG_ROUTE_CELL cells holding particles it
+      // sums (exactly the fine-grid members), and a query goes only to tasks
+      // owning a cell the sphere touches.  Tasks dropped this way contribute
+      // exactly zero, and per-task query order is unchanged, so results are
+      // bit-identical to bounding-box routing.  That routing sent most
+      // queries to most tasks because zoom domains are scattered, so its cost
+      // grew with the number of tasks instead of being divided among them.
+      const long long n_c = std::max(1LL, (long long)std::floor(All.BoxSize / DTG_ROUTE_CELL));
+      const double cc = All.BoxSize / n_c;
+      auto ckey = [n_c](long long ix, long long iy, long long iz) {
+        ix = ((ix % n_c) + n_c) % n_c;
+        iy = ((iy % n_c) + n_c) % n_c;
+        iz = ((iz % n_c) + n_c) % n_c;
+        return ix + n_c * (iy + n_c * iz);
+      };
+
+      std::unordered_set<long long> local_cells;
+      for(const dust_dg_fine_grid *grid : {&gas_grid, &dust_grid})
+        for(const auto &fine_cell : grid->cells)
+          for(int idx : fine_cell.second.particles)
+            {
+              double pos[3];
+              Sp->intpos_to_pos(Sp->P[idx].IntPos, pos);
+              local_cells.insert(ckey((long long)std::floor(pos[0] / cc),
+                                      (long long)std::floor(pos[1] / cc),
+                                      (long long)std::floor(pos[2] / cc)));
+            }
+
+      std::vector<long long> mine(local_cells.begin(), local_cells.end());
+      int n_mine = (int)mine.size();
+      std::vector<int> cell_counts((size_t)n_task), cell_displs((size_t)n_task);
+      MPI_Allgather(&n_mine, 1, MPI_INT, cell_counts.data(), 1, MPI_INT, Communicator);
+      long long n_all = 0;
       for(int task = 0; task < n_task; task++)
-        if(dust_dg_sphere_intersects_bounds(
-               center, query.radius, &task_bounds[(size_t)task * 7]))
-          requests[task].push_back(query);
+        {
+          cell_displs[task] = (int)n_all;
+          n_all += cell_counts[task];
+        }
+      if(n_all > 2147483647LL)
+        Terminate("dust D/G routing: too many occupied cells for MPI_Allgatherv");
+      std::vector<long long> all_cells((size_t)std::max(n_all, 1LL));
+      long long empty_cell = 0;
+      MPI_Allgatherv(mine.empty() ? &empty_cell : mine.data(), n_mine, MPI_LONG_LONG,
+                     all_cells.data(), cell_counts.data(), cell_displs.data(),
+                     MPI_LONG_LONG, Communicator);
+
+      std::unordered_map<long long, std::vector<int> > owners;
+      owners.reserve((size_t)n_all);
+      for(int task = 0; task < n_task; task++)
+        for(int k = cell_displs[task]; k < cell_displs[task] + cell_counts[task]; k++)
+          owners[all_cells[k]].push_back(task);
+
+      std::vector<long long> last_query((size_t)n_task, -1);
+      for(size_t dust_idx = 0; dust_idx < radii.size(); dust_idx++)
+        {
+          if(!(radii[dust_idx] > 0.0))
+            continue;
+          dust_dg_query query;
+          query.dust_index = (int)dust_idx;
+          for(int d = 0; d < 3; d++)
+            query.center[d] = Sp->P[dust_idx].IntPos[d];
+          query.radius = radii[dust_idx];
+
+          double c[3];
+          Sp->intpos_to_pos(query.center, c);
+          const double r2 = query.radius * query.radius;
+          long long lo[3], hi[3];
+          for(int d = 0; d < 3; d++)
+            {
+              lo[d] = (long long)std::floor((c[d] - query.radius) / cc);
+              hi[d] = (long long)std::floor((c[d] + query.radius) / cc);
+            }
+          for(long long ix = lo[0]; ix <= hi[0]; ix++)
+            for(long long iy = lo[1]; iy <= hi[1]; iy++)
+              for(long long iz = lo[2]; iz <= hi[2]; iz++)
+                {
+                  const long long ic[3] = {ix, iy, iz};
+                  double near2 = 0.0;
+                  for(int d = 0; d < 3; d++)
+                    {
+                      const double b0 = ic[d] * cc, b1 = b0 + cc;
+                      const double dn = c[d] - std::max(b0, std::min(b1, c[d]));
+                      near2 += dn * dn;
+                    }
+                  if(near2 > r2)
+                    continue;
+                  const auto it = owners.find(ckey(ix, iy, iz));
+                  if(it == owners.end())
+                    continue;
+                  for(int task : it->second)
+                    if(last_query[task] != (long long)dust_idx)
+                      {
+                        last_query[task] = (long long)dust_idx;
+                        requests[task].push_back(query);
+                      }
+                }
+        }
+
+      // The outer loop runs in ascending dust index, as in bounding-box
+      // routing, so per-task query order (and thus summation order) matches.
+    }
+  else
+    {
+      // Bounding-box routing (kept for the routing self-check).
+      double local_bounds[7] = {1e30, 1e30, 1e30, -1e30, -1e30, -1e30, 0.0};
+      for(const auto &cell : gas_hash.cells)
+        for(int particle_idx : cell.second)
+          if(Sp->P[particle_idx].getType() == 0)
+            extend_dust_dg_bounds(Sp, particle_idx, local_bounds);
+      for(const auto &cell : dust_hash.cells)
+        for(int particle_idx : cell.second)
+          if(Sp->P[particle_idx].getType() == DUST_PARTICLE_TYPE &&
+             Sp->P[particle_idx].getMass() > DUST_MASS_TO_DESTROY &&
+             Sp->P[particle_idx].ID.get() != 0)
+            extend_dust_dg_bounds(Sp, particle_idx, local_bounds);
+
+      std::vector<double> task_bounds((size_t)n_task * 7);
+      MPI_Allgather(local_bounds, 7, MPI_DOUBLE, task_bounds.data(), 7, MPI_DOUBLE,
+                    Communicator);
+
+      for(size_t dust_idx = 0; dust_idx < radii.size(); dust_idx++)
+        {
+          if(!(radii[dust_idx] > 0.0))
+            continue;
+          dust_dg_query query;
+          query.dust_index = (int)dust_idx;
+          for(int d = 0; d < 3; d++)
+            query.center[d] = Sp->P[dust_idx].IntPos[d];
+          query.radius = radii[dust_idx];
+
+          double center[3];
+          Sp->intpos_to_pos(query.center, center);
+          for(int task = 0; task < n_task; task++)
+            if(dust_dg_sphere_intersects_bounds(
+                   center, query.radius, &task_bounds[(size_t)task * 7]))
+              requests[task].push_back(query);
+        }
     }
 
   std::vector<int> send_counts((size_t)n_task), recv_counts((size_t)n_task);
@@ -383,6 +501,8 @@ static void estimate_local_dust_to_gas_ratio(
   const std::vector<int> recv_bytes =
       dust_dg_byte_counts(recv_counts, sizeof(dust_dg_query), recv_displacements);
   const int n_send = std::accumulate(send_counts.begin(), send_counts.end(), 0);
+  if(queries_sent)
+    *queries_sent = n_send;
   const int n_recv = std::accumulate(recv_counts.begin(), recv_counts.end(), 0);
   std::vector<dust_dg_query> send_queries((size_t)n_send);
   std::vector<dust_dg_query> recv_queries((size_t)n_recv);
@@ -400,10 +520,6 @@ static void estimate_local_dust_to_gas_ratio(
   MPI_Alltoallv(send_query_data, send_bytes.data(), send_displacements.data(),
                 MPI_BYTE, recv_query_data, recv_bytes.data(),
                 recv_displacements.data(), MPI_BYTE, Communicator);
-
-  static dust_dg_fine_grid gas_grid, dust_grid;
-  gas_grid.build(Sp, gas_hash, 0);
-  dust_grid.build(Sp, dust_hash, DUST_PARTICLE_TYPE);
 
   // Self-check: for the first queries on each task, compare against the
   // shared-hash sums.  Only summation order differs, so any relative
@@ -3033,7 +3149,7 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   static double dtg_stale_sum_rel = 0.0;
 
   std::vector<double> local_DTG((size_t)Sp->NumPart, 0.0);
-  long long n_dtg_refreshed = 0, n_dtg_cached = 0;
+  long long n_dtg_refreshed = 0, n_dtg_cached = 0, dtg_queries_sent = 0;
   double t_dtg_start = MPI_Wtime();
   if(All.DustEnableCoagulation || All.DustEnableShattering) {
     std::vector<double> refresh_radius((size_t)Sp->NumPart, 0.0);
@@ -3061,7 +3177,32 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
 
     // Collective: every task must call this even if it has nothing to refresh.
     std::vector<double> fresh_DTG;
-    estimate_local_dust_to_gas_ratio(Sp, refresh_radius, Communicator, fresh_DTG);
+    TIMER_START(CPU_DUST_DTG);
+    estimate_local_dust_to_gas_ratio(Sp, refresh_radius, Communicator, fresh_DTG,
+                                     /*occupancy_routing=*/true, &dtg_queries_sent);
+
+    // Self-check on the first calls: occupancy routing must reproduce the
+    // bounding-box routing bit for bit (it only drops tasks contributing 0).
+    static int route_verify_remaining = 3;
+    if(route_verify_remaining > 0) {
+      route_verify_remaining--;
+      std::vector<double> bbox_DTG;
+      long long bbox_sent = 0;
+      estimate_local_dust_to_gas_ratio(Sp, refresh_radius, Communicator, bbox_DTG,
+                                       /*occupancy_routing=*/false, &bbox_sent);
+      long long counts[3] = {0, dtg_queries_sent, bbox_sent};
+      for(int i = 0; i < Sp->NumPart; i++)
+        if(refresh_radius[i] > 0.0 &&
+           memcmp(&fresh_DTG[i], &bbox_DTG[i], sizeof(double)) != 0)
+          counts[0]++;
+      long long sums[3];
+      MPI_Reduce(counts, sums, 3, MPI_LONG_LONG, MPI_SUM, 0, Communicator);
+      if(All.ThisTask == 0)
+        printf("[DTG_ROUTE_VERIFY] occupancy vs bounding-box routing: %lld differing "
+               "D/G values; queries sent %lld vs %lld (%.1fx fewer)\n",
+               sums[0], sums[1], sums[2], sums[1] > 0 ? (double)sums[2] / sums[1] : 0.0);
+    }
+    TIMER_STOP(CPU_DUST_DTG);
 
     for(int i = 0; i < Sp->NumPart; i++) {
       if(!(refresh_radius[i] > 0.0)) continue;
@@ -3083,22 +3224,24 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   double t_dtg_local = MPI_Wtime() - t_dtg_start;
 
   double t_dtg_max = 0.0, t_dtg_sum = 0.0;
-  long long dtg_counts_local[2] = {n_dtg_refreshed, n_dtg_cached};
-  long long dtg_counts_sum[2] = {0, 0};
+  long long dtg_counts_local[3] = {n_dtg_refreshed, n_dtg_cached, dtg_queries_sent};
+  long long dtg_counts_sum[3] = {0, 0, 0};
   int n_tasks_dtg = 1;
   MPI_Comm_size(Communicator, &n_tasks_dtg);
   MPI_Reduce(&t_dtg_local, &t_dtg_max, 1, MPI_DOUBLE, MPI_MAX, 0, Communicator);
   MPI_Reduce(&t_dtg_local, &t_dtg_sum, 1, MPI_DOUBLE, MPI_SUM, 0, Communicator);
-  MPI_Reduce(dtg_counts_local, dtg_counts_sum, 2, MPI_LONG_LONG, MPI_SUM, 0,
+  MPI_Reduce(dtg_counts_local, dtg_counts_sum, 3, MPI_LONG_LONG, MPI_SUM, 0,
              Communicator);
   if(All.ThisTask == 0 && dust_call_count % 10 == 0)
     printf("[DTG_TIMING|Step=%d] estimate_local_DTG: "
-           "max=%.3f s  mean=%.3f s  n_dust=%lld  refreshed=%lld cached=%lld\n",
+           "max=%.3f s  mean=%.3f s  n_dust=%lld  refreshed=%lld cached=%lld  "
+           "queries_sent=%lld (%.2f per refreshed)\n",
            All.NumCurrentTiStep,
            t_dtg_max,
            t_dtg_sum / n_tasks_dtg,
            global_count,
-           dtg_counts_sum[0], dtg_counts_sum[1]);
+           dtg_counts_sum[0], dtg_counts_sum[1], dtg_counts_sum[2],
+           dtg_counts_sum[0] > 0 ? (double)dtg_counts_sum[2] / dtg_counts_sum[0] : 0.0);
 
   if(dust_call_count % 10 == 0) {
     long long stale_sum[DTG_STALE_NBINS];

@@ -2713,8 +2713,10 @@ void apply_stellar_feedback(
         return;
 
     // Build/update spatial hashes used by feedback and dust searches.
+    TIMER_START(CPU_FEEDBACK_HASH);
     rebuild_feedback_spatial_hash(
         Sp, 0.1, comm);
+    TIMER_STOP(CPU_FEEDBACK_HASH);
 
     // Reset per-call reservoir diagnostics.
     stars_with_reservoir   = 0;

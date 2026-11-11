@@ -80,6 +80,14 @@ TIMER_CREATE(CPU_LOGS, "logs", CPU_ALL, 'K', 'k')
 #if defined(COOLING) || defined(STARFORMATION)
 TIMER_CREATE(CPU_COOLING_SFR, "sfrcool", CPU_ALL, '1', 'T')
 #endif
+#ifdef FEEDBACK
+TIMER_CREATE(CPU_FEEDBACK, "feedback", CPU_ALL, 'g', 'L')
+TIMER_CREATE(CPU_FEEDBACK_HASH, "fbhash", CPU_FEEDBACK, 'q', 'Q')
+#endif
+#ifdef DUST
+TIMER_CREATE(CPU_DUST, "dust", CPU_ALL, 'm', 'M')
+TIMER_CREATE(CPU_DUST_DTG, "dustdtg", CPU_DUST, 'u', 'U')
+#endif
 #ifdef FOF
 TIMER_CREATE(CPU_FOF, "fof", CPU_ALL, '5', 'D')
 TIMER_CREATE(CPU_FOFWALK, "fofwalk", CPU_FOF, '6', 'G')
