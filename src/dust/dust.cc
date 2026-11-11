@@ -1937,7 +1937,10 @@ int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double
   double vrel_x = Sp->P[dust_idx].Vel[0] - gas_vel[0];
   double vrel_y = Sp->P[dust_idx].Vel[1] - gas_vel[1];
   double vrel_z = Sp->P[dust_idx].Vel[2] - gas_vel[2];
-  double vrel   = sqrt(vrel_x*vrel_x + vrel_y*vrel_y + vrel_z*vrel_z);
+  // P[].Vel is p = a^2 dx/dt; the physical peculiar velocity difference is
+  // dp / a.  Only the magnitude needs converting: the exponential relaxation
+  // below acts on p directly and is unit-independent.
+  double vrel   = sqrt(vrel_x*vrel_x + vrel_y*vrel_y + vrel_z*vrel_z) * All.cf_ainv;
   double vrel_cgs = vrel * All.UnitVelocity_in_cm_per_s;
   // ── Step 4: Epstein drag timescale ───────────────────────────────────────
   double drag_timescale_myr = calculate_drag_timescale(
@@ -2116,7 +2119,10 @@ for(int n = 0; n < n_create; n++) {
 
   // P.Vel is a * physical peculiar velocity for comoving integration.
   // Apply the corrected conversion only for the new AGB transport path.
-  double kick_scale = (conserve_agb_momentum && All.ComovingIntegrationOn) ? All.Time : 1.0;
+  // P[].Vel holds p = a^2 dx/dt, so a physical peculiar kick v enters as a*v.
+  // Applying the factor to every source keeps DustVelocity* in physical km/s
+  // at all redshifts (SNII and LRN kicks were previously 1/a too large).
+  double kick_scale = All.cf_atime;
   double initial_velocity[3];
 
   initial_velocity[0] =
@@ -2750,7 +2756,8 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
   // ── Apply velocity kick with terminal velocity suppression ────────────────
   double accel_code = All.UnitVelocity_in_cm_per_s / All.UnitTime_in_s;
   for(int k = 0; k < 3; k++)
-    Sp->P[dust_idx].Vel[k] += (a_rad[k] / accel_code) * dt * coupling_factor;
+    // Physical acceleration g changes p = a^2 dx/dt by a * g * dt.
+    Sp->P[dust_idx].Vel[k] += All.cf_atime * (a_rad[k] / accel_code) * dt * coupling_factor;
   // Update diagnostics
   double accel_mag = sqrt(a_rad[0]*a_rad[0] + a_rad[1]*a_rad[1] + a_rad[2]*a_rad[2]);
   if(accel_mag > 0.0) radp_with_young++;
