@@ -1,6 +1,6 @@
 CPP = mpicxx -std=c++11
 
-OPTIMIZE = -O3 -march=native -mtune=native -ffast-math -fno-math-errno -fno-trapping-math \
+OPTIMIZE = -O3 -march=native -mtune=native -ffast-math -fno-finite-math-only -fno-math-errno -fno-trapping-math \
            -funroll-loops -Wall -Wno-format-security -Wno-unused-result
 
 OPT += -flto

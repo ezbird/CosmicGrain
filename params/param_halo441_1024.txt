@@ -15,7 +15,7 @@
 %---- Relevant files --------------------------------------------------
 
 InitCondFile         ICs/halo441/IC_halo441_zoom_1024
-OutputDir            halo441_output_1024_coag6_shat2_lognormal02  % overwritten by generate_params.py
+OutputDir            halo441_output_1024_final  % overwritten by generate_params.py
 SnapshotFileBase     snapshot
 OutputListFilename   output_snapshots.txt
 TreecoolFile         data/TREECOOL_fg_dec11
@@ -181,11 +181,11 @@ DustRadiationPressureEfficiency 1.0     % dimensionless; global scaling factor f
 DustParticlesPerSNII           25  % integer; superparticles spawned per SNII event
 DustParticlesPerAGB            25  % integer; superparticles spawned per AGB event
 DustParticlesPerLRN            1    % integer; superparticles spawned per LRN event
-DustCoagulationCalibration     6.0  % timescale multiplier; larger = slower coagulation
-DustShatteringCalibration      2.0  % timescale multiplier; larger = slower shattering
+DustCoagulationCalibration     8.91   % x1/h for the dust time-unit fix (was 6.0); timescale multiplier; larger = slower coagulation
+DustShatteringCalibration      2.97   % x1/h for the dust time-unit fix (was 2.0); timescale multiplier; larger = slower shattering
 DustShatteringFragmentSlope 3.3 % power-law slope q for dN/da ∝ a^-q
 DustShatteringMaxFragmentFraction 0.80 % maximum fragment radius as a fraction of parent radius
-DustGrowthCalibration          0.3  % timescale multiplier; larger = slower grain growth
+DustGrowthCalibration          0.446  % x1/h for the dust time-unit fix (was 0.3); timescale multiplier; larger = slower grain growth
 DustAstrationCalibration       0.15     % larger = stronger local D/G-scaled astration
 DustShockAmbientDensity        0.5  % cm^-3; higher = smaller shock radius = less grain destruction
 DustCollisionDensityThresh     15.0  % cm^-3; coagulation fires above this density, shattering below

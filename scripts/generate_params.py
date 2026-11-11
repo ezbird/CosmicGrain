@@ -146,9 +146,9 @@ RES_OVERRIDES = {
         "DustShockAmbientDensity":    "0.1",    # cm^-3; R_ST ~75 pc
 
         # Calibration
-        "DustGrowthCalibration":      "0.25",
-        "DustShatteringCalibration":  "1.0",    # baseline; coag does not fire at 512³
-        "DustCoagulationCalibration": "1.0",
+        "DustGrowthCalibration":      "0.371",
+        "DustShatteringCalibration":  "1.49",    # baseline; coag does not fire at 512³
+        "DustCoagulationCalibration": "1.49",
 
         # Dust sampling
         "DustParticlesPerSNII":       "4",
@@ -199,9 +199,9 @@ RES_OVERRIDES = {
         "DustShockAmbientDensity":    "0.5",    # cm^-3; R_ST ~ 60 pc
 
         # Calibration
-        "DustGrowthCalibration":      "0.3",
-        "DustShatteringCalibration":  "2.0",
-        "DustCoagulationCalibration": "6.0",
+        "DustGrowthCalibration":      "0.446",
+        "DustShatteringCalibration":  "2.97",
+        "DustCoagulationCalibration": "8.91",
 
         # Dust sampling
         "DustParticlesPerSNII":       "20",
@@ -258,9 +258,9 @@ RES_OVERRIDES = {
         "DustShockAmbientDensity":    "2",     # cm^-3; R_ST ~47 pc
 
         # Calibration
-        "DustGrowthCalibration":      "0.4",
-        "DustShatteringCalibration":  "0.7",    # revert 1024³ nudge; coag now active
-        "DustCoagulationCalibration": "10.0",
+        "DustGrowthCalibration":      "0.594",
+        "DustShatteringCalibration":  "1.04",    # revert 1024³ nudge; coag now active
+        "DustCoagulationCalibration": "14.9",
 
         # Dust sampling: fixed production multiplicities
         "DustParticlesPerSNII":       "4",
@@ -338,9 +338,9 @@ RES_OVERRIDES = {
         "DustShockAmbientDensity":    "10.0",   # cm^-3; R_SF ~5 pc; CALIBRATE FIRST
 
         # Calibration
-        "DustGrowthCalibration":      "0.5",    # monotonically increasing with resolution
-        "DustShatteringCalibration":  "0.5",    # coag yet more active; continue downward trend
-        "DustCoagulationCalibration": "12.0",   # +20% step from 2048³
+        "DustGrowthCalibration":      "0.743",    # monotonically increasing with resolution
+        "DustShatteringCalibration":  "0.743",    # coag yet more active; continue downward trend
+        "DustCoagulationCalibration": "17.8",   # +20% step from 2048³
 
         # Dust sampling
         "DustParticlesPerSNII":       "4",
@@ -459,7 +459,7 @@ for halo_id in HALO_IDS:
         label = f"halo{halo_id}_{res}"
         output_dir = f"halo{halo_id}_output_{res}"
         if halo_id == 441 and res == "1024":
-            output_dir = "halo441_output_1024_coag6_shat2_lognormal02"
+            output_dir = "halo441_output_1024_final"
         GRID[label] = {
             **make_switches(11),
             "InitCondFile": f"ICs/halo{halo_id}/IC_halo{halo_id}_zoom_{res}",

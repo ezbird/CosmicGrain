@@ -176,11 +176,11 @@ DustRadiationPressureEfficiency 1.0     % dimensionless; global scaling factor f
 DustParticlesPerSNII           8        % integer; superparticles spawned per SNII event
 DustParticlesPerAGB            12       % integer; superparticles spawned per AGB event
 DustParticlesPerLRN            4        % integer; superparticles spawned per LRN event
-DustCoagulationCalibration     7.0      % timescale multiplier; larger = slower coagulation
-DustShatteringCalibration      1.2      % timescale multiplier; larger = slower shattering
+DustCoagulationCalibration     10.4       % x1/h for the dust time-unit fix (was 7.0); timescale multiplier; larger = slower coagulation
+DustShatteringCalibration      1.78       % x1/h for the dust time-unit fix (was 1.2); timescale multiplier; larger = slower shattering
 DustShatteringFragmentSlope    3.3      % power-law slope q for dN/da ∝ a^-q
 DustShatteringMaxFragmentFraction 0.80  % maximum fragment radius as a fraction of parent radius
-DustGrowthCalibration          0.3      % timescale multiplier; larger = slower grain growth
+DustGrowthCalibration          0.446      % x1/h for the dust time-unit fix (was 0.3); timescale multiplier; larger = slower grain growth
 DustAstrationCalibration       0.15     % larger = stronger local D/G-scaled astration
 DustShockAmbientDensity        1.0      % cm^-3; higher = smaller shock radius = less grain destruction
 DustCollisionDensityThresh     30.0     % cm^-3; coagulation fires above this density, shattering below
