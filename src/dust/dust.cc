@@ -226,9 +226,12 @@ static std::vector<int> dust_dg_byte_counts(const std::vector<int> &counts,
 // sum_mass_in_sphere(), so results agree up to summation-order rounding.
 static constexpr double DTG_GRID_CELL = 2.0;
 
-// Coarse cell (code units) for routing D/G queries between tasks; equal to
-// the largest association radius.
-static constexpr double DTG_ROUTE_CELL = 10.0;
+// Side of the cells used to route D/G queries between tasks, in fine-grid
+// cells (DTG_GRID_CELL code units each).
+static constexpr int DTG_ROUTE_RATIO = 5;
+
+// Rank count from which occupancy routing is used by default.
+static constexpr int DTG_OCCUPANCY_MIN_TASKS = 64;
 
 struct dust_dg_fine_grid
 {
@@ -346,14 +349,31 @@ static void estimate_local_dust_to_gas_ratio(
 
   if(occupancy_routing)
     {
-      // Each task publishes the DTG_ROUTE_CELL cells holding particles it
+      // Each task publishes the routing cells holding particles it
       // sums (exactly the fine-grid members), and a query goes only to tasks
       // owning a cell the sphere touches.  Tasks dropped this way contribute
       // exactly zero, and per-task query order is unchanged, so results are
       // bit-identical to bounding-box routing.  That routing sent most
       // queries to most tasks because zoom domains are scattered, so its cost
       // grew with the number of tasks instead of being divided among them.
-      const long long n_c = std::max(1LL, (long long)std::floor(All.BoxSize / DTG_ROUTE_CELL));
+      // Routing cells are DTG_ROUTE_RATIO fine-grid cells on a side, so
+      // occupancy follows directly from the fine-grid keys without touching
+      // particles.  The environment variable CG_DTG_ROUTE_RATIO overrides it
+      // for scaling tests (smaller cells send fewer queries but publish more
+      // cells).
+      static int route_ratio = 0;
+      if(route_ratio == 0)
+        {
+          const char *env = getenv("CG_DTG_ROUTE_RATIO");
+          route_ratio = (env && atoi(env) > 0) ? atoi(env) : DTG_ROUTE_RATIO;
+          if(All.ThisTask == 0)
+            printf("[DTG_ROUTE] routing cells are %d fine cells (%g code units) on a side\n",
+                   route_ratio, route_ratio * gas_grid.cell);
+        }
+      const long long n_f = gas_grid.n_per_dim;
+      const bool aligned  = n_f > 0 && n_f % route_ratio == 0;
+      const long long n_c = aligned ? n_f / route_ratio
+                                    : std::max(1LL, (long long)std::floor(All.BoxSize / (route_ratio * DTG_GRID_CELL)));
       const double cc = All.BoxSize / n_c;
       auto ckey = [n_c](long long ix, long long iy, long long iz) {
         ix = ((ix % n_c) + n_c) % n_c;
@@ -365,14 +385,23 @@ static void estimate_local_dust_to_gas_ratio(
       std::unordered_set<long long> local_cells;
       for(const dust_dg_fine_grid *grid : {&gas_grid, &dust_grid})
         for(const auto &fine_cell : grid->cells)
-          for(int idx : fine_cell.second.particles)
-            {
-              double pos[3];
-              Sp->intpos_to_pos(Sp->P[idx].IntPos, pos);
-              local_cells.insert(ckey((long long)std::floor(pos[0] / cc),
-                                      (long long)std::floor(pos[1] / cc),
-                                      (long long)std::floor(pos[2] / cc)));
-            }
+          {
+            if(aligned)
+              {
+                const long long k = fine_cell.first;
+                local_cells.insert(ckey((k % n_f) / route_ratio, ((k / n_f) % n_f) / route_ratio,
+                                        (k / (n_f * n_f)) / route_ratio));
+                continue;
+              }
+            for(int idx : fine_cell.second.particles)
+              {
+                double pos[3];
+                Sp->intpos_to_pos(Sp->P[idx].IntPos, pos);
+                local_cells.insert(ckey((long long)std::floor(pos[0] / cc),
+                                        (long long)std::floor(pos[1] / cc),
+                                        (long long)std::floor(pos[2] / cc)));
+              }
+          }
 
       std::vector<long long> mine(local_cells.begin(), local_cells.end());
       int n_mine = (int)mine.size();
@@ -3178,18 +3207,35 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     // Collective: every task must call this even if it has nothing to refresh.
     std::vector<double> fresh_DTG;
     TIMER_START(CPU_DUST_DTG);
+    // Occupancy routing pays a fixed per-task cost to share the cell table,
+    // while bounding-box routing grows with the number of tasks; on 24 ranks
+    // the latter was faster (0.08 vs 0.13 s per call).  Use occupancy routing
+    // from DTG_OCCUPANCY_MIN_TASKS ranks up; CG_DTG_ROUTING=bbox|occupancy
+    // forces either.  Both give bit-identical results.
+    static int use_occupancy = -1;
+    if(use_occupancy < 0) {
+      int n_task = 1;
+      MPI_Comm_size(Communicator, &n_task);
+      const char *env = getenv("CG_DTG_ROUTING");
+      if(env && strcmp(env, "occupancy") == 0)      use_occupancy = 1;
+      else if(env && strcmp(env, "bbox") == 0)      use_occupancy = 0;
+      else use_occupancy = n_task >= DTG_OCCUPANCY_MIN_TASKS ? 1 : 0;
+      if(All.ThisTask == 0)
+        printf("[DTG_ROUTE] %s routing of D/G queries on %d ranks\n",
+               use_occupancy ? "occupancy" : "bounding-box", n_task);
+    }
     estimate_local_dust_to_gas_ratio(Sp, refresh_radius, Communicator, fresh_DTG,
-                                     /*occupancy_routing=*/true, &dtg_queries_sent);
+                                     use_occupancy == 1, &dtg_queries_sent);
 
-    // Self-check on the first calls: occupancy routing must reproduce the
-    // bounding-box routing bit for bit (it only drops tasks contributing 0).
+    // Self-check on the first calls: the two routings must agree bit for bit
+    // (occupancy routing only drops tasks contributing 0).
     static int route_verify_remaining = 3;
     if(route_verify_remaining > 0) {
       route_verify_remaining--;
       std::vector<double> bbox_DTG;
       long long bbox_sent = 0;
       estimate_local_dust_to_gas_ratio(Sp, refresh_radius, Communicator, bbox_DTG,
-                                       /*occupancy_routing=*/false, &bbox_sent);
+                                       use_occupancy != 1, &bbox_sent);
       long long counts[3] = {0, dtg_queries_sent, bbox_sent};
       for(int i = 0; i < Sp->NumPart; i++)
         if(refresh_radius[i] > 0.0 &&
@@ -3198,9 +3244,9 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
       long long sums[3];
       MPI_Reduce(counts, sums, 3, MPI_LONG_LONG, MPI_SUM, 0, Communicator);
       if(All.ThisTask == 0)
-        printf("[DTG_ROUTE_VERIFY] occupancy vs bounding-box routing: %lld differing "
-               "D/G values; queries sent %lld vs %lld (%.1fx fewer)\n",
-               sums[0], sums[1], sums[2], sums[1] > 0 ? (double)sums[2] / sums[1] : 0.0);
+        printf("[DTG_ROUTE_VERIFY] %s routing vs the other: %lld differing D/G values; "
+               "queries sent %lld vs %lld\n",
+               use_occupancy ? "occupancy" : "bounding-box", sums[0], sums[1], sums[2]);
     }
     TIMER_STOP(CPU_DUST_DTG);
 
