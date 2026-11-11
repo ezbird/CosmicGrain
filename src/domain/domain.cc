@@ -89,19 +89,20 @@ void domain<partset>::domain_decomposition(domain_options mode)
   Mem.myfree(domain_leaf_cost);
 
   /* move stars out of gas block if present */
-  #ifdef DUST
-  dust_integrity_check(Tp, "before rearrange", Communicator);
-  #endif
-
+  /* DustP integrity is only meaningful in STANDARD mode: SUBFIND's collective
+   * decompositions move particles without their DustP sidecar, which run.cc
+   * backs up by ID beforehand and restores afterwards. */
 #ifdef DUST
-  dust_integrity_check(Tp, "after rearrange", Communicator);
+  if(Mode == STANDARD)
+    dust_integrity_check(Tp, "before rearrange", Communicator);
 #endif
 
   domain_rearrange_particle_sequence();
 
-  #ifdef DUST
-  dust_integrity_check(Tp, "after rearrange", Communicator);
-  #endif
+#ifdef DUST
+  if(Mode == STANDARD)
+    dust_integrity_check(Tp, "after rearrange", Communicator);
+#endif
 
   /* finally, carry out the actual particle exchange */
   if(Mode == STANDARD)
