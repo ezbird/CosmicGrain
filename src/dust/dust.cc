@@ -90,6 +90,19 @@ static double sample_initial_grain_radius(double median_nm, double sigma_dex)
                   std::min(All.DustMaxGrainSize, sampled_nm));
 }
 
+/** Seconds per internal time unit.
+ *
+ * Lengths are in h^-1 kpc and velocities in km/s, so one code time unit is
+ * UnitTime_in_s / h seconds (cooling.cc converts the same way).  Every
+ * conversion between physical and code time in the dust module goes through
+ * this helper; using UnitTime_in_s alone made all dust timescales 1/h too
+ * long.
+ */
+static inline double dust_code_time_in_s(void)
+{
+  return All.UnitTime_in_s / All.HubbleParam;
+}
+
 /** Return the proper gas mass density in cgs units.
  *
  * Snapshot/SPH densities are comoving code densities.  The a^-3 and h^2
@@ -1386,7 +1399,7 @@ if(shat_passed > 0)
     double tau_shat =
         tau_shat_yr *
         SEC_PER_YEAR /
-        All.UnitTime_in_s;
+        dust_code_time_in_s();
 
 
     // =========================================================================
@@ -1693,8 +1706,8 @@ int erode_dust_grain_thermal(simparticles *Sp, int dust_idx, int nearest_gas_inp
   // Clamp each to the same physically motivated range as before
   tau_sputter_carbon_yr   = std::max(1e6, std::min(1e9, tau_sputter_carbon_yr));
   tau_sputter_silicate_yr = std::max(1e6, std::min(1e9, tau_sputter_silicate_yr));
-  double tau_sputter_carbon   = tau_sputter_carbon_yr   * SEC_PER_YEAR / All.UnitTime_in_s;
-  double tau_sputter_silicate = tau_sputter_silicate_yr * SEC_PER_YEAR / All.UnitTime_in_s;
+  double tau_sputter_carbon   = tau_sputter_carbon_yr   * SEC_PER_YEAR / dust_code_time_in_s();
+  double tau_sputter_silicate = tau_sputter_silicate_yr * SEC_PER_YEAR / dust_code_time_in_s();
   // ── Split current mass into species, erode each independently ────────────
 double CF_old         = std::max(0.0, std::min(1.0, (double)Sp->DustP[dust_idx].CarbonMassFraction));
 double old_mass       = Sp->P[dust_idx].getMass();
@@ -1946,7 +1959,7 @@ int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double
   double drag_timescale_myr = calculate_drag_timescale(
       Sp->DustP[dust_idx].GrainRadius, 2.4,
       gas_density_cgs, T_gas, vrel_cgs, 0.6, 5.0/3.0);
-  double drag_timescale = drag_timescale_myr * 1e6 * SEC_PER_YEAR / All.UnitTime_in_s;
+  double drag_timescale = drag_timescale_myr * 1e6 * SEC_PER_YEAR / dust_code_time_in_s();
   // ── Step 5: Apply drag — exact analytical solution ───────────────────────
   // Δv_k = (v_gas,k − v_dust,k) × (1 − exp(−dt/t_stop))
   // This is exact for any dt/t_stop.  dt is the physical elapsed interval in
@@ -1970,7 +1983,7 @@ int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double
                           * All.UnitVelocity_in_cm_per_s / 1e5;
       double cs_cgs     = sqrt((5.0/3.0) * BOLTZMANN * T_gas / (0.6 * PROTONMASS));
       double mach       = vrel_cgs / cs_cgs;
-      double dt_myr     = dt * All.UnitTime_in_s / (1e6 * SEC_PER_YEAR);
+      double dt_myr     = dt * dust_code_time_in_s() / (1e6 * SEC_PER_YEAR);
       DUST_PRINT("[DUST_DRAG] vel=%.1f km/s Δv=%.1f km/s "
                  "nH=%.3e cm^-3 T=%.1e K Mach=%.2f "
                  "t_drag=%.2f Myr dt=%.2f Myr f_drag=%.3f "
@@ -2557,7 +2570,7 @@ void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mas
   if(astration_count % 100 == 0) {
     // FIX: dust_consumed_mass is in code mass units; convert before
     // printing, matching the mass_to_msun pattern used elsewhere in the file.
-    double mass_to_msun = All.UnitMass_in_g / 1.989e33;
+    double mass_to_msun = All.UnitMass_in_g / 1.989e33 / All.HubbleParam;
     DUST_PRINT("[ASTRATION] Event #%d: "
                "search_r=%.2e (hsml=%.2e cell=%.2e) "
                "D/G=%.3e consumed=%d (%.2e Msun)\n",
@@ -2744,7 +2757,7 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
       double c_s_cgs  = sqrt((5.0/3.0) * BOLTZMANN * T_gas / (0.6 * PROTONMASS));
       double t_stop_s = (sqrt(M_PI * 5.0/3.0 / 8.0) * a_cm * 2.4)
                         / (rho_cgs * c_s_cgs);
-      t_stop_code = t_stop_s / All.UnitTime_in_s;
+      t_stop_code = t_stop_s / dust_code_time_in_s();
     }
   }
   // f_coupling → 1 for dt << t_stop (grain accelerates freely this step)
@@ -2754,7 +2767,7 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
     coupling_factor = (1.0 - exp(-dt / t_stop_code)) * t_stop_code / dt;
   radp_total_coupling += coupling_factor;
   // ── Apply velocity kick with terminal velocity suppression ────────────────
-  double accel_code = All.UnitVelocity_in_cm_per_s / All.UnitTime_in_s;
+  double accel_code = All.UnitVelocity_in_cm_per_s / dust_code_time_in_s();
   for(int k = 0; k < 3; k++)
     // Physical acceleration g changes p = a^2 dx/dt by a * g * dt.
     Sp->P[dust_idx].Vel[k] += All.cf_atime * (a_rad[k] / accel_code) * dt * coupling_factor;
@@ -2859,7 +2872,7 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
   double v_th  = sqrt(8.0 * BOLTZMANN * T_gas / (M_PI * PROTONMASS));
   double P_gas = f_eff * 2.0 * n_H * BOLTZMANN * (T_gas - T_dust)
                  * alpha_T * v_th * M_PI * a_cm * a_cm;
-  double dt_cgs = dt * All.UnitTime_in_s;
+  double dt_cgs = dt * dust_code_time_in_s();
 
   // Mass and heat capacity of one physical grain represented by this
   // superparticle.  These enter only the dust thermal relaxation; the gas is
@@ -3413,7 +3426,7 @@ void print_dust_statistics(simparticles *Sp, MPI_Comm Communicator)
     global_avg_temp /= global_dust_count;
   }
   // Convert to Msun
-  const double mass_to_msun = All.UnitMass_in_g / 1.989e33;
+  const double mass_to_msun = All.UnitMass_in_g / 1.989e33 / All.HubbleParam;
   global_dust_mass    *= mass_to_msun;
   g_MassGrown         *= mass_to_msun;
   g_MassDestrThermal  *= mass_to_msun;
@@ -3676,7 +3689,8 @@ void erode_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx,
   // sn_energy arrives in code energy units (matches feedback.cc's E_code
   // convention); convert to erg for the Sedov-Taylor calculation. Fallback
   // only guards against a malformed call — should not trigger from feedback.cc.
-  double sn_energy_erg = sn_energy * All.UnitEnergy_in_cgs;
+  // Code energy unit is UnitEnergy_in_cgs / h erg.
+  double sn_energy_erg = sn_energy * All.UnitEnergy_in_cgs / All.HubbleParam;
   if(sn_energy_erg <= 0.0 || !isfinite(sn_energy_erg)) {
     static long long bad_energy_warns = 0;
     bad_energy_warns++;
@@ -3824,7 +3838,7 @@ void erode_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx,
     }
   }
   // ── Diagnostics ─────────────────────────────────────────────────────────────
-  double mass_to_msun = All.UnitMass_in_g / 1.989e33;
+  double mass_to_msun = All.UnitMass_in_g / 1.989e33 / All.HubbleParam;
   double M_target     = M_carb_destroy + M_sil_destroy;
   if(All.ThisTask == 0 && M_target > 0.0)
     DUST_PRINT("[DUST_SN] physical_r=%.4f kpc  search_r=%.3f kpc  "
@@ -3974,7 +3988,7 @@ void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double 
   if(!isfinite(tau_co_yr) || !(tau_co_yr > 0.0)) return;
 
   // update_dust_dynamics() receives elapsed physical time in code units.
-  const double tau_co_code = tau_co_yr * SEC_PER_YEAR / All.UnitTime_in_s;
+  const double tau_co_code = tau_co_yr * SEC_PER_YEAR / dust_code_time_in_s();
   if(!isfinite(tau_co_code) || !(tau_co_code > 0.0)) return;
 
   // Subcycle so no numerical increment exceeds 20%. Since tau_co is
@@ -4270,8 +4284,8 @@ void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, doub
   // Same numerical limits formerly applied to the single growth timescale.
   tau_carb_yr = std::max(1e6, std::min(5e9, tau_carb_yr));
   tau_sil_yr  = std::max(1e6, std::min(5e9, tau_sil_yr));
-  const double tau_carb = tau_carb_yr * SEC_PER_YEAR / All.UnitTime_in_s;
-  const double tau_sil = tau_sil_yr * SEC_PER_YEAR / All.UnitTime_in_s;
+  const double tau_carb = tau_carb_yr * SEC_PER_YEAR / dust_code_time_in_s();
+  const double tau_sil = tau_sil_yr * SEC_PER_YEAR / dust_code_time_in_s();
   // ── Uncapped species growth requests ────────────────────────────────────────
   //
   // Previous model:
@@ -4431,7 +4445,7 @@ void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, doub
   if(dt_printed < 10 &&
      All.ThisTask == 0)
   {
-      double dt_myr = dt * All.UnitTime_in_s / (1e6 * SEC_PER_YEAR);
+      double dt_myr = dt * dust_code_time_in_s() / (1e6 * SEC_PER_YEAR);
       DUST_PRINT(
           "[GROWTH_DEBUG] dt=%.3e code = %.3f Myr "
           "da=%.3f nm dm_req=%.3e dm_actual=%.3e "
