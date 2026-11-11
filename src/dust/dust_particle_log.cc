@@ -264,12 +264,11 @@ void open_dust_particle_log(MPI_Comm Communicator)
         char logdir[MAXLEN_PATH];
         snprintf(logdir, MAXLEN_PATH, "%sdust_logs", All.OutputDir);
 
-        if(All.RestartFlag == RST_BEGIN)
-        {
-            if(mkdir(logdir, 02755) != 0 && errno != EEXIST)
-                printf("[DUST_LOG|T=0] WARNING: could not create %s: %s\n",
-                       logdir, strerror(errno));
-        }
+        // Create the directory on every start mode (fresh, restart-file, or
+        // snapshot restart) so a new OutputDir never needs a manual mkdir.
+        if(mkdir(logdir, 02755) != 0 && errno != EEXIST)
+            printf("[DUST_LOG|T=0] WARNING: could not create %s: %s\n",
+                   logdir, strerror(errno));
     }
     MPI_Barrier(Communicator);
 
