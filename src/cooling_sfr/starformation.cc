@@ -271,6 +271,12 @@ if(tot_stars_spawned > 0 || tot_stars_converted > 0)
 
     }
 
+#ifdef DUST
+  // Consume the dust around this step's new stars (collective; star IDs are
+  // final and spawned stars are inside NumPart from here on).
+  apply_queued_dust_astration(Sp, Communicator);
+#endif
+
   double sfrrate = 0;
   for(int bin = 0; bin < TIMEBINS; bin++)
     if(Sp->TimeBinsHydro.TimeBinCount[bin])

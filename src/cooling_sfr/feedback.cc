@@ -20,6 +20,7 @@
 
 #include <math.h>
 #include <algorithm>
+#include <cfloat>
 #include <cstdint>
 #include <vector>
 #include <utility>
@@ -40,7 +41,7 @@
 #include "../time_integration/driftfac.h"
 #include "agb_yields.h"
 #include "agb_feedback_math.h"
-#include "agb_distributed_recipients.h"
+#include "cg_distributed.h"
 #include <exception>
 #include "snii_yields.h"
 
@@ -75,6 +76,13 @@ static const double FEEDBACK_KERNEL_GROWTH        = 1.25;
 static const double FEEDBACK_MAX_RADIUS_FACTOR    = 4.0;
 static const double FEEDBACK_MAX_RADIUS_PKPC      = 20.0;
 static const int    FEEDBACK_MAX_KERNEL_ITERS     = 16;
+
+// Gadget code units carry h: one code mass unit is UnitMass_in_g/h grams and
+// one code energy unit is UnitEnergy_in_cgs/h erg.  Ejecta and energies
+// computed per solar mass must use these, or the SN energy handed to the dust
+// shock model and every printed mass/energy is off by powers of h.
+static inline double fb_code_mass_in_g(void) { return All.UnitMass_in_g / All.HubbleParam; }
+static inline double fb_code_energy_in_erg(void) { return All.UnitEnergy_in_cgs / All.HubbleParam; }
 
 // Counter-based feedback RNG.  The implementation is kept at the end of
 // this file; this explicit tuple interface prevents collisions and correlations
@@ -177,7 +185,7 @@ static inline double stellar_birth_mass_msun(
 
     return
         birth_mass_code *
-        All.UnitMass_in_g /
+        fb_code_mass_in_g() /
         SOLAR_MASS;
 }
 
@@ -973,309 +981,6 @@ double get_stellar_age_Myr(double a_birth, double /*unused*/)
 
 // ----------------------- Neighbor Finding -----------------------------------
 
-double get_local_smoothing_length_tree(simparticles *Sp,
-                                       ngbtree * /*Tree*/,
-                                       int star_idx)
-{
-    double h = 0.0;
-
-    // Gas particle: just use its own SPH smoothing length.
-    if(Sp->P[star_idx].getType() == 0)
-    {
-        if(Sp->SphP[star_idx].Hsml > 0.0 &&
-           std::isfinite(Sp->SphP[star_idx].Hsml))
-        {
-            return Sp->SphP[star_idx].Hsml;
-        }
-    }
-
-    // Star particle:
-    //
-    // Find the ACTUAL nearest local gas particle rather than searching
-    // only the first 256 entries of the gas array.  The old implementation
-    // could assign a star the Hsml of an unrelated gas particle, producing
-    // an unphysically large or small feedback kernel.
-    if(Sp->P[star_idx].getType() == 4)
-    {
-        double best_r2 = HUGE_VAL;
-        int best_gas = -1;
-
-        for(int i = 0; i < Sp->NumGas; ++i)
-        {
-            if(Sp->P[i].getType() != 0)
-                continue;
-
-            if(!(Sp->SphP[i].Hsml > 0.0) ||
-               !std::isfinite(Sp->SphP[i].Hsml))
-                continue;
-
-            double d[3];
-
-            Sp->nearest_image_intpos_to_pos(
-                Sp->P[i].IntPos,
-                Sp->P[star_idx].IntPos,
-                d);
-
-            double r2 =
-                d[0] * d[0] +
-                d[1] * d[1] +
-                d[2] * d[2];
-
-            if(r2 < best_r2)
-            {
-                best_r2 = r2;
-                best_gas = i;
-            }
-        }
-
-        if(best_gas >= 0)
-            h = Sp->SphP[best_gas].Hsml;
-    }
-
-    if(!(h > 0.0) || !std::isfinite(h))
-        h = std::max(All.SofteningTable[0], 1.0e-6);
-
-    return h;
-}
-
-void find_feedback_neighbors_tree(simparticles *Sp, ngbtree * /*Tree*/,
-                                  domain<simparticles> * /*D*/,
-                                  int star_idx,
-                                  int *ngb_list, double *distances, int *n_ngb,
-                                  double *smoothing_length, int max_ngb)
-{
-  *n_ngb = 0;
-  double h = *smoothing_length;
-  if(h <= 0.0)
-    h = get_local_smoothing_length_tree(Sp, nullptr, star_idx);
-  *smoothing_length = h;
-  if(!(h > 0.0) || !std::isfinite(h) || max_ngb <= 0)
-    return;
-
-  // Select live gas; cached local indices can change type or be reordered.
-  std::vector<std::pair<double, int>> candidates;
-  const double radius2 = 4.0 * h * h;
-
-  for(int j = 0; j < Sp->NumGas; ++j)
-    {
-      if(Sp->P[j].getType() != 0 || Sp->P[j].getMass() <= 0.0)
-        continue;
-
-      double d[3];
-      Sp->nearest_image_intpos_to_pos(
-          Sp->P[j].IntPos, Sp->P[star_idx].IntPos, d);
-
-      const double r2 = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
-      if(r2 <= radius2)
-        candidates.emplace_back(r2, j);
-    }
-
-  std::sort(candidates.begin(), candidates.end());
-  const int count = std::min(max_ngb, (int)candidates.size());
-
-  for(int k = 0; k < count; ++k)
-    {
-      ngb_list[k] = candidates[k].second;
-      distances[k] = std::sqrt(candidates[k].first);
-    }
-
-  *n_ngb = count;
-}
-
-
-static void gather_neighbors_rc1_reference(simparticles *Sp,
-                             ngbtree *Tree,
-                             domain<simparticles> *D,
-                             int star_i,
-                             std::vector<int> &ngb,
-                             std::vector<double> &dist,
-                             double &hsml)
-{
-    ngb.clear();
-    dist.clear();
-    hsml = 0.0;
-
-    // ---------------------------------------------------------------------
-    // 1. Initial estimate.
-    //
-    // For stars, get_local_smoothing_length_tree() currently returns the
-    // Hsml of the actual nearest local gas particle.  This gives us a
-    // sensible local starting scale, but it does NOT guarantee that a
-    // star-centered 2h kernel contains a well-resolved number of gas
-    // particles.
-    // ---------------------------------------------------------------------
-
-    const double initial_hsml =
-        get_local_smoothing_length_tree(Sp, Tree, star_i);
-
-    if(!(initial_hsml > 0.0) || !std::isfinite(initial_hsml))
-        return;
-
-    const double initial_radius = 2.0 * initial_hsml;
-
-    // ---------------------------------------------------------------------
-    // 2. Define a conservative maximum search radius.
-    //
-    // Positions/radii here are in comoving kpc/h.
-    //
-    // Physical pkpc = (ckpc/h) * a / h
-    //
-    // therefore
-    //
-    // ckpc/h = pkpc * h / a.
-    //
-    // We impose BOTH:
-    //   (a) at most 4x the original search radius, and
-    //   (b) at most 20 physical kpc,
-    //
-    // except that an already-large initial kernel is never forcibly shrunk.
-    // ---------------------------------------------------------------------
-
-    double physical_cap_ckpch;
-
-    if(All.ComovingIntegrationOn)
-    {
-        const double a =
-            std::max((double)All.Time, 1.0e-8);
-
-        physical_cap_ckpch =
-            FEEDBACK_MAX_RADIUS_PKPC *
-            All.HubbleParam / a;
-    }
-    else
-    {
-        // In non-comoving runs, preserve the same kpc/h unit convention.
-        physical_cap_ckpch =
-            FEEDBACK_MAX_RADIUS_PKPC *
-            All.HubbleParam;
-    }
-
-    const double factor_cap =
-        FEEDBACK_MAX_RADIUS_FACTOR * initial_radius;
-
-    double max_radius =
-        std::min(factor_cap, physical_cap_ckpch);
-
-    // Never shrink a kernel that was already larger than the safety cap.
-    if(max_radius < initial_radius)
-        max_radius = initial_radius;
-
-    // ---------------------------------------------------------------------
-    // 3. Allocate neighbor buffers once.
-    // ---------------------------------------------------------------------
-
-    ngb.resize(MAX_KERNEL_NEIGHBORS);
-    dist.resize(MAX_KERNEL_NEIGHBORS);
-
-    double search_radius = initial_radius;
-    hsml = 0.5 * search_radius;
-
-    int n_found = 0;
-    int iter = 0;
-
-    // ---------------------------------------------------------------------
-    // 4. Initial search + adaptive enlargement for under-populated kernels.
-    //
-    // find_feedback_neighbors_tree() searches within 2*hsml, so setting
-    //
-    //       hsml = search_radius / 2
-    //
-    // keeps the returned smoothing length consistent with the actual
-    // cubic-spline kernel support.
-    // ---------------------------------------------------------------------
-
-    while(true)
-    {
-        n_found = 0;
-        hsml = 0.5 * search_radius;
-
-        find_feedback_neighbors_tree(
-            Sp,
-            Tree,
-            D,
-            star_i,
-            ngb.data(),
-            dist.data(),
-            &n_found,
-            &hsml,
-            MAX_KERNEL_NEIGHBORS);
-
-        // Adequately resolved: keep this kernel.
-        if(n_found >= MIN_FEEDBACK_NEIGHBORS)
-            break;
-
-        // Reached our allowed spatial extent.
-        if(search_radius >= max_radius)
-            break;
-
-        // Safety against pathological looping.
-        if(iter >= FEEDBACK_MAX_KERNEL_ITERS)
-            break;
-
-        double new_radius =
-            search_radius * FEEDBACK_KERNEL_GROWTH;
-
-        if(new_radius > max_radius)
-            new_radius = max_radius;
-
-        // Floating-point safety.
-        if(!(new_radius > search_radius))
-            break;
-
-        search_radius = new_radius;
-        iter++;
-    }
-
-    // hsml must correspond exactly to the final search support.
-    hsml = 0.5 * search_radius;
-
-    // ---------------------------------------------------------------------
-    // 5. Diagnostics.
-    //
-    // Print both the original and final kernels.  This will let us quantify
-    // exactly how often the adaptive mechanism intervenes.
-    // ---------------------------------------------------------------------
-
-    if(All.FeedbackDebugLevel >= 2)
-    {
-        const bool expanded =
-            search_radius > initial_radius * (1.0 + 1.0e-12);
-
-        printf(
-            "[FEEDBACK_KERNEL|T=%d] "
-            "star=%d "
-            "hsml_initial=%.6e "
-            "radius_initial=%.6e "
-            "hsml_final=%.6e "
-            "radius_final=%.6e "
-            "Nngb=%d "
-            "expanded=%d "
-            "iters=%d "
-            "hit_cap=%d\n",
-            All.ThisTask,
-            star_i,
-            initial_hsml,
-            initial_radius,
-            hsml,
-            search_radius,
-            n_found,
-            expanded ? 1 : 0,
-            iter,
-            (search_radius >= max_radius *
-             (1.0 - 1.0e-12)) ? 1 : 0);
-    }
-
-    ngb.resize(n_found);
-    dist.resize(n_found);
-}
-
-static void gather_neighbors(simparticles *Sp,ngbtree *Tree,domain<simparticles> *D,
-                             int star_i,std::vector<int> &ngb,std::vector<double> &dist,double &hsml)
-{
-  gather_neighbors_rc1_reference(Sp,Tree,D,star_i,ngb,dist,hsml);
-}
-
-
 // ----------------------- SPH Kernel -----------------------------------------
 
 double cubic_spline_kernel(double r, double h)
@@ -1310,649 +1015,506 @@ static inline double ucode_to_TK(double u_code, double ne)
   return u_cgs / c_v(mu_from_ne(ne));
 }
 
-// ----------------------- Energy Deposition ----------------------------------
+// ----------------------- Distributed feedback kernels -----------------------
+//
+// SNII, reservoir, and AGB events deposit into the gas within a kernel around
+// the star.  That gas may belong to any MPI task, so each batch of events is
+// processed collectively (see cg_distributed.h):
+//
+//   1. every task sees every event and reports its nearest gas, giving the
+//      global nearest gas and with it the initial kernel scale;
+//   2. kernels are enlarged in lockstep until they hold MIN_FEEDBACK_NEIGHBORS
+//      gas particles counted over all tasks;
+//   3. each task sends its gas inside the final kernel to the event owner,
+//      which keeps the MAX_KERNEL_NEIGHBORS nearest (ties by ID) and makes the
+//      same decisions as the former single-task code;
+//   4. the resulting deposits go to the gas owners, which apply them in
+//      (star ID, event kind) order.
+//
+// The neighbour set and the stochastic choices therefore no longer depend on
+// where the domain boundaries fall.  Events in one batch see the gas state
+// from before the batch; the old serial code let later events see earlier
+// deposits, which only matters when two events share recipients in one step.
 
-/*
- * Deposit feedback using stochastic ΔT heating.
- *
- * Chemistry:
- *   - distribute metal ejecta over the full SPH kernel
- *     using kernel-weighted gas mass.
- *
- * Thermal energy:
- *   - each selected gas particle receives exactly DELTA_T_TARGET, sized
- *     using THAT PARTICLE'S actual mu (from its current Ne), not a fixed
- *     assumed ionization state;
- *   - neighbors are sampled without replacement by kernel weight;
- *   - full heating packets are deposited deterministically;
- *   - a final fractional packet is handled with a Bernoulli draw;
- *   - statistically consumed fractional energy is never banked;
- *   - only genuinely unprocessed energy is returned in
- *     E_unspent_code for the reservoir.
- *
- * Diagnostics:
- *   - from_reservoir labels each stochastic heating packet as either a
- *     newly triggered stellar-feedback EVENT or a RESERVOIR retry;
- *   - debug level >= 2 prints persistent star/gas ParticleIDs and both
- *     pre- and post-heating temperatures.
- *
- * Returns the thermal energy actually deposited.
- */
-static double deposit_energy_stochastic(
-    simparticles *Sp,
-    const std::vector<int> &ngb_list,
-    const std::vector<double> &distances,
-    double hsml,
-    int star_idx,
-    double E_avail_code,
-    double MZ_code,
-    const ElementYields &elem,
-    double &E_unspent_code,
-    bool from_reservoir)
+namespace cg_fb_dist
 {
-    E_unspent_code = 0.0;
-
-    if(ngb_list.empty())
-    {
-        E_unspent_code = E_avail_code;
-        return 0.0;
-    }
-
-    const int N = (int)ngb_list.size();
-
-    // ============================================================
-    // 1. Compute kernel-weighted mass fractions.
-    //
-    // Chemistry is distributed over the whole feedback kernel,
-    // independently of which particles happen to receive thermal
-    // energy.
-    // ============================================================
-
-    std::vector<double> weights(N, 0.0);
-
-    double weight_sum = 0.0;
-
-    for(int i = 0; i < N; ++i)
-    {
-        int j = ngb_list[i];
-
-        double W =
-            cubic_spline_kernel(distances[i], hsml);
-
-        // SPH-style mass weighting.
-        weights[i] =
-            Sp->P[j].getMass() * W;
-
-        weight_sum += weights[i];
-    }
-
-    if(weight_sum <= 0.0)
-    {
-        E_unspent_code = E_avail_code;
-        return 0.0;
-    }
-
-
-    // ============================================================
-    // 2. Deposit metals and individual elements.
-    //
-    // This happens whether or not a particular particle is selected
-    // for stochastic thermal heating.
-    // ============================================================
-
-#ifdef METALS
-
-    if(MZ_code > 0.0)
-    {
-        for(int i = 0; i < N; ++i)
-        {
-            int j = ngb_list[i];
-
-            double fraction =
-                weights[i] / weight_sum;
-
-            double old_gas_mass =
-                Sp->P[j].getMass();
-
-            double old_C =
-                old_gas_mass *
-                Sp->SphP[j].GasCarbonMassFraction;
-
-            double old_N =
-                old_gas_mass *
-                Sp->SphP[j].GasNitrogenMassFraction;
-
-            double old_O =
-                old_gas_mass *
-                Sp->SphP[j].GasOxygenMassFraction;
-
-            double old_Ne =
-                old_gas_mass *
-                Sp->SphP[j].GasNeonMassFraction;
-
-            double old_Mg =
-                old_gas_mass *
-                Sp->SphP[j].GasMagnesiumMassFraction;
-
-            double old_Si =
-                old_gas_mass *
-                Sp->SphP[j].GasSiliconMassFraction;
-
-            double old_Fe =
-                old_gas_mass *
-                Sp->SphP[j].GasIronMassFraction;
-
-
-            double dMZ =
-                MZ_code * fraction;
-
-            double dC =
-                elem.C * fraction;
-
-            double dN =
-                elem.N * fraction;
-
-            double dO =
-                elem.O * fraction;
-
-            double dNe =
-                elem.Ne * fraction;
-
-            double dMg =
-                elem.Mg * fraction;
-
-            double dSi =
-                elem.Si * fraction;
-
-            double dFe =
-                elem.Fe * fraction;
-
-
-            double new_gas_mass =
-                old_gas_mass + dMZ;
-
-            Sp->P[j].setMass(new_gas_mass);
-
-            Sp->SphP[j].MassMetallicity += dMZ;
-
-            Sp->SphP[j].Metallicity =
-                Sp->SphP[j].MassMetallicity /
-                new_gas_mass;
-
-            Sp->P[j].Metallicity =
-                Sp->SphP[j].Metallicity;
-
-            Sp->SphP[j].GasCarbonMassFraction =
-                (old_C + dC) /
-                new_gas_mass;
-
-            Sp->SphP[j].GasNitrogenMassFraction =
-                (old_N + dN) /
-                new_gas_mass;
-
-            Sp->SphP[j].GasOxygenMassFraction =
-                (old_O + dO) /
-                new_gas_mass;
-
-            Sp->SphP[j].GasNeonMassFraction =
-                (old_Ne + dNe) /
-                new_gas_mass;
-
-            Sp->SphP[j].GasMagnesiumMassFraction =
-                (old_Mg + dMg) /
-                new_gas_mass;
-
-            Sp->SphP[j].GasSiliconMassFraction =
-                (old_Si + dSi) /
-                new_gas_mass;
-
-            Sp->SphP[j].GasIronMassFraction =
-                (old_Fe + dFe) /
-                new_gas_mass;
-        }
-    }
-
-#endif // METALS
-
-
-    // ============================================================
-    // 3. Nothing more to do if there is no thermal energy.
-    // ============================================================
-
-    if(E_avail_code <= 0.0)
-        return 0.0;
-
-
-    double E_remaining_code =
-        E_avail_code;
-
-    double E_deposited_code =
-        0.0;
-
-
-    // ============================================================
-    // 4. Track which candidate neighbors are still available.
-    //
-    // We sample without replacement so one SN event cannot heat
-    // the same gas particle twice.
-    // ============================================================
-
-    std::vector<int> available(N);
-
-    for(int i = 0; i < N; ++i)
-        available[i] = i;
-
-
-    unsigned long long random_counter = 0;
-
-
-    // ============================================================
-    // 5. Stochastic thermal heating.
-    // ============================================================
-
-    while(E_remaining_code > 0.0 &&
-          !available.empty())
-    {
-        // --------------------------------------------------------
-        // Select one remaining gas neighbor according to its
-        // kernel weight.
-        // --------------------------------------------------------
-
-        double available_weight_sum = 0.0;
-
-        for(int idx : available)
-            available_weight_sum += weights[idx];
-
-        if(available_weight_sum <= 0.0)
-            break;
-
-
-        double rnd =
-            feedback_random_u01(
-                (std::uint64_t)Sp->P[star_idx].ID.get(),
-                (std::uint64_t)All.NumCurrentTiStep,
-                random_counter++,
-                RNG_STREAM_NEIGHBOR_SELECTION);
-
-        double target =
-            rnd * available_weight_sum;
-
-        double cumulative = 0.0;
-
-        int chosen_pos = -1;
-
-        for(int a = 0;
-            a < (int)available.size();
-            ++a)
-        {
-            int idx = available[a];
-
-            cumulative += weights[idx];
-
-            if(cumulative >= target)
-            {
-                chosen_pos = a;
-                break;
-            }
-        }
-
-        if(chosen_pos < 0)
-            chosen_pos =
-                (int)available.size() - 1;
-
-
-        int idx =
-            available[chosen_pos];
-
-        int j =
-            ngb_list[idx];
-
-
-        // Remove this candidate immediately:
-        // sampling is without replacement.
-        available.erase(
-            available.begin() + chosen_pos);
-
-        double u_old =
-            Sp->get_utherm_from_entropy(j);
-
-        if(u_old <= 0.0 || !std::isfinite(u_old))
-        {
-            FB_PRINT("WARNING: Particle %d has invalid u_old=%g\n",j, u_old);
-            continue;
-        }
-
-        // --------------------------------------------------------
-        // Per-particle target Δu, sized using THIS particle's
-        // actual mu (from its own Ne) rather than a fixed assumed
-        // ionization state.
-        //
-        // Previously delta_u_cgs was computed once, outside this
-        // loop, via c_v(mu_default(DELTA_T_TARGET)) — which always
-        // evaluated to the fully-ionized mu=0.62 since
-        // DELTA_T_TARGET=3e6 > 1.5e4. That systematically undersizes
-        // c_v for the mostly-neutral/partially-ionized ISM gas
-        // feedback actually targets (mu~1.22), producing a real
-        // temperature jump of ΔT_target * (1.22/0.62) ≈ 1.97x the
-        // intended value — matching the observed ~6e6 K post-heating
-        // temperatures against a 3e6 K target.
-        // --------------------------------------------------------
-
-        const double ne_before =
-            Sp->SphP[j].Ne;
-
-        double mu_j =
-            mu_from_ne(ne_before);
-
-        const double T_before =
-            ucode_to_TK(
-                u_old,
-                ne_before);
-
-        double delta_u_cgs_j =
-            c_v(mu_j) * DELTA_T_TARGET;
-
-        double delta_u_code_j =
-            delta_u_cgs_j /
-            (All.UnitVelocity_in_cm_per_s *
-             All.UnitVelocity_in_cm_per_s);
-
-        // --------------------------------------------------------
-        // Energy required to increase THIS particle's temperature
-        // by DELTA_T_TARGET.
-        //
-        // Use its actual current mass, including any metal ejecta
-        // just deposited above.
-        // --------------------------------------------------------
-
-        double gas_mass_g =
-            Sp->P[j].getMass() *
-            All.UnitMass_in_g;
-
-        double E_heat_erg =
-            gas_mass_g *
-            delta_u_cgs_j;
-
-        double E_heat_code =
-            E_heat_erg /
-            All.UnitEnergy_in_cgs;
-
-        if(E_heat_code <= 0.0 ||
-           !std::isfinite(E_heat_code))
-            continue;
-
-
-        bool heat_particle = false;
-
-
-        // --------------------------------------------------------
-        // Full heating packet available:
-        // heat with probability 1.
-        // --------------------------------------------------------
-
-        if(E_remaining_code >= E_heat_code)
-        {
-            heat_particle = true;
-
-            E_remaining_code -=
-                E_heat_code;
-        }
-
-        // --------------------------------------------------------
-        // Fractional final packet:
-        //
-        // P = E_remaining / E_heat.
-        //
-        // Regardless of whether the draw succeeds, this remainder
-        // is now statistically accounted for and MUST NOT later be
-        // placed into the reservoir.
-        // --------------------------------------------------------
-
-        else
-        {
-            double probability =
-                E_remaining_code /
-                E_heat_code;
-
-            probability =
-                fb_clamp(probability,
-                         0.0, 1.0);
-
-            double draw =
-                feedback_random_u01(
-                    (std::uint64_t)Sp->P[star_idx].ID.get(),
-                    (std::uint64_t)All.NumCurrentTiStep,
-                    random_counter++,
-                    RNG_STREAM_FRACTIONAL_PACKET);
-
-            if(draw < probability)
-                heat_particle = true;
-
-            // Statistically consumed either way.
-            E_remaining_code = 0.0;
-        }
-
-
-        if(!heat_particle)
-            continue;
-
-
-        // ========================================================
-        // 6. Apply exactly one DELTA_T_TARGET temperature jump,
-        //    using this particle's own delta_u_code_j.
-        // ========================================================
-
-        double u_new =
-            u_old +
-            delta_u_code_j;
-
-
-        Sp->set_entropy_from_utherm(
-            u_new, j);
-
-        set_thermodynamic_variables_safe(
-            Sp, j);
-
-
-        E_deposited_code +=
-            E_heat_code;
-
-        // Detailed diagnostic.
-        //
-        // Print both local array indices and persistent ParticleIDs.
-        // The local indices may be reused as particles migrate between MPI
-        // tasks, whereas starID/gasID identify the physical particles across
-        // feedback calls and snapshots.
-        //
-        // T_before uses the particle's pre-heating Ne. T_after uses the
-        // thermodynamic state after set_thermodynamic_variables_safe().
-        if(All.FeedbackDebugLevel >= 2)
-        {
-            const double T_after =
-                ucode_to_TK(
-                    Sp->get_utherm_from_entropy(j),
-                    Sp->SphP[j].Ne);
-
-            const unsigned long long star_id =
-                (unsigned long long)Sp->P[star_idx].ID.get();
-
-            const unsigned long long gas_id =
-                (unsigned long long)Sp->P[j].ID.get();
-
-            printf(
-                "[SN_STOCHASTIC|T=%d|a=%.8g|z=%.6f] "
-                "source=%s "
-                "star=%d gas=%d "
-                "starID=%llu gasID=%llu "
-                "Eheat=%.6e erg "
-                "DeltaT_target=%.6e K "
-                "mu=%.6f "
-                "Tbefore=%.6e K "
-                "Tafter=%.6e K\n",
-                All.ThisTask,
-                (double)All.Time,
-                1.0 / All.Time - 1.0,
-                from_reservoir ? "RESERVOIR" : "EVENT",
-                star_idx,
-                j,
-                star_id,
-                gas_id,
-                E_heat_erg,
-                DELTA_T_TARGET,
-                mu_j,
-                T_before,
-                T_after);
-        }
-    }
-
-
-    // ============================================================
-    // 7. Truly unspent energy.
-    //
-    // This should normally be zero. It is non-zero only if we ran
-    // out of viable gas neighbors before accounting for the event
-    // energy.
-    //
-    // THIS quantity may safely go into EnergyReservoir.
-    // ============================================================
-
-    if(E_remaining_code > 0.0)
-        E_unspent_code =
-            E_remaining_code;
-
-
-    return E_deposited_code;
+enum EventKind
+{
+  KIND_RESERVOIR = 0,  // retry of banked SNII energy; ordered before new SNII
+  KIND_SNII      = 1,
+  KIND_AGB       = 2
+};
+
+struct EventPosition
+{
+  MyIntPosType pos[3];
+  int slot;  // index in the owner's local event list
+};
+
+struct Candidate
+{
+  std::uint64_t id;
+  double r2, mass, u, ne;
+  int task, index, slot;
+};
+
+static inline bool closer(const Candidate &a, const Candidate &b) { return a.r2 < b.r2 || (a.r2 == b.r2 && a.id < b.id); }
+
+struct Kernel
+{
+  bool found = false;  // some gas exists; nearest is valid
+  double radius = 0;   // final search radius = 2h
+  cg_dist::NearestRecord nearest;
+  std::vector<Candidate> cand;  // sorted by (r2, id), at most MAX_KERNEL_NEIGHBORS
+};
+
+// Gas eligible as a feedback recipient.  Rebuilt for every feedback call.
+static cg_dist::LocalTree gas_tree;
+
+static void build_gas_tree(simparticles *Sp)
+{
+  gas_tree.build(Sp, 0, Sp->NumGas, [Sp](int j) {
+    return Sp->P[j].getType() == 0 && Sp->P[j].getMass() > 0 && Sp->SphP[j].Hsml > 0 && std::isfinite((double)Sp->SphP[j].Hsml);
+  });
 }
 
-// -------------------- Feedback Event Handling -------------------------------
-
-static bool apply_feedback_event(simparticles *Sp,ngbtree *Tree,domain<simparticles> *D,
-    int star_i,bool is_SNII,double E_code,double MZ_code,const ElementYields &elem)
+static double kernel_radius_cap(double initial_radius)
 {
-  std::vector<int>    ngb;
-  std::vector<double> dist;
-  double hsml = 0;
-  gather_neighbors(Sp, Tree, D, star_i, ngb, dist, hsml);
+  // Positions are comoving kpc/h; FEEDBACK_MAX_RADIUS_PKPC is physical.
+  const double physical_cap = All.ComovingIntegrationOn
+                                  ? FEEDBACK_MAX_RADIUS_PKPC * All.HubbleParam / std::max((double)All.Time, 1.0e-8)
+                                  : FEEDBACK_MAX_RADIUS_PKPC * All.HubbleParam;
+  // Never shrink a kernel that already exceeds the cap.
+  return std::max(initial_radius, std::min(FEEDBACK_MAX_RADIUS_FACTOR * initial_radius, physical_cap));
+}
 
-  if(ngb.empty())
-  {
-      // No gas is available to receive this event. Keep the entire event
-      // pending: do not debit metals, create dust, mark the event complete,
-      // or bank its full energy. Banking the energy while leaving the event
-      // pending would inject it twice when the event is retried later.
+// Collective: every task must call this, with its own (possibly empty) list.
+static std::vector<Kernel> find_kernels(simparticles *Sp, const std::vector<EventPosition> &mine, MPI_Comm comm)
+{
+  std::vector<int> owner;
+  const std::vector<EventPosition> all = cg_dist::allgather(mine, comm, &owner);
+  const size_t n_events                = all.size();
+  std::vector<Kernel> out(mine.size());
+  if(n_events == 0)
+    return out;
 
-      if(All.FeedbackDebugLevel >= 2)
-          printf("[FEEDBACK_NO_GAS|T=%d] Star %d: no gas neighbors; "
-                "retaining %.6e code mass and %.6e code energy in pending event\n",
-                All.ThisTask, star_i, MZ_code, E_code);
+  int ntask, this_task;
+  MPI_Comm_size(comm, &ntask);
+  MPI_Comm_rank(comm, &this_task);
 
-      return false;
-  }
+  // 1. Global nearest gas; its smoothing length sets the initial kernel.
+  std::vector<cg_dist::NearestRecord> nearest(n_events);
+  for(size_t e = 0; e < n_events; e++)
+    {
+      cg_dist::NearestRecord &rec = nearest[e];
+      rec.r2                      = DBL_MAX;
+      rec.id                      = UINT64_MAX;
+      rec.task = rec.index = -1;
+      for(double &x : rec.payload)
+        x = 0;
+      int j;
+      double r2;
+      if(gas_tree.nearest(Sp, all[e].pos, j, r2))
+        {
+          rec.r2         = r2;
+          rec.id         = (std::uint64_t)Sp->P[j].ID.get();
+          rec.task       = this_task;
+          rec.index      = j;
+          rec.payload[0] = Sp->SphP[j].Hsml;
+          rec.payload[1] = Sp->SphP[j].Density * All.cf_a3inv;  // physical code density
+        }
+    }
+  cg_dist::nearest_over_tasks(nearest, comm);
 
-  double kernel_weight_sum = 0.0;
-  for(size_t n = 0; n < ngb.size(); ++n) {
-    double w = Sp->P[ngb[n]].getMass()*cubic_spline_kernel(dist[n],hsml);
-    if(!std::isfinite(w) || w < 0) Terminate("Invalid feedback kernel weight");
-    kernel_weight_sum += w;
-  }
-  if(!std::isfinite(kernel_weight_sum) || kernel_weight_sum <= 0.0)
+  // 2. Enlarge under-populated kernels, counting gas over all tasks.
+  std::vector<double> radius(n_events, 0), max_radius(n_events, 0);
+  std::vector<char> growing(n_events, 0);
+  for(size_t e = 0; e < n_events; e++)
+    if(nearest[e].task >= 0)
+      {
+        radius[e]     = 2 * nearest[e].payload[0];
+        max_radius[e] = kernel_radius_cap(radius[e]);
+        growing[e]    = 1;
+      }
+  for(int iter = 0;; iter++)
+    {
+      std::vector<double> count(n_events, 0);
+      for(size_t e = 0; e < n_events; e++)
+        if(growing[e])
+          gas_tree.radius(Sp, all[e].pos, radius[e], [&](int, double) { count[e] += 1; });
+      cg_dist::sum_over_tasks(count, comm);
+      bool any = false;
+      for(size_t e = 0; e < n_events; e++)
+        {
+          if(!growing[e])
+            continue;
+          if(count[e] >= MIN_FEEDBACK_NEIGHBORS || radius[e] >= max_radius[e] || iter >= FEEDBACK_MAX_KERNEL_ITERS)
+            {
+              growing[e] = 0;
+              continue;
+            }
+          const double next = std::min(radius[e] * FEEDBACK_KERNEL_GROWTH, max_radius[e]);
+          if(!(next > radius[e]))
+            {
+              growing[e] = 0;
+              continue;
+            }
+          radius[e] = next;
+          any       = true;
+        }
+      if(!any)
+        break;
+    }
+
+  // 3. Send each task's nearest gas inside the final kernel to the owner.
+  //    The global nearest K are contained in the union of each task's K.
+  std::vector<std::vector<Candidate>> send(ntask);
+  std::vector<Candidate> local;
+  for(size_t e = 0; e < n_events; e++)
+    {
+      if(nearest[e].task < 0)
+        continue;
+      local.clear();
+      gas_tree.radius(Sp, all[e].pos, radius[e], [&](int j, double d2) {
+        Candidate c;
+        c.id    = (std::uint64_t)Sp->P[j].ID.get();
+        c.r2    = d2;
+        c.mass  = Sp->P[j].getMass();
+        c.u     = Sp->get_utherm_from_entropy(j);
+        c.ne    = Sp->SphP[j].Ne;
+        c.task  = this_task;
+        c.index = j;
+        c.slot  = all[e].slot;
+        local.push_back(c);
+      });
+      if(local.size() > (size_t)MAX_KERNEL_NEIGHBORS)
+        {
+          std::partial_sort(local.begin(), local.begin() + MAX_KERNEL_NEIGHBORS, local.end(), closer);
+          local.resize(MAX_KERNEL_NEIGHBORS);
+        }
+      send[owner[e]].insert(send[owner[e]].end(), local.begin(), local.end());
+    }
+  const std::vector<Candidate> got = cg_dist::exchange(send, comm);
+
+  size_t first = 0;
+  while(first < n_events && owner[first] < this_task)
+    first++;
+  for(size_t s = 0; s < mine.size(); s++)
+    {
+      out[s].nearest = nearest[first + s];
+      out[s].found   = nearest[first + s].task >= 0;
+      out[s].radius  = radius[first + s];
+    }
+  for(const Candidate &c : got)
+    {
+      if(c.slot < 0 || (size_t)c.slot >= out.size())
+        Terminate("feedback kernel candidate for unknown event slot %d", c.slot);
+      out[c.slot].cand.push_back(c);
+    }
+  for(Kernel &k : out)
+    {
+      std::sort(k.cand.begin(), k.cand.end(), closer);
+      if(k.cand.size() > (size_t)MAX_KERNEL_NEIGHBORS)
+        k.cand.resize(MAX_KERNEL_NEIGHBORS);
+    }
+
+  // Self-check on the first batches: below the cap the owner must hold every
+  // gas particle inside the kernel, and the nearest gas must come first.
+  static int verify_remaining = 20;
+  if(verify_remaining > 0)
+    {
+      verify_remaining--;
+      std::vector<double> count(n_events, 0);
+      for(size_t e = 0; e < n_events; e++)
+        if(nearest[e].task >= 0)
+          gas_tree.radius(Sp, all[e].pos, radius[e], [&](int, double) { count[e] += 1; });
+      cg_dist::sum_over_tasks(count, comm);
+      long long bad[3] = {0, 0, 0};
+      for(size_t s = 0; s < mine.size(); s++)
+        {
+          const Kernel &k = out[s];
+          if(!k.found)
+            continue;
+          const double c = count[first + s];
+          if(c <= MAX_KERNEL_NEIGHBORS && (double)k.cand.size() != c)
+            bad[0]++;
+          if(c > MAX_KERNEL_NEIGHBORS && k.cand.size() != (size_t)MAX_KERNEL_NEIGHBORS)
+            bad[1]++;
+          if(k.nearest.r2 <= k.radius * k.radius && (k.cand.empty() || k.cand[0].id != k.nearest.id))
+            bad[2]++;
+        }
+      long long n_local = mine.size(), totals[4], local4[4] = {bad[0], bad[1], bad[2], n_local};
+      MPI_Allreduce(local4, totals, 4, MPI_LONG_LONG, MPI_SUM, comm);
+      if(this_task == 0)
+        printf("[FB_KERNEL_VERIFY] %lld events on %d tasks: %lld incomplete kernels, %lld wrong caps, %lld nearest-gas "
+               "mismatches\n",
+               totals[3], ntask, totals[0], totals[1], totals[2]);
+    }
+  return out;
+}
+
+// Local index of gas particle `id` at `index`, checked against the ID it
+// had when the candidate was collected.
+static inline int checked_gas_index(simparticles *Sp, int index, std::uint64_t id)
+{
+  if(index < 0 || index >= Sp->NumGas || Sp->P[index].getType() != 0 || (std::uint64_t)Sp->P[index].ID.get() != id)
+    Terminate("feedback deposit for gas ID %llu no longer at index %d", (unsigned long long)id, index);
+  return index;
+}
+
+// ---------------------------- SNII and reservoir ----------------------------
+
+struct ThermalEvent
+{
+  int star;  // local index
+  int kind;  // KIND_RESERVOIR or KIND_SNII
+  double E_code, MZ_code;
+  ElementYields elem;
+};
+
+struct GasDeposit
+{
+  std::uint64_t star_id, gas_id;
+  int kind, index;
+  int heat;  // receives one DELTA_T_TARGET jump
+  double dMZ, dElem[7];  // C N O Ne Mg Si Fe
+};
+
+/*
+ * Owner-side decisions for one event, unchanged from the former serial code:
+ *
+ * Chemistry: metals and elements are spread over the whole kernel by
+ * kernel-weighted mass, whether or not a particle is heated.
+ *
+ * Heat: neighbours are sampled without replacement by kernel weight, in
+ * (distance, ID) order, with the counter-based RNG keyed on the star ID and
+ * step.  Each chosen particle receives exactly DELTA_T_TARGET, sized with its
+ * own mu (from Ne) and its post-enrichment mass.  Full packets are deposited
+ * deterministically, the final fractional one with a Bernoulli draw that
+ * consumes it either way.  Only energy left after running out of neighbours
+ * is returned in E_unspent (for the reservoir).
+ *
+ * Returns false (event stays pending) if the kernel holds no weight.
+ */
+static bool plan_thermal_event(simparticles *Sp, const Kernel &k, const ThermalEvent &ev, std::vector<std::vector<GasDeposit>> &send,
+                               double &E_used, double &E_unspent)
+{
+  E_used = E_unspent = 0;
+  const int n        = (int)k.cand.size();
+  if(!k.found || n == 0)
     return false;
 
-  if(is_SNII)
-      diag_add_sn(E_code * All.UnitEnergy_in_cgs);
-  else
-      diag_add_agb(E_code * All.UnitEnergy_in_cgs);
+  const double h = 0.5 * k.radius;
+  std::vector<double> w(n);
+  double w_sum = 0;
+  for(int i = 0; i < n; i++)
+    {
+      w[i] = k.cand[i].mass * cubic_spline_kernel(std::sqrt(k.cand[i].r2), h);
+      if(!std::isfinite(w[i]) || w[i] < 0)
+        Terminate("Invalid feedback kernel weight");
+      w_sum += w[i];
+    }
+  if(!std::isfinite(w_sum) || !(w_sum > 0))
+    return false;
 
-  double E_unspent_code = 0.0;
+  const std::uint64_t star_id = (std::uint64_t)Sp->P[ev.star].ID.get();
+  std::vector<GasDeposit> dep(n);
+  for(int i = 0; i < n; i++)
+    {
+      dep[i]         = GasDeposit{};
+      dep[i].star_id = star_id;
+      dep[i].gas_id  = k.cand[i].id;
+      dep[i].kind    = ev.kind;
+      dep[i].index   = k.cand[i].index;
+    }
 
-  double E_used_code =
-      deposit_energy_stochastic(
-          Sp,
-          ngb,
-          dist,
-          hsml,
-          star_i,
-          E_code,
-          MZ_code,
-          elem,
-          E_unspent_code,
-          /*from_reservoir=*/false);
+#ifdef METALS
+  if(ev.MZ_code > 0)
+    {
+      const double elem[7] = {ev.elem.C, ev.elem.N, ev.elem.O, ev.elem.Ne, ev.elem.Mg, ev.elem.Si, ev.elem.Fe};
+      for(int i = 0; i < n; i++)
+        {
+          const double f = w[i] / w_sum;
+          dep[i].dMZ     = ev.MZ_code * f;
+          for(int x = 0; x < 7; x++)
+            dep[i].dElem[x] = elem[x] * f;
+        }
+    }
+#endif
 
-  diag_add_Edep(
-      E_used_code *
-      All.UnitEnergy_in_cgs);
+  if(ev.E_code > 0)
+    {
+      double E_remaining = ev.E_code;
+      std::vector<int> available(n);
+      for(int i = 0; i < n; i++)
+        available[i] = i;
+      unsigned long long counter = 0;
 
-  if(E_unspent_code > 0.0)
-  {
-      Sp->P[star_i].EnergyReservoir +=
-          E_unspent_code;
+      while(E_remaining > 0 && !available.empty())
+        {
+          double available_sum = 0;
+          for(int i : available)
+            available_sum += w[i];
+          if(available_sum <= 0)
+            break;
 
-      diag_add_EtoRes(
-          E_unspent_code *
-          All.UnitEnergy_in_cgs);
-  }
+          const double target =
+              feedback_random_u01(star_id, (std::uint64_t)All.NumCurrentTiStep, counter++, RNG_STREAM_NEIGHBOR_SELECTION) * available_sum;
+          double cumulative = 0;
+          int chosen        = (int)available.size() - 1;
+          for(int a = 0; a < (int)available.size(); a++)
+            {
+              cumulative += w[available[a]];
+              if(cumulative >= target)
+                {
+                  chosen = a;
+                  break;
+                }
+            }
+          const int i = available[chosen];
+          available.erase(available.begin() + chosen);
 
+          const Candidate &c = k.cand[i];
+          if(c.u <= 0 || !std::isfinite(c.u))
+            {
+              FB_PRINT("WARNING: gas ID %llu has invalid u_old=%g\n", (unsigned long long)c.id, c.u);
+              continue;
+            }
+          const double E_heat = (c.mass + dep[i].dMZ) * fb_code_mass_in_g() * c_v(mu_from_ne(c.ne)) * DELTA_T_TARGET /
+                                fb_code_energy_in_erg();
+          if(E_heat <= 0 || !std::isfinite(E_heat))
+            continue;
+
+          bool heat = false;
+          if(E_remaining >= E_heat)
+            {
+              heat = true;
+              E_remaining -= E_heat;
+            }
+          else
+            {
+              const double probability = fb_clamp(E_remaining / E_heat, 0.0, 1.0);
+              const double draw =
+                  feedback_random_u01(star_id, (std::uint64_t)All.NumCurrentTiStep, counter++, RNG_STREAM_FRACTIONAL_PACKET);
+              heat        = draw < probability;
+              E_remaining = 0;  // statistically consumed either way
+            }
+          if(heat)
+            {
+              dep[i].heat = 1;
+              E_used += E_heat;
+            }
+        }
+      E_unspent = std::max(0.0, E_remaining);
+    }
+
+  for(int i = 0; i < n; i++)
+    if(dep[i].dMZ > 0 || dep[i].heat)
+      send[k.cand[i].task].push_back(dep[i]);
   return true;
-
 }
 
-/*
-If we have energy that couldn't previously be processed (i.e. not enough neighbors)
-Try the normal stochastic algorithm again.
-*/
-static void try_release_reservoir(
-    simparticles *Sp,
-    ngbtree *Tree,
-    domain<simparticles> *D,
-    int star_i)
+static void apply_gas_deposit(simparticles *Sp, const GasDeposit &d)
 {
-    double E_code =
-        Sp->P[star_i].EnergyReservoir;
+  const int j = checked_gas_index(Sp, d.index, d.gas_id);
 
-    if(E_code <= 0.0)
-        return;
+#ifdef METALS
+  if(d.dMZ > 0)
+    {
+      const double old_mass = Sp->P[j].getMass();
+      const double new_mass = old_mass + d.dMZ;
+      MyFloat *fraction[7]  = {&Sp->SphP[j].GasCarbonMassFraction,    &Sp->SphP[j].GasNitrogenMassFraction,
+                               &Sp->SphP[j].GasOxygenMassFraction,    &Sp->SphP[j].GasNeonMassFraction,
+                               &Sp->SphP[j].GasMagnesiumMassFraction, &Sp->SphP[j].GasSiliconMassFraction,
+                               &Sp->SphP[j].GasIronMassFraction};
+      for(int x = 0; x < 7; x++)
+        *fraction[x] = (old_mass * *fraction[x] + d.dElem[x]) / new_mass;
+      Sp->P[j].setMass(new_mass);
+      Sp->SphP[j].MassMetallicity += d.dMZ;
+      Sp->SphP[j].Metallicity = Sp->SphP[j].MassMetallicity / new_mass;
+      Sp->P[j].Metallicity    = Sp->SphP[j].Metallicity;
+    }
+#endif
 
-    std::vector<int> ngb;
-    std::vector<double> dist;
-    double hsml = 0.0;
+  if(!d.heat)
+    return;
+  const double u_old = Sp->get_utherm_from_entropy(j);
+  if(u_old <= 0 || !std::isfinite(u_old))
+    {
+      FB_PRINT("WARNING: Particle %d has invalid u_old=%g\n", j, u_old);
+      return;
+    }
+  const double ne_before = Sp->SphP[j].Ne;
+  const double mu        = mu_from_ne(ne_before);
+  const double du = c_v(mu) * DELTA_T_TARGET / (All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s);
+  Sp->set_entropy_from_utherm(u_old + du, j);
+  set_thermodynamic_variables_safe(Sp, j);
 
-    gather_neighbors(
-        Sp, Tree, D,
-        star_i,
-        ngb, dist, hsml);
-
-    if(ngb.empty())
-        return;
-
-    ElementYields no_elements;
-
-    double E_unspent_code = 0.0;
-
-    double E_used_code =
-        deposit_energy_stochastic(
-            Sp,
-            ngb,
-            dist,
-            hsml,
-            star_i,
-            E_code,
-            /*MZ_code=*/0.0,
-            no_elements,
-            E_unspent_code,
-            /*from_reservoir=*/true);
-
-    Sp->P[star_i].EnergyReservoir =
-        E_unspent_code;
-
-    diag_add_EfromRes(
-        E_used_code *
-        All.UnitEnergy_in_cgs);
-
-    diag_add_Edep(
-        E_used_code *
-        All.UnitEnergy_in_cgs);
+  if(All.FeedbackDebugLevel >= 2)
+    printf("[SN_STOCHASTIC|T=%d|a=%.8g|z=%.6f] source=%s gas=%d starID=%llu gasID=%llu "
+           "DeltaT_target=%.6e K mu=%.6f Tbefore=%.6e K Tafter=%.6e K\n",
+           All.ThisTask, (double)All.Time, 1.0 / All.Time - 1.0, d.kind == KIND_RESERVOIR ? "RESERVOIR" : "EVENT", j,
+           (unsigned long long)d.star_id, (unsigned long long)d.gas_id, DELTA_T_TARGET, mu, ucode_to_TK(u_old, ne_before),
+           ucode_to_TK(Sp->get_utherm_from_entropy(j), Sp->SphP[j].Ne));
 }
 
+// Collective.  Deposits a batch of SNII/reservoir events; ok[i] reports
+// whether event i found gas (otherwise it stays pending and nothing changed),
+// and kernels[i] the kernel it used.
+static void deposit_thermal_events(simparticles *Sp, const std::vector<ThermalEvent> &events, std::vector<char> &ok,
+                                   std::vector<Kernel> &kernels, MPI_Comm comm)
+{
+  int ntask;
+  MPI_Comm_size(comm, &ntask);
+
+  std::vector<EventPosition> positions(events.size());
+  for(size_t i = 0; i < events.size(); i++)
+    {
+      for(int k = 0; k < 3; k++)
+        positions[i].pos[k] = Sp->P[events[i].star].IntPos[k];
+      positions[i].slot = (int)i;
+    }
+  kernels = find_kernels(Sp, positions, comm);
+
+  ok.assign(events.size(), 0);
+  std::vector<std::vector<GasDeposit>> send(ntask);
+  for(size_t i = 0; i < events.size(); i++)
+    {
+      const ThermalEvent &ev = events[i];
+      double E_used, E_unspent;
+      ok[i] = plan_thermal_event(Sp, kernels[i], ev, send, E_used, E_unspent);
+      if(!ok[i])
+        {
+          if(ev.kind == KIND_SNII && All.FeedbackDebugLevel >= 2)
+            printf("[FEEDBACK_NO_GAS|T=%d] Star %d: no gas neighbors; retaining %.6e code mass and %.6e code energy in pending event\n",
+                   All.ThisTask, ev.star, ev.MZ_code, ev.E_code);
+          continue;  // reservoir stays banked; SNII tranche stays pending
+        }
+      diag_add_Edep(E_used * fb_code_energy_in_erg());
+      if(ev.kind == KIND_RESERVOIR)
+        {
+          Sp->P[ev.star].EnergyReservoir = E_unspent;
+          diag_add_EfromRes(E_used * fb_code_energy_in_erg());
+        }
+      else
+        {
+          diag_add_sn(ev.E_code * fb_code_energy_in_erg());
+          if(E_unspent > 0)
+            {
+              Sp->P[ev.star].EnergyReservoir += E_unspent;
+              diag_add_EtoRes(E_unspent * fb_code_energy_in_erg());
+            }
+        }
+    }
+
+  std::vector<GasDeposit> got = cg_dist::exchange(send, comm);
+  std::stable_sort(got.begin(), got.end(), [](const GasDeposit &a, const GasDeposit &b) {
+    return a.star_id < b.star_id || (a.star_id == b.star_id && a.kind < b.kind);
+  });
+  for(const GasDeposit &d : got)
+    apply_gas_deposit(Sp, d);
+}
+}  // namespace cg_fb_dist
 
 // ---------------------------- Public API ------------------------------------
 
@@ -2113,8 +1675,8 @@ void agb_probe_flush(simparticles *Sp,MPI_Comm comm) {
     "dm_times_u_at_deposit_erg","dm_times_u_after_density_erg",
     "dm_times_u_after_cooling_erg","followed_gas_update_events",
     "dropped_followup_return_Msun","invalid_followup_return_Msun"};
-  const double mf=All.UnitMass_in_g/SOLAR_MASS/All.HubbleParam;
-  const double ef=All.UnitEnergy_in_cgs/All.HubbleParam;
+  const double mf=fb_code_mass_in_g()/SOLAR_MASS;
+  const double ef=fb_code_energy_in_erg();
   if(!header) {
     fprintf(fp,"a,mode");
     for(int i=0;i<metric_count;++i)fprintf(fp,",%s",names[i]);
@@ -2143,251 +1705,6 @@ void agb_probe_flush(simparticles *Sp,MPI_Comm comm) {
 #if !defined(PERIODIC) || defined(LONG_X_BITS) || defined(LONG_Y_BITS) || defined(LONG_Z_BITS) || defined(GRAVITY_TALLBOX) || defined(ONEDIMS) || defined(TWODIMS) || defined(POSITIONS_IN_128BIT)
 #error "Spatial AGB experiment supports only the frozen 3D cubic periodic configuration"
 #endif
-namespace cg_agb_transport {
-using Geometry=cg_rc1_geometry::Tree<MyIntPosType>;
-static cg_rc1_gas_index::Index *active_index=nullptr;
-static Geometry *active_geometry=nullptr;
-static int geometry_numgas=-1;
-static void check_entry(simparticles*Sp,const Geometry::Entry&e) {
-  const int j=e.slot;
-  if(Sp->NumGas!=geometry_numgas || j<0 || j>=Sp->NumGas || Sp->P[j].getType()!=0 ||
-      (std::uint64_t)Sp->P[j].ID.get()!=e.id)
-    Terminate("AGB geometry membership changed inside a synchronized window");
-  for(int k=0;k<3;++k)if(Sp->P[j].IntPos[k]!=e.x[k])
-    Terminate("AGB gas position changed inside a synchronized window");
-}
-struct IndexWindow {
-  cg_rc1_gas_index::Index index;
-  Geometry geometry;
-  explicit IndexWindow(simparticles *Sp) {
-    if(active_index || active_geometry)Terminate("Nested AGB index window");
-    index.build(Sp->NumGas,
-      [Sp](int j){return (std::uint64_t)Sp->P[j].ID.get();},
-      [Sp](int j){return Sp->P[j].getType();});
-    active_index=&index;
-    {
-      geometry_numgas=Sp->NumGas;
-      std::vector<Geometry::Entry> entries;
-      for(int j=0;j<Sp->NumGas;++j)if(Sp->P[j].getType()==0) {
-        Geometry::Entry e;e.slot=j;e.id=(std::uint64_t)Sp->P[j].ID.get();
-        for(int k=0;k<3;++k)e.x[k]=Sp->P[j].IntPos[k];
-        entries.push_back(e);
-      }
-      geometry.build(std::move(entries));active_geometry=&geometry;
-    }
-  }
-  void validate(simparticles*Sp) {
-    if(active_geometry){
-      if(Sp->NumGas!=geometry_numgas)Terminate("AGB gas count changed inside geometry window");
-      geometry.validate([Sp](const Geometry::Entry&e){check_entry(Sp,e);});
-    }
-  }
-  ~IndexWindow(){active_index=nullptr;active_geometry=nullptr;geometry_numgas=-1;}
-};
-static MPI_Comm comm;
-static int owner=-1;
-static int reference_local_index(simparticles *Sp,std::uint64_t id) {
-  for(int j=0;j<Sp->NumGas;++j)
-    if(Sp->P[j].getType()==0 && (std::uint64_t)Sp->P[j].ID.get()==id)return j;
-  return -1;
-}
-static int local_index(simparticles *Sp,std::uint64_t id) {
-  if(!active_index)return reference_local_index(Sp,id);
-  return active_index->find(id,Sp->NumGas,
-    [Sp](int j){return (std::uint64_t)Sp->P[j].ID.get();},
-    [Sp](int j){return Sp->P[j].getType();});
-}
-static std::vector<cg_agb_distributed::Candidate> scan(simparticles*Sp,const MyIntPosType*position,int rank) {
-  std::vector<cg_agb_distributed::Candidate> local;
-  for(int j=0;j<Sp->NumGas;++j)if(Sp->P[j].getType()==0 && Sp->P[j].getMass()>0) {
-    double d[3];Sp->nearest_image_intpos_to_pos(Sp->P[j].IntPos,position,d);
-    local.push_back({(std::uint64_t)Sp->P[j].ID.get(),d[0]*d[0]+d[1]*d[1]+d[2]*d[2],Sp->P[j].getMass(),rank});
-  }
-  return local;
-}
-static std::vector<cg_agb_distributed::Candidate> query(simparticles*Sp,const MyIntPosType*position,int rank,bool nearest,double radius2) {
-  if(Sp->NumGas!=geometry_numgas)Terminate("AGB gas count changed before geometry query");
-  auto metric=[Sp](const MyIntPosType*a,const MyIntPosType*b){
-    double d[3];Sp->nearest_image_intpos_to_pos(a,b,d);
-    return d[0]*d[0]+d[1]*d[1]+d[2]*d[2];
-  };
-  auto eligible=[Sp](const Geometry::Entry&e){check_entry(Sp,e);return Sp->P[e.slot].getMass()>0;};
-  std::vector<cg_agb_distributed::Candidate> local;
-  auto append=[&](const Geometry::Entry&e,double d2){
-    if(eligible(e))local.push_back({e.id,d2,Sp->P[e.slot].getMass(),rank});
-  };
-  if(nearest){Geometry::Entry best;double d2;
-    if(active_geometry->nearest(position,metric,eligible,best,d2))append(best,d2);
-  }else active_geometry->radius(position,radius2,metric,append);
-  return local;
-}
-static bool gather(simparticles *Sp,const MyIntPosType *position,
-                   std::vector<int> &ngb,std::vector<double> &distance,
-                   std::vector<double> &weight,double &h,double &sum) {
-  int rank;MPI_Comm_rank(comm,&rank);
-  std::vector<cg_agb_distributed::Candidate> local;
-  if(!active_geometry)local=scan(Sp,position,rank);
-  std::vector<cg_agb_distributed::Candidate> nearest_local;
-  if(active_geometry)nearest_local=query(Sp,position,rank,true,0);
-  std::vector<cg_agb_distributed::Candidate> nearest;
-  {nearest=active_geometry?cg_agb_distributed::select(std::move(nearest_local),1,comm):cg_agb_distributed::select(local,1,comm);}
-  if(nearest.empty())return false;
-  h=0;
-  if(rank==nearest[0].owner) {
-    int j=local_index(Sp,nearest[0].id);
-    if(j<0)Terminate("Distributed AGB nearest gas is missing");
-    h=Sp->SphP[j].Hsml;
-  }
-  MPI_Bcast(&h,1,MPI_DOUBLE,nearest[0].owner,comm);
-  if(!std::isfinite(h) || h<=0)Terminate("Invalid distributed AGB kernel scale");
-  double radius=2*h;
-  const double physical_cap=All.ComovingIntegrationOn?FEEDBACK_MAX_RADIUS_PKPC*All.HubbleParam/All.Time:FEEDBACK_MAX_RADIUS_PKPC*All.HubbleParam;
-  double cap=std::max(radius,std::min(FEEDBACK_MAX_RADIUS_FACTOR*radius,physical_cap));
-  std::vector<cg_agb_distributed::Candidate> selected;
-  for(int iter=0;;++iter) {
-    std::vector<cg_agb_distributed::Candidate> inside;
-    if(active_geometry)inside=query(Sp,position,rank,false,radius*radius);
-    else for(auto &p:local)if(p.r2<=radius*radius)inside.push_back(p);
-    {selected=cg_agb_distributed::select(inside,MAX_KERNEL_NEIGHBORS,comm);}
-    if(selected.size()>=(size_t)MIN_FEEDBACK_NEIGHBORS || radius>=cap || iter>=FEEDBACK_MAX_KERNEL_ITERS)break;
-    double next=std::min(radius*FEEDBACK_KERNEL_GROWTH,cap);
-    if(!(next>radius))break;
-    radius=next;
-  }
-  h=.5*radius;sum=0;
-  for(auto &p:selected) {
-    const double w=p.mass*cubic_spline_kernel(std::sqrt(p.r2),h);
-    if(!std::isfinite(w) || w<0)Terminate("Invalid distributed AGB weight");
-    sum+=w;
-    if(p.owner==rank && w>0) {
-      int j=local_index(Sp,p.id);if(j<0)Terminate("Distributed AGB recipient is missing");
-      ngb.push_back(j);distance.push_back(std::sqrt(p.r2));weight.push_back(w);
-    }
-  }
-  return std::isfinite(sum) && sum>0;
-}
-}
-
-static bool deposit_agb_gas(simparticles *Sp, ngbtree *,domain<simparticles> *,int star,
-                            double gas_mass,double gas_metals,const ElementYields &input_elem)
-{
-  int rank;MPI_Comm_rank(cg_agb_transport::comm,&rank);
-  if(cg_agb_transport::owner<0)Terminate("AGB deposit outside collective event schedule");
-  double wire[13]={};MyIntPosType position[3]={};
-  if(rank==cg_agb_transport::owner) {
-    if(star<0 || star>=Sp->NumPart || Sp->P[star].getType()!=4)Terminate("Invalid distributed AGB donor");
-    wire[0]=gas_mass;wire[1]=gas_metals;wire[2]=Sp->P[star].getMass();
-    for(int k=0;k<3;++k){wire[3+k]=Sp->P[star].Vel[k];position[k]=Sp->P[star].IntPos[k];}
-    wire[6]=input_elem.C;wire[7]=input_elem.N;wire[8]=input_elem.O;wire[9]=input_elem.Ne;
-    wire[10]=input_elem.Mg;wire[11]=input_elem.Si;wire[12]=input_elem.Fe;
-  }
-  MPI_Bcast(wire,13,MPI_DOUBLE,cg_agb_transport::owner,cg_agb_transport::comm);
-  MPI_Bcast(position,sizeof(position),MPI_BYTE,cg_agb_transport::owner,cg_agb_transport::comm);
-  gas_mass=wire[0];gas_metals=wire[1];const double donor_mass=wire[2];
-  ElementYields elem;elem.C=wire[6];elem.N=wire[7];elem.O=wire[8];elem.Ne=wire[9];
-  elem.Mg=wire[10];elem.Si=wire[11];elem.Fe=wire[12];
-  if(gas_mass==0)return true;
-  std::vector<int> ngb;std::vector<double> distances,w;double hsml=0,sum=0;
-  if(!cg_agb_transport::gather(Sp,position,ngb,distances,w,hsml,sum))return false;
-  if(!std::isfinite(gas_mass) || !std::isfinite(gas_metals) ||
-     gas_metals < 0 || gas_mass < gas_metals ||
-     donor_mass <= gas_mass)
-    Terminate("Invalid AGB gas/mass budget");
-  double ejecta_v[3]={wire[3],wire[4],wire[5]};
-  // Cold unresolved AGB ejecta: configured minimum specific thermal energy.
-  // No SN-like thermal energy is added. Relative bulk kinetic energy is mixed.
-  const double ejecta_u = All.MinEgySpec;
-  const double vfac = All.ComovingIntegrationOn ? All.cf_a2inv : 1.0;
-  std::vector<agb_feedback::MixedGas> mixed(ngb.size());
-  // Preflight all recipients before modifying any of them.
-  for(size_t n=0;n<ngb.size();++n) {
-    if(w[n] == 0) continue;
-    const int j=ngb[n];
-    if(!std::isfinite(Sp->SphP[j].Density) || Sp->SphP[j].Density <= 0)
-      Terminate("Invalid density before AGB mass deposition");
-    const double old_mass=Sp->P[j].getMass();
-    if(!std::isfinite(Sp->SphP[j].MassMetallicity) ||
-       Sp->SphP[j].MassMetallicity < 0 || Sp->SphP[j].MassMetallicity > old_mass*(1+1e-6))
-      Terminate("Invalid gas metals before AGB deposition");
-    const double fractions[] = {Sp->SphP[j].GasCarbonMassFraction,
-      Sp->SphP[j].GasNitrogenMassFraction, Sp->SphP[j].GasOxygenMassFraction,
-      Sp->SphP[j].GasNeonMassFraction, Sp->SphP[j].GasMagnesiumMassFraction,
-      Sp->SphP[j].GasSiliconMassFraction, Sp->SphP[j].GasIronMassFraction};
-    for(double x : fractions)
-      if(!std::isfinite(x) || x < 0 || x > 1)
-        Terminate("Invalid gas elemental fraction before AGB deposition");
-    double v[3],vp[3];
-    for(int k=0;k<3;++k) {v[k]=Sp->P[j].Vel[k];vp[k]=Sp->SphP[j].VelPred[k];}
-    mixed[n] = agb_feedback::mix_gas(Sp->P[j].getMass(), gas_mass*w[n]/sum,
-        agb_current_predicted_utherm(Sp,j), ejecta_u, v, vp, ejecta_v, vfac);
-    const double candidate_prediction=mixed[n].u*GAMMA_MINUS1/
-        pow(Sp->SphP[j].Density*All.cf_a3inv,GAMMA_MINUS1);
-    // Reproduce storage rounding before checking the base-state impulse.
-    const decltype(Sp->SphP[j].EntropyPred) stored_prediction=candidate_prediction;
-    const double candidate_base=(double)Sp->SphP[j].Entropy+
-        ((double)stored_prediction-(double)Sp->SphP[j].EntropyPred);
-    if(!std::isfinite(candidate_prediction) || candidate_prediction<=0 ||
-       !std::isfinite(candidate_base) || candidate_base<=0)
-      Terminate("Invalid time-centered AGB entropy preflight");
-  }
-  // A fatal preflight on any owner aborts the communicator before commit.
-  MPI_Barrier(cg_agb_transport::comm);
-  if(rank==cg_agb_transport::owner) {
-    cg_agb_probe::sums[cg_agb_probe::transactions]+=1;
-    cg_agb_probe::sums[cg_agb_probe::metals]+=gas_metals;
-  }
-  double transferred_momentum[3] = {0,0,0};
-  for(size_t n=0;n<ngb.size();++n) {
-    if(w[n] == 0) continue;
-    const int j=ngb[n];
-    const double f=w[n]/sum, old=Sp->P[j].getMass(), mass=mixed[n].mass;
-    cg_agb_probe::record(Sp,j,gas_mass*f,distances[n],
-        agb_current_predicted_utherm(Sp,j),mixed[n],ejecta_v);
-#define AGB_MIX_ELEMENT(member, source) \
-    Sp->SphP[j].member = (old*Sp->SphP[j].member + f*elem.source)/mass
-    AGB_MIX_ELEMENT(GasCarbonMassFraction,C);
-    AGB_MIX_ELEMENT(GasNitrogenMassFraction,N);
-    AGB_MIX_ELEMENT(GasOxygenMassFraction,O);
-    AGB_MIX_ELEMENT(GasNeonMassFraction,Ne);
-    AGB_MIX_ELEMENT(GasMagnesiumMassFraction,Mg);
-    AGB_MIX_ELEMENT(GasSiliconMassFraction,Si);
-    AGB_MIX_ELEMENT(GasIronMassFraction,Fe);
-#undef AGB_MIX_ELEMENT
-    Sp->SphP[j].MassMetallicity += f*gas_metals;
-    Sp->SphP[j].Metallicity = Sp->SphP[j].MassMetallicity/mass;
-    Sp->P[j].Metallicity = Sp->SphP[j].Metallicity;
-    Sp->P[j].setMass(mass);
-    for(int k=0;k<3;++k) {
-      const double old_momentum = old*Sp->SphP[j].VelPred[k];
-      Sp->P[j].Vel[k]=mixed[n].velocity[k];
-      Sp->SphP[j].VelPred[k]=mixed[n].predicted_velocity[k];
-      // Debit the donor using the realized current-prediction momentum.
-      // Stored midpoint momenta belong to different clocks on inactive gas.
-      transferred_momentum[k] += mass*Sp->SphP[j].VelPred[k]-old_momentum;
-    }
-    // Apply the current-time impulse to BOTH entropy time levels; preserve
-    // their drift/kick offset instead of resetting an inactive prediction.
-    const double base_before=Sp->SphP[j].Entropy;
-    const double prediction_before=Sp->SphP[j].EntropyPred;
-    Sp->set_entropy_from_utherm(mixed[n].u,j);
-    const double prediction_after=Sp->SphP[j].EntropyPred;
-    Sp->SphP[j].Entropy=base_before+(prediction_after-prediction_before);
-    if(!std::isfinite((double)Sp->SphP[j].Entropy) || Sp->SphP[j].Entropy<=0 ||
-       !std::isfinite(prediction_after) || prediction_after<=0)
-      Terminate("Invalid time-centered AGB entropy commit");
-    set_thermodynamic_variables_safe(Sp,j);
-  }
-  double global_momentum[3];
-  MPI_Allreduce(transferred_momentum,global_momentum,3,MPI_DOUBLE,MPI_SUM,cg_agb_transport::comm);
-  if(rank==cg_agb_transport::owner) {
-    const double new_star_mass=donor_mass-gas_mass;
-    Sp->P[star].setMass(new_star_mass);
-    const double stored_mass=Sp->P[star].getMass();
-    for(int k=0;k<3;++k)Sp->P[star].Vel[k]=(donor_mass*ejecta_v[k]-global_momentum[k])/stored_mass;
-  }
-  return true;
-}
-
 // Conservative reference policy: cumulative AGB transactions occur only in
 // the end-of-step window after every occupied gravity and hydro bin has closed.
 // No inactive stellar predictor or force-history reconstruction is assumed.
@@ -2430,163 +1747,412 @@ void agb_end_closed_feedback_window(void) {
   cg_agb_sync::open=false;
 }
 
-static void apply_age_dependent_agb(simparticles *Sp, ngbtree *Tree,
-                                     domain<simparticles> *D, int p, double age)
+// ------------------------------ AGB (batched) -------------------------------
+//
+// All AGB transactions due in a closed feedback window are processed as one
+// batch with the distributed kernels above, instead of one event at a time
+// with several all-task collectives each.  Recipients, weights and the mixing
+// are those of the former serial reference; events in the batch see the gas
+// state from before the batch, and each gas owner applies its deposits in
+// star-ID order (the order the serial scheduler used).
+
+namespace cg_fb_dist
 {
-  auto &star = Sp->P[p];
-  const double previous=star.AGBLastProcessedAgeMyr;
-  if(!std::isfinite(age) || age < 0 || !std::isfinite(previous) ||
-     previous < 0 || previous > age+1e-6 || (star.FeedbackFlag & 2))
-    Terminate("Invalid/legacy age-dependent AGB state for star %lld",(long long)star.ID.get());
-  if(age-previous < All.AGBFeedbackIntervalMyr && All.Time < All.TimeMax) return;
-  if(age <= previous) return;
-  const double Z=star.AGBBirthMetallicity;
-  const double birth=star.StellarBirthMass;
+struct AGBPlan
+{
+  int star;
+  double age, previous;
+  double gas, metals, returned, packet;
+  int max_packets;
+  bool complete;
+  ElementYields elem;
+  StellarDustPartition dust;
+  double donor_mass, ejecta_v[3];
+};
+
+struct AGBDeposit
+{
+  std::uint64_t star_id, gas_id;
+  int index, slot;
+  double dm, f, metals, distance;
+  double elem[7];  // C N O Ne Mg Si Fe totals for the event
+  double ejecta_v[3];
+};
+
+struct MomentumReply
+{
+  int slot;
+  double p[3];
+};
+
+// Owner-side bookkeeping before the deposit.  Returns false if the star is
+// not due.  Nothing in the star is modified here.
+static bool plan_agb(simparticles *Sp, int p, double age, AGBPlan &plan)
+{
+  auto &star            = Sp->P[p];
+  const double previous = star.AGBLastProcessedAgeMyr;
+  if(!std::isfinite(age) || age < 0 || !std::isfinite(previous) || previous < 0 || previous > age + 1e-6 || (star.FeedbackFlag & 2))
+    Terminate("Invalid/legacy age-dependent AGB state for star %lld", (long long)star.ID.get());
+  if(age - previous < All.AGBFeedbackIntervalMyr && All.Time < All.TimeMax)
+    return false;
+  if(age <= previous)
+    return false;
+  const double Z     = star.AGBBirthMetallicity;
+  const double birth = star.StellarBirthMass;
   if(!std::isfinite(Z) || Z < 0 || !std::isfinite(birth) || birth <= 0)
     Terminate("Invalid age-dependent AGB birth state");
   agb_stars_eligible++;
-  AGBIMFYield current=AGB_Yields.get_cumulative_imf_yields(Z,age);
-  AGBIMFYield before=AGB_Yields.get_cumulative_imf_yields(Z,previous);
-  AGBIMFYield full=AGB_Yields.get_imf_yields(Z);
-  const double metals=birth*agb_feedback::increment(current.Z_per_Mstar,before.Z_per_Mstar);
-  const double returned=birth*agb_feedback::increment(current.M_return_per_Mstar,before.M_return_per_Mstar);
-  ElementYields elem;
-  elem.C=birth*agb_feedback::increment(current.C_per_Mstar,before.C_per_Mstar);
-  elem.N=birth*agb_feedback::increment(current.N_per_Mstar,before.N_per_Mstar);
-  elem.O=birth*agb_feedback::increment(current.O_per_Mstar,before.O_per_Mstar);
-  elem.Ne=birth*agb_feedback::increment(current.Ne_per_Mstar,before.Ne_per_Mstar);
-  elem.Mg=birth*agb_feedback::increment(current.Mg_per_Mstar,before.Mg_per_Mstar);
-  if(metals > returned*(1+1e-10) ||
-     elem.C+elem.N+elem.O+elem.Ne+elem.Mg > metals*(1+1e-10))
+  AGBIMFYield current = AGB_Yields.get_cumulative_imf_yields(Z, age);
+  AGBIMFYield before  = AGB_Yields.get_cumulative_imf_yields(Z, previous);
+  AGBIMFYield full    = AGB_Yields.get_imf_yields(Z);
+
+  plan          = AGBPlan{};
+  plan.star     = p;
+  plan.age      = age;
+  plan.previous = previous;
+  try
+    {
+      plan.metals   = birth * agb_feedback::increment(current.Z_per_Mstar, before.Z_per_Mstar);
+      plan.returned = birth * agb_feedback::increment(current.M_return_per_Mstar, before.M_return_per_Mstar);
+      plan.elem.C   = birth * agb_feedback::increment(current.C_per_Mstar, before.C_per_Mstar);
+      plan.elem.N   = birth * agb_feedback::increment(current.N_per_Mstar, before.N_per_Mstar);
+      plan.elem.O   = birth * agb_feedback::increment(current.O_per_Mstar, before.O_per_Mstar);
+      plan.elem.Ne  = birth * agb_feedback::increment(current.Ne_per_Mstar, before.Ne_per_Mstar);
+      plan.elem.Mg  = birth * agb_feedback::increment(current.Mg_per_Mstar, before.Mg_per_Mstar);
+    }
+  catch(const std::exception &e)
+    {
+      Terminate("AGB budget for star %lld: %s", (long long)star.ID.get(), e.what());
+    }
+  const ElementYields &elem = plan.elem;
+  if(plan.metals > plan.returned * (1 + 1e-10) || elem.C + elem.N + elem.O + elem.Ne + elem.Mg > plan.metals * (1 + 1e-10))
     Terminate("AGB interval violates ejecta budget");
-  StellarDustPartition dust;
-  dust.gas_metals=metals;
-  double packet=0;
-  int max_packets=0;
+  plan.dust.gas_metals = plan.metals;
 #ifdef DUST
-  max_packets=std::max(0,All.DustParticlesPerAGB);
-  if(max_packets > 0 && All.DustEnableCreation) {
-    // Full-budget partition is an upper bound on the sum of interval
-    // partitions (minimum availability limits). Use it only for packet size.
-    ElementYields full_elem;
-    full_elem.C=birth*full.C_per_Mstar; full_elem.N=birth*full.N_per_Mstar;
-    full_elem.O=birth*full.O_per_Mstar; full_elem.Ne=birth*full.Ne_per_Mstar;
-    full_elem.Mg=birth*full.Mg_per_Mstar;
-    auto full_dust=partition_stellar_ejecta_for_dust(birth*full.Z_per_Mstar,
-        full_elem,All.DustYieldAGB,0.60,false,/*apply_mass_floor=*/false,/*record_diagnostics=*/false);
-    packet=full_dust.total_dust/max_packets;
-    dust=partition_stellar_ejecta_for_dust(metals,elem,All.DustYieldAGB,
-        0.60,false,/*apply_mass_floor=*/false);
-  }
+  plan.max_packets = std::max(0, All.DustParticlesPerAGB);
+  if(plan.max_packets > 0 && All.DustEnableCreation)
+    {
+      // Full-budget partition is an upper bound on the sum of interval
+      // partitions (minimum availability limits). Use it only for packet size.
+      ElementYields full_elem;
+      full_elem.C   = birth * full.C_per_Mstar;
+      full_elem.N   = birth * full.N_per_Mstar;
+      full_elem.O   = birth * full.O_per_Mstar;
+      full_elem.Ne  = birth * full.Ne_per_Mstar;
+      full_elem.Mg  = birth * full.Mg_per_Mstar;
+      auto full_dust = partition_stellar_ejecta_for_dust(birth * full.Z_per_Mstar, full_elem, All.DustYieldAGB, 0.60, false,
+                                                         /*apply_mass_floor=*/false, /*record_diagnostics=*/false);
+      plan.packet    = full_dust.total_dust / plan.max_packets;
+      plan.dust = partition_stellar_ejecta_for_dust(plan.metals, plan.elem, All.DustYieldAGB, 0.60, false, /*apply_mass_floor=*/false);
+    }
 #endif
-  const double total = All.AGBFeedbackMode == 2 ? returned : metals;
-  const double gas=total-dust.total_dust;
-  if(!std::isfinite(star.AGBPendingCarbonMass) || star.AGBPendingCarbonMass < 0 ||
-     !std::isfinite(star.AGBPendingSilicateMass) || star.AGBPendingSilicateMass < 0 ||
-     star.AGBDustPacketsCreated < 0 || star.AGBDustPacketsCreated > max_packets)
+  plan.complete      = current.M_return_per_Mstar >= full.M_return_per_Mstar * (1 - 1e-12);
+  const double total = All.AGBFeedbackMode == 2 ? plan.returned : plan.metals;
+  plan.gas           = total - plan.dust.total_dust;
+  if(!std::isfinite(star.AGBPendingCarbonMass) || star.AGBPendingCarbonMass < 0 || !std::isfinite(star.AGBPendingSilicateMass) ||
+     star.AGBPendingSilicateMass < 0 || star.AGBDustPacketsCreated < 0 || star.AGBDustPacketsCreated > plan.max_packets)
     Terminate("Invalid AGB pending dust state");
-  const double pending0=star.AGBPendingCarbonMass+star.AGBPendingSilicateMass;
-  if(star.getMass() <= total+pending0)
+  if(star.getMass() <= total + star.AGBPendingCarbonMass + star.AGBPendingSilicateMass)
     Terminate("AGB transaction would exhaust stellar mass");
-  if(!deposit_agb_gas(Sp,Tree,D,p,gas,dust.gas_metals,elem)) {
-    agb_deposition_failures++;
-    return; // No ledger or age advanced: entire interval remains pending.
-  }
-  // No reference into P may survive dust creation/particle storage changes.
-  Sp->P[p].AGBPendingCarbonMass+=dust.carbon_dust;
-  Sp->P[p].AGBPendingSilicateMass+=dust.silicate_dust;
-  Sp->P[p].AGBCumulativeReturnedMass+=returned;
-  Sp->P[p].AGBLastProcessedAgeMyr=age;
-#ifdef DUST
-  const double pending=Sp->P[p].AGBPendingCarbonMass+Sp->P[p].AGBPendingSilicateMass;
-  const bool complete=current.M_return_per_Mstar >= full.M_return_per_Mstar*(1-1e-12);
-  auto release=agb_feedback::dust_release(pending,packet,
-       max_packets-Sp->P[p].AGBDustPacketsCreated,complete);
-  if(release.mass >= FB_MIN_STELLAR_DUST_MASS && release.packets > 0) {
-    double cf=Sp->P[p].AGBPendingCarbonMass/pending;
-    const double emitted=create_dust_particles_from_feedback(Sp,p,
-        release.mass*cf,release.mass*(1-cf),2,release.packets,true);
-    if(std::abs(emitted-release.mass) > 1e-12*std::max(release.mass,1e-30))
-      Terminate("AGB dust packet creation failed conservation check");
-    Sp->P[p].setMass(Sp->P[p].getMass()-emitted);
-    // Saturation protects roundoff only; both components are debited in
-    // exactly the same ratio used to construct the actual dust particles.
-    Sp->P[p].AGBPendingCarbonMass=std::max(0.0,Sp->P[p].AGBPendingCarbonMass-emitted*cf);
-    Sp->P[p].AGBPendingSilicateMass=std::max(0.0,Sp->P[p].AGBPendingSilicateMass-emitted*(1-cf));
-    Sp->P[p].AGBDustPacketsCreated+=release.packets;
-  }
-#endif
-  ++cg_agb_sync::commits;
-  if(previous>0)cg_agb_sync::max_noninitial_interval_myr=std::max(cg_agb_sync::max_noninitial_interval_myr,age-previous);
-  agb_event_count++;
-  agb_total_metals_g+=metals*All.UnitMass_in_g;
-  diag_add_agb(0.0);
-  if(All.FeedbackDebugLevel >= 2)
-    printf("[AGB_AGE|T=%d] ID=%lld age=[%.9g,%.9g] mode=%d gas=%.12g metals=%.12g pending_dust=%.12g return=%.12g\n",
-       All.ThisTask,(long long)Sp->P[p].ID.get(),previous,age,All.AGBFeedbackMode,
-       gas,metals,Sp->P[p].AGBPendingCarbonMass+Sp->P[p].AGBPendingSilicateMass,returned);
+  plan.donor_mass = star.getMass();
+  for(int k = 0; k < 3; k++)
+    plan.ejecta_v[k] = star.Vel[k];
+  if(plan.gas != 0 && (!std::isfinite(plan.gas) || !std::isfinite(plan.dust.gas_metals) || plan.dust.gas_metals < 0 ||
+                       plan.gas < plan.dust.gas_metals || plan.donor_mass <= plan.gas))
+    Terminate("Invalid AGB gas/mass budget");
+  return true;
 }
 
-static void apply_distributed_agb_pass(simparticles *Sp,ngbtree *Tree,
-                                     domain<simparticles> *D,MPI_Comm comm) {
-  cg_agb_transport::comm=comm;
-  int rank,size;MPI_Comm_rank(comm,&rank);MPI_Comm_size(comm,&size);
-  if(!cg_agb_sync::open || cg_agb_sync::epoch!=All.Ti_Current)
-    Terminate("AGB scheduler called outside its post-kick feedback window");
-  if(!cg_agb_sync::closed)return; // Leave all mass, age and packet state pending.
-  for(int j=0;j<Sp->NumGas;++j)if(Sp->P[j].getType()==0)
-    for(int k=0;k<3;++k) {
-      const double v=Sp->P[j].Vel[k],vp=Sp->SphP[j].VelPred[k];
-      if(!std::isfinite(v)||!std::isfinite(vp)||std::abs(v-vp)>1e-5*std::max(1.,std::max(std::abs(v),std::abs(vp))))
-        Terminate("Gas velocity clocks disagree at full AGB synchronization");
+// Gas-owner side: mix one deposit into gas particle d.index and return the
+// momentum it gained, measured with the current velocity prediction.
+static void apply_agb_deposit(simparticles *Sp, const AGBDeposit &d, double momentum[3])
+{
+  const int j = checked_gas_index(Sp, d.index, d.gas_id);
+  if(!std::isfinite(Sp->SphP[j].Density) || Sp->SphP[j].Density <= 0)
+    Terminate("Invalid density before AGB mass deposition");
+  const double old = Sp->P[j].getMass();
+  if(!std::isfinite(Sp->SphP[j].MassMetallicity) || Sp->SphP[j].MassMetallicity < 0 ||
+     Sp->SphP[j].MassMetallicity > old * (1 + 1e-6))
+    Terminate("Invalid gas metals before AGB deposition");
+  MyFloat *fraction[7] = {&Sp->SphP[j].GasCarbonMassFraction,    &Sp->SphP[j].GasNitrogenMassFraction,
+                          &Sp->SphP[j].GasOxygenMassFraction,    &Sp->SphP[j].GasNeonMassFraction,
+                          &Sp->SphP[j].GasMagnesiumMassFraction, &Sp->SphP[j].GasSiliconMassFraction,
+                          &Sp->SphP[j].GasIronMassFraction};
+  for(MyFloat *x : fraction)
+    if(!std::isfinite((double)*x) || *x < 0 || *x > 1)
+      Terminate("Invalid gas elemental fraction before AGB deposition");
+
+  // Cold unresolved AGB ejecta: configured minimum specific thermal energy.
+  // No SN-like thermal energy is added. Relative bulk kinetic energy is mixed.
+  const double vfac  = All.ComovingIntegrationOn ? All.cf_a2inv : 1.0;
+  const double u_old = agb_current_predicted_utherm(Sp, j);
+  double v[3], vp[3];
+  for(int k = 0; k < 3; k++)
+    {
+      v[k]  = Sp->P[j].Vel[k];
+      vp[k] = Sp->SphP[j].VelPred[k];
     }
+  agb_feedback::MixedGas mixed;
+  try
+    {
+      mixed = agb_feedback::mix_gas(old, d.dm, u_old, All.MinEgySpec, v, vp, d.ejecta_v, vfac);
+    }
+  catch(const std::exception &e)
+    {
+      Terminate("AGB mixing for gas ID %llu: %s", (unsigned long long)d.gas_id, e.what());
+    }
+  const double candidate_prediction = mixed.u * GAMMA_MINUS1 / pow(Sp->SphP[j].Density * All.cf_a3inv, GAMMA_MINUS1);
+  // Reproduce storage rounding before checking the base-state impulse.
+  const decltype(Sp->SphP[j].EntropyPred) stored_prediction = candidate_prediction;
+  const double candidate_base = (double)Sp->SphP[j].Entropy + ((double)stored_prediction - (double)Sp->SphP[j].EntropyPred);
+  if(!std::isfinite(candidate_prediction) || candidate_prediction <= 0 || !std::isfinite(candidate_base) || candidate_base <= 0)
+    Terminate("Invalid time-centered AGB entropy preflight");
+
+  cg_agb_probe::record(Sp, j, d.dm, d.distance, u_old, mixed, d.ejecta_v);
+  const double mass = mixed.mass;
+  for(int x = 0; x < 7; x++)
+    *fraction[x] = (old * *fraction[x] + d.f * d.elem[x]) / mass;
+  Sp->SphP[j].MassMetallicity += d.f * d.metals;
+  Sp->SphP[j].Metallicity = Sp->SphP[j].MassMetallicity / mass;
+  Sp->P[j].Metallicity    = Sp->SphP[j].Metallicity;
+  Sp->P[j].setMass(mass);
+  for(int k = 0; k < 3; k++)
+    {
+      const double old_momentum = old * Sp->SphP[j].VelPred[k];
+      Sp->P[j].Vel[k]           = mixed.velocity[k];
+      Sp->SphP[j].VelPred[k]    = mixed.predicted_velocity[k];
+      // Debit the donor using the realized current-prediction momentum.
+      // Stored midpoint momenta belong to different clocks on inactive gas.
+      momentum[k] = mass * Sp->SphP[j].VelPred[k] - old_momentum;
+    }
+  // Apply the current-time impulse to BOTH entropy time levels; preserve
+  // their drift/kick offset instead of resetting an inactive prediction.
+  const double base_before       = Sp->SphP[j].Entropy;
+  const double prediction_before = Sp->SphP[j].EntropyPred;
+  Sp->set_entropy_from_utherm(mixed.u, j);
+  const double prediction_after = Sp->SphP[j].EntropyPred;
+  Sp->SphP[j].Entropy           = base_before + (prediction_after - prediction_before);
+  if(!std::isfinite((double)Sp->SphP[j].Entropy) || Sp->SphP[j].Entropy <= 0 || !std::isfinite(prediction_after) ||
+     prediction_after <= 0)
+    Terminate("Invalid time-centered AGB entropy commit");
+  set_thermodynamic_variables_safe(Sp, j);
+}
+
+// Owner side after a successful deposit: debit the star, advance its ledger,
+// and release pending AGB dust.  No reference into P may survive dust
+// creation, which can reallocate the particle storage.
+static void finish_agb(simparticles *Sp, const AGBPlan &plan, const double momentum[3])
+{
+  const int p = plan.star;
+  if(plan.gas != 0)
+    {
+      cg_agb_probe::sums[cg_agb_probe::transactions] += 1;
+      cg_agb_probe::sums[cg_agb_probe::metals] += plan.dust.gas_metals;
+      Sp->P[p].setMass(plan.donor_mass - plan.gas);
+      const double stored_mass = Sp->P[p].getMass();
+      for(int k = 0; k < 3; k++)
+        Sp->P[p].Vel[k] = (plan.donor_mass * plan.ejecta_v[k] - momentum[k]) / stored_mass;
+    }
+  Sp->P[p].AGBPendingCarbonMass += plan.dust.carbon_dust;
+  Sp->P[p].AGBPendingSilicateMass += plan.dust.silicate_dust;
+  Sp->P[p].AGBCumulativeReturnedMass += plan.returned;
+  Sp->P[p].AGBLastProcessedAgeMyr = plan.age;
+#ifdef DUST
+  const double pending = Sp->P[p].AGBPendingCarbonMass + Sp->P[p].AGBPendingSilicateMass;
+  agb_feedback::DustRelease release;
+  try
+    {
+      release = agb_feedback::dust_release(pending, plan.packet, plan.max_packets - Sp->P[p].AGBDustPacketsCreated, plan.complete);
+    }
+  catch(const std::exception &e)
+    {
+      Terminate("AGB dust release for star %lld: %s", (long long)Sp->P[p].ID.get(), e.what());
+    }
+  if(release.mass >= FB_MIN_STELLAR_DUST_MASS && release.packets > 0)
+    {
+      double cf = Sp->P[p].AGBPendingCarbonMass / pending;
+      const double emitted =
+          create_dust_particles_from_feedback(Sp, p, release.mass * cf, release.mass * (1 - cf), 2, release.packets, true);
+      if(std::abs(emitted - release.mass) > 1e-12 * std::max(release.mass, 1e-30))
+        Terminate("AGB dust packet creation failed conservation check");
+      Sp->P[p].setMass(Sp->P[p].getMass() - emitted);
+      // Saturation protects roundoff only; both components are debited in
+      // exactly the same ratio used to construct the actual dust particles.
+      Sp->P[p].AGBPendingCarbonMass   = std::max(0.0, Sp->P[p].AGBPendingCarbonMass - emitted * cf);
+      Sp->P[p].AGBPendingSilicateMass = std::max(0.0, Sp->P[p].AGBPendingSilicateMass - emitted * (1 - cf));
+      Sp->P[p].AGBDustPacketsCreated += release.packets;
+    }
+#endif
+  ++cg_agb_sync::commits;
+  if(plan.previous > 0)
+    cg_agb_sync::max_noninitial_interval_myr = std::max(cg_agb_sync::max_noninitial_interval_myr, plan.age - plan.previous);
+  agb_event_count++;
+  agb_total_metals_g += plan.metals * fb_code_mass_in_g();
+  diag_add_agb(0.0);
+  if(All.FeedbackDebugLevel >= 2)
+    printf("[AGB_AGE|T=%d] ID=%lld age=[%.9g,%.9g] mode=%d gas=%.12g metals=%.12g pending_dust=%.12g return=%.12g\n", All.ThisTask,
+           (long long)Sp->P[p].ID.get(), plan.previous, plan.age, All.AGBFeedbackMode, plan.gas, plan.metals,
+           Sp->P[p].AGBPendingCarbonMass + Sp->P[p].AGBPendingSilicateMass, plan.returned);
+}
+
+// Collective.  Deposits all planned AGB transactions; each plan either
+// completes or leaves the star untouched (its interval stays pending).
+static void deposit_agb_events(simparticles *Sp, const std::vector<AGBPlan> &plans, MPI_Comm comm)
+{
+  int ntask, this_task;
+  MPI_Comm_size(comm, &ntask);
+  MPI_Comm_rank(comm, &this_task);
+
+  // Transactions without gas ejecta need no recipients.
+  std::vector<int> with_gas;
+  std::vector<EventPosition> positions;
+  for(size_t i = 0; i < plans.size(); i++)
+    if(plans[i].gas != 0)
+      {
+        EventPosition ep;
+        for(int k = 0; k < 3; k++)
+          ep.pos[k] = Sp->P[plans[i].star].IntPos[k];
+        ep.slot = (int)i;
+        positions.push_back(ep);
+        with_gas.push_back((int)i);
+      }
+  // find_kernels() indexes results by position in its input list, so map
+  // the slots back afterwards.
+  std::vector<EventPosition> compact = positions;
+  for(size_t n = 0; n < compact.size(); n++)
+    compact[n].slot = (int)n;
+  std::vector<Kernel> kernels = find_kernels(Sp, compact, comm);
+
+  std::vector<char> ok(plans.size(), 0);
+  for(size_t i = 0; i < plans.size(); i++)
+    if(plans[i].gas == 0)
+      ok[i] = 1;
+
+  std::vector<std::vector<AGBDeposit>> send(ntask);
+  for(size_t n = 0; n < with_gas.size(); n++)
+    {
+      const int i        = with_gas[n];
+      const AGBPlan &pl  = plans[i];
+      const Kernel &k    = kernels[n];
+      if(!k.found || k.cand.empty())
+        continue;
+      const double h = 0.5 * k.radius;
+      std::vector<double> w(k.cand.size());
+      double sum = 0;
+      for(size_t c = 0; c < k.cand.size(); c++)
+        {
+          w[c] = k.cand[c].mass * cubic_spline_kernel(std::sqrt(k.cand[c].r2), h);
+          if(!std::isfinite(w[c]) || w[c] < 0)
+            Terminate("Invalid distributed AGB weight");
+          sum += w[c];
+        }
+      if(!std::isfinite(sum) || !(sum > 0))
+        continue;
+      ok[i] = 1;
+      AGBDeposit d;
+      d.star_id                = (std::uint64_t)Sp->P[pl.star].ID.get();
+      d.slot                   = i;
+      d.metals                 = pl.dust.gas_metals;
+      const double elem[7]     = {pl.elem.C, pl.elem.N, pl.elem.O, pl.elem.Ne, pl.elem.Mg, pl.elem.Si, pl.elem.Fe};
+      for(int x = 0; x < 7; x++)
+        d.elem[x] = elem[x];
+      for(int x = 0; x < 3; x++)
+        d.ejecta_v[x] = pl.ejecta_v[x];
+      for(size_t c = 0; c < k.cand.size(); c++)
+        {
+          if(w[c] == 0)
+            continue;
+          d.gas_id   = k.cand[c].id;
+          d.index    = k.cand[c].index;
+          d.f        = w[c] / sum;
+          d.dm       = pl.gas * d.f;
+          d.distance = std::sqrt(k.cand[c].r2);
+          send[k.cand[c].task].push_back(d);
+        }
+    }
+
+  std::vector<int> source;
+  std::vector<AGBDeposit> got = cg_dist::exchange(send, comm, &source);
+  std::vector<size_t> order(got.size());
+  for(size_t n = 0; n < order.size(); n++)
+    order[n] = n;
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return got[a].star_id < got[b].star_id; });
+  std::vector<std::vector<MomentumReply>> replies(ntask);
+  for(size_t n : order)
+    {
+      MomentumReply r;
+      r.slot = got[n].slot;
+      apply_agb_deposit(Sp, got[n], r.p);
+      replies[source[n]].push_back(r);
+    }
+  const std::vector<MomentumReply> back = cg_dist::exchange(replies, comm);
+
+  std::vector<double> momentum(3 * plans.size(), 0.0);
+  for(const MomentumReply &r : back)
+    for(int k = 0; k < 3; k++)
+      momentum[3 * r.slot + k] += r.p[k];
+  for(size_t i = 0; i < plans.size(); i++)
+    {
+      if(ok[i])
+        finish_agb(Sp, plans[i], &momentum[3 * i]);
+      else
+        agb_deposition_failures++;  // no ledger or age advanced
+    }
+}
+}  // namespace cg_fb_dist
+
+static void apply_distributed_agb_pass(simparticles *Sp, MPI_Comm comm)
+{
+  if(!cg_agb_sync::open || cg_agb_sync::epoch != All.Ti_Current)
+    Terminate("AGB scheduler called outside its post-kick feedback window");
+  if(!cg_agb_sync::closed)
+    return;  // Leave all mass, age and packet state pending.
+  for(int j = 0; j < Sp->NumGas; ++j)
+    if(Sp->P[j].getType() == 0)
+      for(int k = 0; k < 3; ++k)
+        {
+          const double v = Sp->P[j].Vel[k], vp = Sp->SphP[j].VelPred[k];
+          if(!std::isfinite(v) || !std::isfinite(vp) || std::abs(v - vp) > 1e-5 * std::max(1., std::max(std::abs(v), std::abs(vp))))
+            Terminate("Gas velocity clocks disagree at full AGB synchronization");
+        }
   // Geometry is evaluated at the current drift time on every gas owner.
   // Recipient velocity impulses preserve their kick offset.
   // All donor gravity kicks have closed; stored donor velocity is current.
   Sp->drift_all_particles();
-  std::vector<std::uint64_t> ids;std::vector<int> indices;std::vector<double> ages;
-  for(int p=0;p<Sp->NumPart;++p)if(Sp->P[p].getType()==4) {
-    const double age=get_stellar_age_Myr(Sp->P[p].StellarAge,0.0);
-    const double before=Sp->P[p].AGBLastProcessedAgeMyr;
-    if(!std::isfinite(age)||!std::isfinite(before)||before<0||before>age+1e-6 || (Sp->P[p].FeedbackFlag&2))
-      Terminate("Invalid distributed AGB eligibility state");
-    if(age>before && (age-before>=All.AGBFeedbackIntervalMyr || All.Time>=All.TimeMax)) {
-      ids.push_back((std::uint64_t)Sp->P[p].ID.get());indices.push_back(p);ages.push_back(age);
-    }
-  }
-  long long clock_local[2]={0,0},clock_global[2]={0,0};
-  for(int p:indices) {
-    if(!Sp->TimeBinSynchronized[(int)Sp->P[p].TimeBinGrav])++clock_local[0];
+
+  std::vector<cg_fb_dist::AGBPlan> plans;
+  long long clock_local[2] = {0, 0}, clock_global[2] = {0, 0};
+  for(int p = 0; p < Sp->NumPart; ++p)
+    if(Sp->P[p].getType() == 4)
+      {
+        const double age    = get_stellar_age_Myr(Sp->P[p].StellarAge, 0.0);
+        const double before = Sp->P[p].AGBLastProcessedAgeMyr;
+        if(!std::isfinite(age) || !std::isfinite(before) || before < 0 || before > age + 1e-6 || (Sp->P[p].FeedbackFlag & 2))
+          Terminate("Invalid distributed AGB eligibility state");
+        if(!(age > before && (age - before >= All.AGBFeedbackIntervalMyr || All.Time >= All.TimeMax)))
+          continue;
+        if(!Sp->TimeBinSynchronized[(int)Sp->P[p].TimeBinGrav])
+          ++clock_local[0];
 #if defined(PMGRID) && defined(PERIODIC) && !defined(TREEPM_NOTIMESPLIT)
-    if(All.PM_Ti_endstep!=All.Ti_Current)++clock_local[1];
+        if(All.PM_Ti_endstep != All.Ti_Current)
+          ++clock_local[1];
 #endif
-  }
-  MPI_Allreduce(clock_local,clock_global,2,MPI_LONG_LONG,MPI_SUM,comm);
-  if(rank==0 && (clock_global[0] || clock_global[1]))
-    printf("[AGB_DONOR_CLOCK_AUDIT] ti=%lld unsynchronized_gravity=%lld between_PM_closings=%lld; stored donor velocity is not proven current\n",
-      (long long)All.Ti_Current,clock_global[0],clock_global[1]);
-  if(ids.size()>1000000)Terminate("Reference AGB scheduler event limit");
-  int n=(int)ids.size();std::vector<int> counts(size),offset(size);MPI_Allgather(&n,1,MPI_INT,counts.data(),1,MPI_INT,comm);
-  long long total=0;for(int r=0;r<size;++r){offset[r]=(int)total;total+=counts[r];}
-  if(total>1000000)Terminate("Reference AGB scheduler global event limit");
-  std::vector<std::uint64_t> all_ids(total);std::vector<int> all_indices(total);std::vector<double> all_ages(total);
-  MPI_Allgatherv(ids.data(),n,MPI_UINT64_T,all_ids.data(),counts.data(),offset.data(),MPI_UINT64_T,comm);
-  MPI_Allgatherv(indices.data(),n,MPI_INT,all_indices.data(),counts.data(),offset.data(),MPI_INT,comm);
-  MPI_Allgatherv(ages.data(),n,MPI_DOUBLE,all_ages.data(),counts.data(),offset.data(),MPI_DOUBLE,comm);
-  struct Event{std::uint64_t id;int owner,index;double age;};std::vector<Event> events;
-  for(int r=0;r<size;++r)for(int i=offset[r];i<offset[r]+counts[r];++i)events.push_back({all_ids[i],r,all_indices[i],all_ages[i]});
-  std::sort(events.begin(),events.end(),[](const Event&a,const Event&b){return a.id<b.id;});
-  for(size_t i=1;i<events.size();++i)if(events[i-1].id==events[i].id)Terminate("Duplicate distributed AGB donor ID");
-  cg_agb_transport::IndexWindow index_window(Sp);
-  for(auto &event:events) {
-    cg_agb_transport::owner=event.owner;
-    try {
-      if(rank==event.owner)apply_age_dependent_agb(Sp,Tree,D,event.index,event.age);
-      else {ElementYields empty;deposit_agb_gas(Sp,Tree,D,-1,0,0,empty);}
-    }catch(const std::exception &e){Terminate("Distributed AGB transaction failure: %s",e.what());}
-  }
-  index_window.validate(Sp);
-  cg_agb_transport::owner=-1;
+        cg_fb_dist::AGBPlan plan;
+        if(cg_fb_dist::plan_agb(Sp, p, age, plan))
+          plans.push_back(plan);
+      }
+  MPI_Allreduce(clock_local, clock_global, 2, MPI_LONG_LONG, MPI_SUM, comm);
+  if(All.ThisTask == 0 && (clock_global[0] || clock_global[1]))
+    printf("[AGB_DONOR_CLOCK_AUDIT] ti=%lld unsynchronized_gravity=%lld between_PM_closings=%lld; stored donor velocity is not proven "
+           "current\n",
+           (long long)All.Ti_Current, clock_global[0], clock_global[1]);
+
+  long long n_local = plans.size(), n_global = 0;
+  MPI_Allreduce(&n_local, &n_global, 1, MPI_LONG_LONG, MPI_SUM, comm);
+  if(n_global == 0)
+    return;
+  cg_fb_dist::build_gas_tree(Sp);
+  cg_fb_dist::deposit_agb_events(Sp, plans, comm);
 }
 
 void init_stellar_feedback(void)
@@ -2679,8 +2245,8 @@ void init_stellar_feedback(void)
 void apply_stellar_feedback(
     double /*current_time*/,
     simparticles *Sp,
-    ngbtree *Tree,
-    domain<simparticles> *D,
+    ngbtree * /*Tree*/,
+    domain<simparticles> * /*D*/,
     MPI_Comm comm)
 {
     // Build local star index list.
@@ -2712,11 +2278,23 @@ void apply_stellar_feedback(
     if(!global_has_stars)
         return;
 
-    // Build/update spatial hashes used by feedback and dust searches.
+    // Build/update spatial hashes used by dust searches.
     TIMER_START(CPU_FEEDBACK_HASH);
     rebuild_feedback_spatial_hash(
         Sp, 0.1, comm);
     TIMER_STOP(CPU_FEEDBACK_HASH);
+
+    // Events of this call, deposited together further below.
+    std::vector<cg_fb_dist::ThermalEvent> thermal;
+
+    struct SNIITranche
+    {
+        int star, event, tranche;
+        unsigned int mask;
+        double MZ_total_code, E_code, m_ssp_msun, age_Myr;
+        StellarDustPartition dust;
+    };
+    std::vector<SNIITranche> tranches;
 
     // Reset per-call reservoir diagnostics.
     stars_with_reservoir   = 0;
@@ -2754,8 +2332,12 @@ void apply_stellar_feedback(
 
             if(feedback_hash_rebuilt_this_call)
             {
-                try_release_reservoir(
-                    Sp, Tree, D, p);
+                cg_fb_dist::ThermalEvent ev;
+                ev.star    = p;
+                ev.kind    = cg_fb_dist::KIND_RESERVOIR;
+                ev.E_code  = Sp->P[p].EnergyReservoir;
+                ev.MZ_code = 0.0;
+                thermal.push_back(ev);
             }
         }
     }
@@ -2774,7 +2356,7 @@ void apply_stellar_feedback(
             feedback_hash_rebuilt_this_call ? 1 : 0,
             stars_with_reservoir,
             reservoir_total_energy *
-                All.UnitEnergy_in_cgs);
+                fb_code_energy_in_erg());
     }
 
 
@@ -2972,11 +2554,11 @@ void apply_stellar_feedback(
                 double MZ_total_code =
                     MZ_msun *
                     SOLAR_MASS /
-                    All.UnitMass_in_g;
+                    fb_code_mass_in_g();
 
                 double E_code =
                     E_erg /
-                    All.UnitEnergy_in_cgs;
+                    fb_code_energy_in_erg();
 
 
                 ElementYields elem_total;
@@ -2984,37 +2566,37 @@ void apply_stellar_feedback(
                 elem_total.C =
                     C_msun *
                     SOLAR_MASS /
-                    All.UnitMass_in_g;
+                    fb_code_mass_in_g();
 
                 elem_total.N =
                     N_msun *
                     SOLAR_MASS /
-                    All.UnitMass_in_g;
+                    fb_code_mass_in_g();
 
                 elem_total.O =
                     O_msun *
                     SOLAR_MASS /
-                    All.UnitMass_in_g;
+                    fb_code_mass_in_g();
 
                 elem_total.Ne =
                     Ne_msun *
                     SOLAR_MASS /
-                    All.UnitMass_in_g;
+                    fb_code_mass_in_g();
 
                 elem_total.Mg =
                     Mg_msun *
                     SOLAR_MASS /
-                    All.UnitMass_in_g;
+                    fb_code_mass_in_g();
 
                 elem_total.Si =
                     Si_msun *
                     SOLAR_MASS /
-                    All.UnitMass_in_g;
+                    fb_code_mass_in_g();
 
                 elem_total.Fe =
                     Fe_msun *
                     SOLAR_MASS /
-                    All.UnitMass_in_g;
+                    fb_code_mass_in_g();
 
 
                 // --------------------------------------------------------
@@ -3107,528 +2689,177 @@ void apply_stellar_feedback(
                 }
 
 
-                // --------------------------------------------------------
-                // Deposit this tranche's gas-phase ejecta and energy.
-                // --------------------------------------------------------
+                cg_fb_dist::ThermalEvent ev;
+                ev.star    = p;
+                ev.kind    = cg_fb_dist::KIND_SNII;
+                ev.E_code  = E_code;
+                ev.MZ_code = MZ_gas_code;
+                ev.elem    = elem_gas;
+                thermal.push_back(ev);
 
-                bool ejecta_deposited =
-                    apply_feedback_event(
-                        Sp,
-                        Tree,
-                        D,
-                        p,
-                        /*is_SNII=*/true,
-                        E_code,
-                        MZ_gas_code,
-                        elem_gas);
-
-
-                if(ejecta_deposited)
-                {
-                    // Remove this tranche's TOTAL metal ejecta from star.
-                    double new_star_mass =
-                        Sp->P[p].getMass() -
-                        MZ_total_code;
-
-                    if(new_star_mass <= 0.0)
-                    {
-                        Terminate(
-                            "SNII feedback tranche would remove entire stellar particle mass");
-                    }
-
-                    Sp->P[p].setMass(
-                        new_star_mass);
-
-
+                SNIITranche t;
+                t.star          = p;
+                t.event         = (int)thermal.size() - 1;
+                t.tranche       = tranche_to_fire;
+                t.mask          = tranche_mask;
+                t.MZ_total_code = MZ_total_code;
+                t.E_code        = E_code;
+                t.m_ssp_msun    = m_ssp_msun;
+                t.age_Myr       = age_Myr;
 #ifdef DUST
-                    if(sn_dust.total_dust > 0.0)
-                    {
-                        /*
-                         * Keep DustParticlesPerSNII as the TOTAL desired
-                         * representation for the complete SSP SNII/HN
-                         * episode, distributed across the temporal tranches.
-                         */
-                        double created_sn_dust =
-                            create_snii_dust_for_tranche(
-                                Sp,
-                                p,
-                                sn_dust.carbon_dust,
-                                sn_dust.silicate_dust,
-                                tranche_to_fire);
-
-                        double creation_tolerance =
-                            1e-12 *
-                            std::max(
-                                sn_dust.total_dust,
-                                1e-30);
-
-                        if(std::abs(
-                               created_sn_dust -
-                               sn_dust.total_dust) >
-                           creation_tolerance)
-                        {
-                            Terminate(
-                                "SNII dust creation did not realize partitioned dust mass");
-                        }
-                    }
+                t.dust          = sn_dust;
 #endif
-#ifdef DUST
-                // --------------------------------------------------------
-                // Shock destruction from this tranche only.
-                // --------------------------------------------------------
-
-                erode_dust_from_sn_shocks(
-                    Sp,
-                    p,
-                    E_code,
-                    comm);
-
-
-                // --------------------------------------------------------
-                // LRN dust.
-                //
-                // LRN yields are tiny. Dividing the LRN budget into the
-                // four SNII temporal tranches pushes the individual dust
-                // masses below MIN_DUST_PARTICLE_MASS in dust.cc and can
-                // eliminate the LRN PartType6 population entirely.
-                //
-                // Restore SSP-level LRN sampling: inject the FULL LRN dust
-                // budget once, alongside the first SNII tranche. SNII/HN
-                // thermal energy and metal ejecta remain time-distributed.
-                // --------------------------------------------------------
-
-                if(tranche_to_fire == 0)
-                {
-                    double n_CCSN_full =
-                        CCSN_NUMBER_PER_MSUN *
-                        m_ssp_msun;
-
-                    double n_LRN_full =
-                        All.DustLRNRatePerCCSN *
-                        n_CCSN_full;
-
-                    double LRN_dust_mass_g =
-                        n_LRN_full *
-                        All.DustLRNDustMassMsun *
-                        SOLAR_MASS;
-
-                    double LRN_dust_mass_code =
-                        LRN_dust_mass_g /
-                        All.UnitMass_in_g;
-
-                    if(LRN_dust_mass_code > 0.0)
-                    {
-                        double LRN_carbon_dust =
-                            0.10 *
-                            LRN_dust_mass_code;
-
-                        double LRN_silicate_dust =
-                            0.90 *
-                            LRN_dust_mass_code;
-
-                        double created_lrn_dust =
-                            create_dust_particles_from_feedback(
-                                Sp,
-                                p,
-                                LRN_carbon_dust,
-                                LRN_silicate_dust,
-                                /*feedback_type=*/3);
-
-                        if(created_lrn_dust > 0.0)
-                        {
-                            double post_lrn_star_mass =
-                                Sp->P[p].getMass() -
-                                created_lrn_dust;
-
-                            if(post_lrn_star_mass <= 0.0)
-                            {
-                                Terminate(
-                                    "LRN dust creation would remove entire stellar particle mass");
-                            }
-
-                            Sp->P[p].setMass(
-                                post_lrn_star_mass);
-                        }
-                    }
-                }
-#endif
-
-
-                // --------------------------------------------------------
-                // The full transaction succeeded: gas received the ejecta,
-                // the star was debited, associated dust processing occurred,
-                // and the tranche may now be marked complete.
-                // --------------------------------------------------------
-
-                Sp->P[p].FeedbackFlag |=
-                    tranche_mask;
-
-
-                if(all_snii_tranches_complete(
-                       (unsigned int)
-                       Sp->P[p].FeedbackFlag))
-                {
-                    Sp->P[p].FeedbackFlag |= 1;
-
-                    if(All.FeedbackDebugLevel >= 2)
-                    {
-                        printf(
-                            "[SNII_COMPLETE|T=%d|a=%.8g|z=%.6f] "
-                            "star=%d starID=%llu age=%.6f Myr\n",
-                            All.ThisTask,
-                            (double)All.Time,
-                            1.0 / All.Time - 1.0,
-                            p,
-                            (unsigned long long)
-                                Sp->P[p].ID.get(),
-                            age_Myr);
-                    }
-                }
-                }
-                else
-                {
-                    // Leave this tranche pending. The complete event will be
-                    // retried later without a duplicated energy-reservoir
-                    // contribution or orphaned SNII/LRN dust production.
-                    snii_deposition_failures++;
-                }
+                tranches.push_back(t);
             }
         }
 
-
-        // Do NOT simply mark an SSP complete at MAX_TYPEII_TIME.
-        //
-        // If a star ever missed one or more scheduled bins (for example
-        // because it was temporarily inactive), continue releasing at most
-        // one overdue tranche per feedback call until all four are done.
-        // This preserves the integrated budget without recreating a single
-        // large catch-up burst.
-
-
-        // ================================================================
-        // 2b) AGB enrichment.
-        // ================================================================
-
-        // Age-dependent AGB is processed collectively after the SN/local star pass.
-
-        if(All.AGBFeedbackMode == 0 && AGB_Yields.is_table_loaded() &&
-           age_Myr >= MIN_AGB_TIME &&
-           !(Sp->P[p].FeedbackFlag & 2))
-        {
-            agb_stars_eligible++;
-
-
-            // ------------------------------------------------------------
-            // Stellar particle represents an SSP.
-            // ------------------------------------------------------------
-
-            const double m_ssp_msun =
-                stellar_birth_mass_msun(
-                    Sp,
-                    p);
-
-            double Z_star =
-                Sp->P[p].Metallicity;
-
-
-            // ------------------------------------------------------------
-            // IMF-integrated MESA AGB yield.
-            // ------------------------------------------------------------
-
-            AGBIMFYield agb =
-                AGB_Yields.get_imf_yields(
-                    Z_star);
-
-
-            // ------------------------------------------------------------
-            // Validate yield table.
-            // ------------------------------------------------------------
-
-            if(!std::isfinite(agb.Z_per_Mstar)  ||
-               !std::isfinite(agb.C_per_Mstar)  ||
-               !std::isfinite(agb.N_per_Mstar)  ||
-               !std::isfinite(agb.O_per_Mstar)  ||
-               !std::isfinite(agb.Ne_per_Mstar) ||
-               !std::isfinite(agb.Mg_per_Mstar))
-            {
-                Terminate(
-                    "Non-finite IMF-integrated AGB yield");
-            }
-
-            if(agb.Z_per_Mstar  < 0.0 ||
-               agb.C_per_Mstar  < 0.0 ||
-               agb.N_per_Mstar  < 0.0 ||
-               agb.O_per_Mstar  < 0.0 ||
-               agb.Ne_per_Mstar < 0.0 ||
-               agb.Mg_per_Mstar < 0.0)
-            {
-                Terminate(
-                    "Negative IMF-integrated AGB yield");
-            }
-
-
-            // ------------------------------------------------------------
-            // Actual AGB metal ejecta represented by this SSP.
-            // ------------------------------------------------------------
-
-            double MZ_msun =
-                agb.Z_per_Mstar *
-                m_ssp_msun;
-
-            double C_msun =
-                agb.C_per_Mstar *
-                m_ssp_msun;
-
-            double N_msun =
-                agb.N_per_Mstar *
-                m_ssp_msun;
-
-            double O_msun =
-                agb.O_per_Mstar *
-                m_ssp_msun;
-
-            double Ne_msun =
-                agb.Ne_per_Mstar *
-                m_ssp_msun;
-
-            double Mg_msun =
-                agb.Mg_per_Mstar *
-                m_ssp_msun;
-
-
-            if(MZ_msun > 0.0)
-            {
-                // --------------------------------------------------------
-                // Total AGB metal ejecta.
-                // --------------------------------------------------------
-
-                double MZ_total_code =
-                    MZ_msun *
-                    SOLAR_MASS /
-                    All.UnitMass_in_g;
-
-
-                // Current model assumes negligible AGB thermal feedback.
-                double E_erg  = 0.0;
-                double E_code = 0.0;
-
-
-                // --------------------------------------------------------
-                // Composition-resolved AGB ejecta.
-                // --------------------------------------------------------
-
-                ElementYields elem_total;
-
-                elem_total.C =
-                    C_msun *
-                    SOLAR_MASS /
-                    All.UnitMass_in_g;
-
-                elem_total.N =
-                    N_msun *
-                    SOLAR_MASS /
-                    All.UnitMass_in_g;
-
-                elem_total.O =
-                    O_msun *
-                    SOLAR_MASS /
-                    All.UnitMass_in_g;
-
-                elem_total.Ne =
-                    Ne_msun *
-                    SOLAR_MASS /
-                    All.UnitMass_in_g;
-
-                elem_total.Mg =
-                    Mg_msun *
-                    SOLAR_MASS /
-                    All.UnitMass_in_g;
-
-                // Current MESA table does not explicitly resolve Si/Fe.
-                elem_total.Si = 0.0;
-                elem_total.Fe = 0.0;
-
-
-                // --------------------------------------------------------
-                // Yield sanity check.
-                // --------------------------------------------------------
-
-                double tracked_msun =
-                    C_msun +
-                    N_msun +
-                    O_msun +
-                    Ne_msun +
-                    Mg_msun;
-
-                if(tracked_msun >
-                   MZ_msun * 1.000001)
-                {
-                    printf(
-                        "[AGB_YIELD_ERROR] "
-                        "Z*=%.6g M*=%.6g "
-                        "tracked=%.6e > "
-                        "total_metals=%.6e Msun\n",
-                        Z_star,
-                        m_ssp_msun,
-                        tracked_msun,
-                        MZ_msun);
-
-                    Terminate(
-                        "AGB elemental ejecta exceed total metal ejecta");
-                }
-
-
-                // --------------------------------------------------------
-                // Partition AGB ejecta.
-                //
-                // Current AGB tables lack Si and Fe, so we cannot make a
-                // fully species-conserving silicate component yet.
-                //
-                // The requested AGB condensation efficiency is partitioned into the
-                // prescribed 60/40 carbonaceous/silicate birth mixture.
-                //
-                // Carbon is capped by the explicit C ejecta. Silicate is
-                // constrained by explicit O, explicit Mg, and the untracked
-                // metal residual used as a combined proxy for Si+Fe.
-                // --------------------------------------------------------
-
-                ElementYields elem_gas =
-                    elem_total;
-
-                double MZ_gas_code =
-                    MZ_total_code;
-
-#ifdef DUST
-                StellarDustPartition agb_dust;
-
-                if(All.DustParticlesPerAGB > 0)
-                {
-                    agb_dust =
-                        partition_stellar_ejecta_for_dust(
-                            MZ_total_code,
-                            elem_gas,
-                            All.DustYieldAGB,
-                            /*target_carbon_fraction=*/0.60,
-                            /*use_element_resolved_silicate_limits=*/false);
-
-                    MZ_gas_code =
-                        agb_dust.gas_metals;
-                }
-#endif
-
-                // --------------------------------------------------------
-                // Deposit only the gas-phase AGB ejecta.
-                // --------------------------------------------------------
-
-                bool ejecta_deposited =
-                    apply_feedback_event(
-                        Sp,
-                        Tree,
-                        D,
-                        p,
-                        /*is_SNII=*/false,
-                        E_code,
-                        MZ_gas_code,
-                        elem_gas);
-
-
-                if(ejecta_deposited)
-                {
-                    // Remove TOTAL AGB metal ejecta from the star.
-                    double new_star_mass =
-                        Sp->P[p].getMass() -
-                        MZ_total_code;
-
-                    if(new_star_mass <= 0.0)
-                    {
-                        Terminate(
-                            "AGB feedback would remove entire stellar particle mass");
-                    }
-
-                    Sp->P[p].setMass(
-                        new_star_mass);
-
-
-#ifdef DUST
-                    if(agb_dust.total_dust > 0.0)
-                    {
-                        double created_agb_dust =
-                            create_dust_particles_from_feedback(
-                                Sp,
-                                p,
-                                agb_dust.carbon_dust,
-                                agb_dust.silicate_dust,
-                                /*feedback_type=*/2);
-
-                        double creation_tolerance =
-                            1e-12 *
-                            std::max(
-                                agb_dust.total_dust,
-                                1e-30);
-
-                        if(std::abs(
-                               created_agb_dust -
-                               agb_dust.total_dust) >
-                           creation_tolerance)
-                        {
-                            Terminate(
-                                "AGB dust creation did not realize partitioned dust mass");
-                        }
-                    }
-#endif
-
-                    // Mark the AGB event complete only after gas actually
-                    // received the gas-phase ejecta and any dust was spawned.
-                    Sp->P[p].FeedbackFlag |= 2;
-
-                    agb_event_count++;
-
-                    agb_total_metals_g +=
-                        MZ_msun *
-                        SOLAR_MASS;
-
-                    agb_total_energy_erg +=
-                        E_erg;
-
-                    if(agb_event_count < 10 &&
-                       All.ThisTask == 0)
-                    {
-                        printf(
-                            "[AGB_YIELD] "
-                            "Z*=%.5f Mstar=%.3e "
-                            "yZ=%.3e yC=%.3e yN=%.3e "
-                            "yO=%.3e yNe=%.3e yMg=%.3e\n",
-                            Z_star,
-                            m_ssp_msun,
-                            agb.Z_per_Mstar,
-                            agb.C_per_Mstar,
-                            agb.N_per_Mstar,
-                            agb.O_per_Mstar,
-                            agb.Ne_per_Mstar,
-                            agb.Mg_per_Mstar);
-                    }
-                }
-                else
-                {
-                    // Leave FeedbackFlag bit 1 unset so this event can be
-                    // retried after the gas-neighbor environment changes.
-                    agb_deposition_failures++;
-                }
-            }
-        }
-
-
-        // Track all stars checked for AGB eligibility.
+        // Age-dependent AGB is processed collectively after the SN pass.
         if(AGB_Yields.is_table_loaded())
             agb_stars_checked++;
-
     } // end star loop
-    if(AGB_Yields.is_table_loaded() && All.AGBFeedbackMode>0)
-      apply_distributed_agb_pass(Sp,Tree,D,comm);
 
 
     // ====================================================================
-    // 3) Periodic diagnostics.
+    // 3) Deposit reservoir retries and SNII tranches as one batch over
+    //    all tasks (see cg_fb_dist above).
+    // ====================================================================
+
+    long long n_thermal_local = (long long)thermal.size(), n_thermal = 0;
+    MPI_Allreduce(&n_thermal_local, &n_thermal, 1, MPI_LONG_LONG, MPI_SUM, comm);
+
+    // Self-check on the first calls with events: feedback moves mass
+    // between stars, gas, and dust but must not create or lose any.
+    static int mass_check_remaining = 50;
+    const bool check_mass = mass_check_remaining > 0 && n_thermal > 0;
+    const double mass_before = check_mass ? cg_dist::total_baryon_mass(Sp, comm) : 0.0;
+
+    if(n_thermal > 0)
+    {
+        // Search the gas at its current positions.
+        Sp->drift_all_particles();
+        cg_fb_dist::build_gas_tree(Sp);
+
+        std::vector<char> deposited;
+        std::vector<cg_fb_dist::Kernel> kernels;
+        cg_fb_dist::deposit_thermal_events(Sp, thermal, deposited, kernels, comm);
+
+#ifdef DUST
+        // Dust spawned below is excluded from this call's shock erosion.
+        const int first_new_dust = Sp->NumPart;
+        std::vector<DustShockEvent> shocks;
+#endif
+
+        // ----------------------------------------------------------------
+        // The full transaction succeeded for these tranches: gas received
+        // the ejecta, so debit the star, create dust, queue shock erosion,
+        // and mark the tranche complete.  Failed tranches stay pending and
+        // are retried later without a duplicated reservoir contribution or
+        // orphaned SNII/LRN dust production.
+        // ----------------------------------------------------------------
+        for(const SNIITranche &t : tranches)
+        {
+            const int p = t.star;
+
+            if(!deposited[t.event])
+            {
+                snii_deposition_failures++;
+                continue;
+            }
+
+            // Remove this tranche's TOTAL metal ejecta from the star.
+            const double new_star_mass = Sp->P[p].getMass() - t.MZ_total_code;
+            if(new_star_mass <= 0.0)
+                Terminate("SNII feedback tranche would remove entire stellar particle mass");
+            Sp->P[p].setMass(new_star_mass);
+
+#ifdef DUST
+            if(t.dust.total_dust > 0.0)
+            {
+                // DustParticlesPerSNII is the TOTAL representation of the
+                // whole SSP SNII/HN episode, distributed over the tranches.
+                const double created = create_snii_dust_for_tranche(
+                    Sp, p, t.dust.carbon_dust, t.dust.silicate_dust, t.tranche);
+                if(std::abs(created - t.dust.total_dust) > 1e-12 * std::max(t.dust.total_dust, 1e-30))
+                    Terminate("SNII dust creation did not realize partitioned dust mass");
+            }
+
+            // Shock destruction from this tranche only, applied below.
+            {
+                const cg_fb_dist::Kernel &k = kernels[t.event];
+                DustShockEvent shock;
+                for(int d = 0; d < 3; d++)
+                    shock.pos[d] = Sp->P[p].IntPos[d];
+                shock.key    = (std::uint64_t)Sp->P[p].ID.get();
+                shock.E_code = t.E_code;
+                // Nearest gas within 50 kpc sets the ambient density and
+                // receives the returned dust material.
+                const bool near = k.found && k.nearest.r2 <= 50.0 * 50.0;
+                shock.rho_cgs   = near ? k.nearest.payload[1] * All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam : -1.0;
+                shock.gas_task  = near ? k.nearest.task : -1;
+                shock.gas_index = near ? k.nearest.index : -1;
+                shock.gas_id    = near ? k.nearest.id : 0;
+                shocks.push_back(shock);
+            }
+
+            // LRN dust.  LRN yields are tiny: split over the four SNII
+            // tranches, the individual dust masses fall below
+            // MIN_DUST_PARTICLE_MASS in dust.cc and the LRN PartType6
+            // population disappears.  Inject the FULL LRN dust budget once,
+            // with the first SNII tranche; SNII/HN energy and metals remain
+            // time-distributed.
+            if(t.tranche == 0)
+            {
+                const double n_LRN_full         = All.DustLRNRatePerCCSN * CCSN_NUMBER_PER_MSUN * t.m_ssp_msun;
+                const double LRN_dust_mass_code = n_LRN_full * All.DustLRNDustMassMsun * SOLAR_MASS / fb_code_mass_in_g();
+                if(LRN_dust_mass_code > 0.0)
+                {
+                    const double created_lrn_dust = create_dust_particles_from_feedback(
+                        Sp, p, 0.10 * LRN_dust_mass_code, 0.90 * LRN_dust_mass_code, /*feedback_type=*/3);
+                    if(created_lrn_dust > 0.0)
+                    {
+                        const double post_lrn_star_mass = Sp->P[p].getMass() - created_lrn_dust;
+                        if(post_lrn_star_mass <= 0.0)
+                            Terminate("LRN dust creation would remove entire stellar particle mass");
+                        Sp->P[p].setMass(post_lrn_star_mass);
+                    }
+                }
+            }
+#endif
+
+            Sp->P[p].FeedbackFlag |= t.mask;
+            if(all_snii_tranches_complete((unsigned int)Sp->P[p].FeedbackFlag))
+            {
+                Sp->P[p].FeedbackFlag |= 1;
+                if(All.FeedbackDebugLevel >= 2)
+                    printf("[SNII_COMPLETE|T=%d|a=%.8g|z=%.6f] star=%d starID=%llu age=%.6f Myr\n", All.ThisTask,
+                           (double)All.Time, 1.0 / All.Time - 1.0, p, (unsigned long long)Sp->P[p].ID.get(), t.age_Myr);
+            }
+        }
+
+#ifdef DUST
+        erode_dust_from_sn_shocks_batch(Sp, shocks, first_new_dust, comm);
+#endif
+    }
+
+    // Do NOT simply mark an SSP complete at MAX_TYPEII_TIME.  If a star
+    // missed one or more scheduled bins (for example because no gas was
+    // available), it keeps releasing at most one overdue tranche per
+    // feedback call until all four are done.
+
+    if(AGB_Yields.is_table_loaded() && All.AGBFeedbackMode > 0)
+        apply_distributed_agb_pass(Sp, comm);
+
+    if(check_mass)
+    {
+        mass_check_remaining--;
+        const double mass_after = cg_dist::total_baryon_mass(Sp, comm);
+        if(All.ThisTask == 0)
+            printf("[FB_MASS_CHECK] step %d: %lld SNII/reservoir events, gas+star+dust mass %.17g -> %.17g (rel. change %.3g)\n",
+                   All.NumCurrentTiStep, n_thermal, mass_before, mass_after, (mass_after - mass_before) / mass_before);
+    }
+
+    // ====================================================================
+    // 4) Periodic diagnostics.
     // ====================================================================
 
     static int feedback_call_count = 0;

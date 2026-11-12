@@ -32,6 +32,7 @@
 #include "../logs/timer.h"
 #include "../system/system.h"
 #include "../cooling_sfr/cooling.h"
+#include "../cooling_sfr/cg_distributed.h"
 
 // ── Mass / size thresholds ────────────────────────────────────────────────────
 // Minimum mass to bother creating a dust particle. Set well below any
@@ -1951,6 +1952,25 @@ return 0;
  *
  * Returns 1 to signal the caller that the particle was destroyed.
  */
+// Remove a dust particle whose material has already been accounted for.
+static void mark_dust_particle_destroyed(simparticles *Sp, int dust_idx,
+                                         long long *counter, double *mass_counter)
+{
+  const double dust_mass = Sp->P[dust_idx].getMass();
+  Sp->P[dust_idx].setMass(DUST_MASS_TO_DESTROY);
+  Sp->P[dust_idx].setType(3);
+  Sp->P[dust_idx].ID.set(0);
+  memset(&Sp->DustP[dust_idx], 0, sizeof(dust_data));
+  Sp->DustP[dust_idx].GrainRadius = All.DustMinGrainSize;
+  LocalDustMassChange -= dust_mass;
+  LocalDustDestroyedThisStep++;
+  /* The particle has changed type and must be removed from the dust/gravity
+   * time-bin bookkeeping before the next force calculation or snapshot. */
+  DustNeedsSynchronization = 1;
+  if(counter)      (*counter)++;
+  if(mass_counter) (*mass_counter) += dust_mass;
+}
+
 static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
                                          int nearest_gas, long long *counter,
                                          double *mass_counter)
@@ -1973,18 +1993,7 @@ static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
           M_carbon,
           M_silicate);
   }
-  Sp->P[dust_idx].setMass(DUST_MASS_TO_DESTROY);
-  Sp->P[dust_idx].setType(3);
-  Sp->P[dust_idx].ID.set(0);
-  memset(&Sp->DustP[dust_idx], 0, sizeof(dust_data));
-  Sp->DustP[dust_idx].GrainRadius = All.DustMinGrainSize;
-  LocalDustMassChange -= dust_mass;
-  LocalDustDestroyedThisStep++;
-  /* The particle has changed type and must be removed from the dust/gravity
-   * time-bin bookkeeping before the next force calculation or snapshot. */
-  DustNeedsSynchronization = 1;
-  if(counter)      (*counter)++;
-  if(mass_counter) (*mass_counter) += dust_mass;
+  mark_dust_particle_destroyed(Sp, dust_idx, counter, mass_counter);
   return 1;
 }
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2575,169 +2584,156 @@ void analyze_grain_size_distribution(simparticles *Sp)
   DUST_PRINT("================================\n");
 }
 // ═══════════════════════════════════════════════════════════════════════════════
-// consume_dust_by_astration
-// ═══════════════════════════════════════════════════════════════════════════════
-/**
- * Remove dust mass proportional to the local dust-to-gas ratio when a star
- * forms (astration — dust is incorporated into the new star).
- *
- * The search radius is set to the gas cell radius (derived from density and
- * mass), capped at the SPH smoothing length. All dust within the radius is
- * weighted by 1/distance and consumed proportionally to match stellar_mass_formed
- * × local D/G ratio. Grains eroded below DUST_MASS_TO_DESTROY are fully removed.
- */
-// ═══════════════════════════════════════════════════════════════════════════════
-// consume_dust_by_astration
+// Astration
 // ═══════════════════════════════════════════════════════════════════════════════
 /**
  * Remove dust mass proportional to the local dust-to-gas ratio when a star
  * forms (astration — dust is incorporated into the new star).
  *
  * The search radius is the larger of the gas cell's own implied volume
- * (derived from density and mass) and its SPH smoothing length — previously
- * this was capped AT the smoothing length as an upper bound, which had no
- * effect in practice since the cell radius is almost always far smaller than
- * Hsml; the search radius therefore silently collapsed to the tiny cell
- * volume alone. Using Hsml as a floor instead gives astration access to the
- * same local ISM neighborhood used by growth, coagulation, and shattering
- * elsewhere in this file.
- *
- * All dust within the radius is weighted by 1/distance and consumed
- * proportionally to match stellar_mass_formed × local D/G ratio. Grains
+ * (derived from density and mass) and its SPH smoothing length, giving
+ * astration the same local ISM neighbourhood used by growth, coagulation,
+ * and shattering.  All dust within the radius is weighted by 1/distance and
+ * consumed proportionally to match stellar_mass_formed × local D/G.  Grains
  * eroded below DUST_MASS_TO_DESTROY are fully removed.
+ *
+ * Star formation only queues the event (consume_dust_by_astration); the
+ * dust is consumed by apply_queued_dust_astration() once all stars of the
+ * step exist, collectively over all tasks, so grains on other tasks within
+ * the radius take part.
  */
+struct dust_astration_event
+{
+  MyIntPosType pos[3];
+  std::uint64_t key;  // star ID; events are applied in key order
+  double radius, gas_mass, stellar_mass;
+  int star_index;
+};
+static std::vector<dust_astration_event> queued_astration;
+
 void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mass_formed,
                                 int star_idx, double hsml)
 {
   if(!All.DustEnableAstration) return;
-  // Diagnostic counters (static: accumulated over full run on this task).
-  // Track every attempt and where it dies, so the search-radius fix's actual
-  // effect can be measured directly rather than inferred from event counts.
-  static long long astration_attempts      = 0;
-  static long long astration_zero_neighbor = 0;
-  static long long astration_zero_dustmass = 0;
-  static long long astration_overflow      = 0;
-  astration_attempts++;
-  double gas_mass  = Sp->P[gas_idx].getMass();
-  double rho_code  = Sp->SphP[gas_idx].Density * All.cf_a3inv;
-  double cell_radius = cbrt(3.0 * gas_mass / (4.0 * M_PI * rho_code));
-  // FIX: search_radius now genuinely extends to the SPH smoothing length
-  // rather than collapsing to the (much smaller) cell_radius alone.
-  double search_radius = std::max(cell_radius, (double)Sp->SphP[gas_idx].Hsml);
-  const int MAX_NEIGHBORS = 512;  // widened from 100 — the search volume is
-                                   // now much larger, so more dust particles
-                                   // may legitimately be found per event.
-  int    neighbor_indices[MAX_NEIGHBORS];
-  double neighbor_distances[MAX_NEIGHBORS];
-  int    n_neighbors = 0;
-  dust_hash.find_neighbors(Sp, gas_idx, search_radius,
-                           neighbor_indices, neighbor_distances,
-                           &n_neighbors, MAX_NEIGHBORS);
-  if(n_neighbors == 0) { astration_zero_neighbor++; return; }
-  if(n_neighbors == MAX_NEIGHBORS) {
-    astration_overflow++;
-    if(astration_overflow <= 20 && All.ThisTask == 0)
-      DUST_PRINT("[ASTRATION_OVERFLOW] search may have found more than "
-                 "%d dust neighbors; results may be truncated. "
-                 "RunningTotal=%lld\n", MAX_NEIGHBORS, astration_overflow);
-  }
-  // Sum total dust mass within the search volume
-  double total_dust_mass = 0.0;
-  for(int i = 0; i < n_neighbors; i++) {
-    int di = neighbor_indices[i];
-    if(Sp->P[di].getType() == DUST_PARTICLE_TYPE)
-      total_dust_mass += Sp->P[di].getMass();
-  }
-  if(total_dust_mass < DUST_MASS_TO_DESTROY) { astration_zero_dustmass++; return; }
-  // Dust mass to consume = stellar mass formed × local D/G
-  double local_DG       = total_dust_mass / gas_mass;
-  // Scaled by a tunable calibration factor. Roughly calibrating by
-  // destruction-timescale ratios from Jones & Nuth (2011)
-  // (SN shocks ~0.3-0.6 Gyr, astration ~2-6 Gyr => astration should be
-  // roughly 5-20% of the astration+shock destruction).
-  double dust_to_consume = std::min(stellar_mass_formed * local_DG * All.DustAstrationCalibration,
-                                      total_dust_mass);
-  // Weight by 1/distance for proximity preference
-  double weight_sum = 0.0;
-  for(int i = 0; i < n_neighbors; i++)
-    if(neighbor_distances[i] > 0)
-      weight_sum += 1.0 / neighbor_distances[i];
-  int    dust_consumed_count = 0;
-  double dust_consumed_mass  = 0.0;
-  for(int i = 0; i < n_neighbors; i++) {
-    int di = neighbor_indices[i];
-    if(Sp->P[di].getType() != DUST_PARTICLE_TYPE) continue;
-    double weight          = (neighbor_distances[i] > 0)
-                             ? (1.0 / neighbor_distances[i]) : 1.0;
-    double this_fraction   = weight / weight_sum;
-    double mass_loss       = dust_to_consume * this_fraction;
-    double current_mass    = Sp->P[di].getMass();
-    double new_mass        = current_mass - mass_loss;
-    if(new_mass < DUST_MASS_TO_DESTROY) {
-      log_dust_particle_event(Sp, di, -1, DUST_EVENT_ASTRATION);
-      Sp->P[di].setMass(0.0);
-      Sp->P[di].setType(3);
-      Sp->P[di].ID.set(0);
-      memset(&Sp->DustP[di], 0, sizeof(dust_data));
-      dust_consumed_count++;
-      dust_consumed_mass += current_mass;
-    } else {
-      Sp->P[di].setMass(new_mass);
-      dust_consumed_mass += mass_loss;
+  const double gas_mass    = Sp->P[gas_idx].getMass();
+  const double rho_code    = Sp->SphP[gas_idx].Density * All.cf_a3inv;
+  const double cell_radius = cbrt(3.0 * gas_mass / (4.0 * M_PI * rho_code));
+  dust_astration_event ev;
+  for(int k = 0; k < 3; k++) ev.pos[k] = Sp->P[gas_idx].IntPos[k];
+  ev.key          = 0;  // spawned stars get their IDs after the SF loop
+  ev.radius       = std::max(cell_radius, hsml);
+  ev.gas_mass     = gas_mass;
+  ev.stellar_mass = stellar_mass_formed;
+  ev.star_index   = star_idx;
+  queued_astration.push_back(ev);
+}
+
+void apply_queued_dust_astration(simparticles *Sp, MPI_Comm Communicator)
+{
+  if(!All.DustEnableAstration) return;
+  for(dust_astration_event &ev : queued_astration)
+    ev.key = (std::uint64_t)Sp->P[ev.star_index].ID.get();
+  std::vector<int> owner;
+  const std::vector<dust_astration_event> all = cg_dist::allgather(queued_astration, Communicator, &owner);
+  const size_t n_events = all.size();
+  int this_task;
+  MPI_Comm_rank(Communicator, &this_task);
+  size_t first = 0;
+  while(first < n_events && owner[first] < this_task) first++;
+  if(n_events == 0) { queued_astration.clear(); return; }
+
+  static long long astration_attempts = 0, astration_zero_neighbor = 0, astration_zero_dustmass = 0;
+  static long long astration_count = 0;
+
+  cg_dist::LocalTree dust_tree;
+  dust_tree.build(Sp, 0, Sp->NumPart, [Sp](int i) {
+    return Sp->P[i].getType() == DUST_PARTICLE_TYPE && Sp->P[i].getMass() > 0.0 && Sp->P[i].ID.get() != 0;
+  });
+  // Per event: dust mass, 1/distance weight, count; summed over all tasks.
+  std::vector<double> sums(3 * n_events, 0.0);
+  std::vector<std::vector<std::pair<int, double>>> found(n_events);
+  for(size_t e = 0; e < n_events; e++)
+    dust_tree.radius(Sp, all[e].pos, all[e].radius, [&](int i, double d2) {
+      const double d = std::sqrt(d2);
+      const double w = d > 0 ? 1.0 / d : 1.0;
+      sums[3 * e + 0] += Sp->P[i].getMass();
+      sums[3 * e + 1] += w;
+      sums[3 * e + 2] += 1.0;
+      found[e].emplace_back(i, w);
+    });
+  cg_dist::sum_over_tasks(sums, Communicator);
+
+  std::vector<size_t> order(n_events);
+  for(size_t e = 0; e < n_events; e++) order[e] = e;
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return all[a].key < all[b].key; });
+
+  std::vector<double> consumed(n_events, 0.0);
+  long long n_destroyed_local = 0;
+  for(size_t e : order) {
+    astration_attempts++;
+    if(sums[3 * e + 2] == 0) { astration_zero_neighbor++; continue; }
+    const double total_dust_mass = sums[3 * e];
+    if(total_dust_mass < DUST_MASS_TO_DESTROY) { astration_zero_dustmass++; continue; }
+    astration_count++;
+    // Dust mass to consume = stellar mass formed × local D/G, scaled by a
+    // calibration factor.  Roughly calibrating by destruction-timescale
+    // ratios from Jones & Nuth (2011) (SN shocks ~0.3-0.6 Gyr, astration
+    // ~2-6 Gyr => astration should be roughly 5-20% of the astration+shock
+    // destruction).
+    const double local_DG = total_dust_mass / all[e].gas_mass;
+    const double dust_to_consume =
+        std::min(all[e].stellar_mass * local_DG * All.DustAstrationCalibration, total_dust_mass);
+    for(const auto &f : found[e]) {
+      const int di = f.first;
+      if(Sp->P[di].getType() != DUST_PARTICLE_TYPE) continue;  // consumed by an earlier event
+      const double current_mass = Sp->P[di].getMass();
+      const double mass_loss    = dust_to_consume * f.second / sums[3 * e + 1];
+      const double new_mass     = current_mass - mass_loss;
+      if(new_mass < DUST_MASS_TO_DESTROY) {
+        log_dust_particle_event(Sp, di, -1, DUST_EVENT_ASTRATION);
+        Sp->P[di].setMass(0.0);
+        Sp->P[di].setType(3);
+        Sp->P[di].ID.set(0);
+        memset(&Sp->DustP[di], 0, sizeof(dust_data));
+        DustNeedsSynchronization = 1;
+        n_destroyed_local++;
+        consumed[e] += current_mass;
+      } else {
+        Sp->P[di].setMass(new_mass);
+        consumed[e] += mass_loss;
+      }
     }
   }
-  NDustDestroyedByAstration += dust_consumed_count;
-  TotalDustMassAstrated     += dust_consumed_mass;  // stays in code units —
-                                                     // print_dust_statistics()
-                                                     // already converts this
-                                                     // to Msun before printing.
-  // Transfer consumed dust mass to the new star, update mass and metallicity
-  if(star_idx >= 0 && dust_consumed_mass > 0) {
-    double star_mass = Sp->P[star_idx].getMass();
-    if(star_mass > 0) {
-      double new_star_mass = star_mass + dust_consumed_mass;
-      Sp->P[star_idx].setMass(new_star_mass);
-      Sp->P[star_idx].Metallicity = (star_mass * Sp->P[star_idx].Metallicity + dust_consumed_mass) / new_star_mass;
+  NDustDestroyedByAstration += n_destroyed_local;
+  for(size_t e = 0; e < n_events; e++)
+    TotalDustMassAstrated += consumed[e];  // code units; converted when printed
+  cg_dist::sum_over_tasks(consumed, Communicator);
+
+  // Transfer the consumed dust mass to the new star; update its metallicity.
+  for(size_t s = 0; s < queued_astration.size(); s++) {
+    const double m = consumed[first + s];
+    const int star = queued_astration[s].star_index;
+    const double star_mass = Sp->P[star].getMass();
+    if(m > 0 && star_mass > 0) {
+      const double new_star_mass = star_mass + m;
+      Sp->P[star].setMass(new_star_mass);
+      Sp->P[star].Metallicity = (star_mass * Sp->P[star].Metallicity + m) / new_star_mass;
     }
   }
-  // ── Diagnostics ──────────────────────────────────────────────────────────
-  static int astration_count = 0;
-  astration_count++;
-  if(astration_count <= 20)
-    DUST_PRINT("[ASTRATION_CHECK|T=%d] #%d: "
-               "hsml=%.3e search_r=%.3e cell_size=%.3e "
-               "SF=%.3e gas_mass=%.3e D/G=%.3e "
-               "dust_to_consume=%.3e n=%d consumed=%d mass=%.3e\n",
-               All.ThisTask, astration_count,
-               hsml, search_radius, dust_hash.cell_size,
-               stellar_mass_formed, gas_mass, local_DG,
-               dust_to_consume, n_neighbors, dust_consumed_count, dust_consumed_mass);
-  if(astration_count % 100 == 0) {
-    // FIX: dust_consumed_mass is in code mass units; convert before
-    // printing, matching the mass_to_msun pattern used elsewhere in the file.
-    double mass_to_msun = All.UnitMass_in_g / 1.989e33 / All.HubbleParam;
-    DUST_PRINT("[ASTRATION] Event #%d: "
-               "search_r=%.2e (hsml=%.2e cell=%.2e) "
-               "D/G=%.3e consumed=%d (%.2e Msun)\n",
-               astration_count,
-               search_radius, hsml, dust_hash.cell_size,
-               local_DG, dust_consumed_count, dust_consumed_mass * mass_to_msun);
+  queued_astration.clear();
+
+  if(All.ThisTask == 0) {
+    static long long next_report = 1000;
+    if(astration_attempts >= next_report) {
+      DUST_PRINT("[ASTRATION_DIAG] attempts=%lld  zero_neighbor=%lld(%.1f%%)  "
+                 "zero_dustmass=%lld(%.1f%%)  succeeded=%lld\n",
+                 astration_attempts,
+                 astration_zero_neighbor, 100.0 * astration_zero_neighbor / astration_attempts,
+                 astration_zero_dustmass, 100.0 * astration_zero_dustmass / astration_attempts,
+                 astration_count);
+      while(next_report <= astration_attempts) next_report += 1000;
+    }
   }
-  if(dust_consumed_count > 20)
-    DUST_PRINT("[ASTRATION_LARGE|T=%d|Step=%d] consumed=%d neighbors=%d "
-               "search_r=%.3e hsml=%.3e cell_size=%.3e D/G=%.3e\n",
-               All.ThisTask, All.NumCurrentTiStep,
-               dust_consumed_count, n_neighbors,
-               search_radius, hsml, dust_hash.cell_size, local_DG);
-  // Periodic bottleneck summary — confirms whether the search-radius fix
-  // actually reduced the zero-neighbor and zero-dust-mass failure rates.
-  if(All.ThisTask == 0 && astration_attempts % 1000 == 0)
-    DUST_PRINT("[ASTRATION_DIAG] attempts=%lld  zero_neighbor=%lld(%.1f%%)  "
-               "zero_dustmass=%lld(%.1f%%)  succeeded=%d\n",
-               astration_attempts,
-               astration_zero_neighbor, 100.0*astration_zero_neighbor/astration_attempts,
-               astration_zero_dustmass, 100.0*astration_zero_dustmass/astration_attempts,
-               astration_count);
 }
 // ═══════════════════════════════════════════════════════════════════════════════
 // radiation_pressure_efficiency (Q_pr)
@@ -2822,12 +2818,43 @@ double stellar_luminosity(simparticles *Sp, int star_idx)
  *   the drag velocity update and should not suppress the physical terminal
  *   velocity correction in the CGM.
  *
- * Only stars younger than 20 Myr are included (OB-dominated UV).
+ * Only stars younger than 20 Myr are included (OB-dominated UV).  They are
+ * taken from the list of all tasks' young stars built at each dust update,
+ * so grains near a domain boundary see the stars on the other side.
  */
+struct dust_young_star
+{
+  MyIntPosType pos[3];
+  double L_cgs;
+};
+static std::vector<dust_young_star> young_stars;
+static cg_dist::LocalTree young_star_tree;
+
+// Collective.  Gather every task's stars younger than 20 Myr.
+static void refresh_young_star_list(simparticles *Sp, MPI_Comm Communicator)
+{
+  std::vector<dust_young_star> mine;
+  if(All.DustEnableRadiationPressure)
+    for(int i = 0; i < Sp->NumPart; i++) {
+      if(Sp->P[i].getType() != 4) continue;
+      const double age_yr = get_stellar_age_Myr(Sp->P[i].StellarAge, All.Time) * 1.0e6;
+      if(age_yr > 20e6) continue;
+      dust_young_star y;
+      y.L_cgs = stellar_luminosity(Sp, i);
+      if(!(y.L_cgs > 0.0)) continue;
+      for(int k = 0; k < 3; k++) y.pos[k] = Sp->P[i].IntPos[k];
+      mine.push_back(y);
+    }
+  young_stars = cg_dist::allgather(mine, Communicator);
+  young_star_tree.build_points(young_stars.size(), [](size_t k, MyIntPosType *x) {
+    for(int d = 0; d < 3; d++) x[d] = young_stars[k].pos[d];
+  });
+}
+
 void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, double dt)
 {
   if(!All.DustEnableRadiationPressure) return;
-  if(!star_hash.is_built) return;
+  if(young_stars.empty()) return;
   // Diagnostic counters
   static long long radp_calls       = 0;
   static long long radp_with_stars  = 0;
@@ -2843,14 +2870,12 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
       ? std::max(2.0 * (double)Sp->SphP[nearest_gas].Hsml, 2.0 * star_hash.cell_size)
       : 2.0 * star_hash.cell_size;
   search_radius = std::min(search_radius, 10.0);
-  const int MAX_STAR_NEIGHBORS = 50;
-  int    neighbor_indices[MAX_STAR_NEIGHBORS];
-  double neighbor_distances[MAX_STAR_NEIGHBORS];
-  int    n_neighbors = 0;
-  star_hash.find_neighbors(Sp, dust_idx, search_radius,
-                           neighbor_indices, neighbor_distances,
-                           &n_neighbors, MAX_STAR_NEIGHBORS);
-  if(n_neighbors == 0) return;
+  // All young stars within the radius.  (The former hash search kept the
+  // first 50 stars of any age in hash order and then dropped the old ones.)
+  std::vector<std::pair<int, double>> neighbors;
+  young_star_tree.radius(Sp, Sp->P[dust_idx].IntPos, search_radius,
+                         [&](int k, double d2) { neighbors.emplace_back(k, d2); });
+  if(neighbors.empty()) return;
   radp_with_stars++;
   // ── Grain properties ──────────────────────────────────────────────────────
   double a_nm  = Sp->DustP[dust_idx].GrainRadius;
@@ -2862,16 +2887,11 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
   double m_single_grain_cgs   = (4.0/3.0) * M_PI * a_cm*a_cm*a_cm * rho_grain_cgs;
   // Accumulate radiation acceleration from all young neighbours
   double a_rad[3] = {0.0, 0.0, 0.0};
-  for(int i = 0; i < n_neighbors; i++) {
-    int si = neighbor_indices[i];
-    if(Sp->P[si].getType() != 4) continue;  // only stellar particles
-    // Age cut: only OB-dominated populations (< 20 Myr)
-    double age_yr = get_stellar_age_Myr(Sp->P[si].StellarAge, All.Time) * 1.0e6;
-    if(age_yr > 20e6) continue;
-    double L_cgs = stellar_luminosity(Sp, si);
-    if(L_cgs <= 0.0) continue;
+  for(const auto &nb : neighbors) {
+    const dust_young_star &star = young_stars[nb.first];
+    double L_cgs = star.L_cgs;
     // Convert code distance to physical cm
-    double r_code = neighbor_distances[i];
+    double r_code = std::sqrt(nb.second);
     double r_cgs  = r_code * (All.Time / All.HubbleParam) * 3.086e21;
     if(r_cgs <= 0.0) continue;
     // Vector from star to grain: nearest_image_intpos_to_pos(a, b) computes a - b,
@@ -2879,7 +2899,7 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
     // Dividing by r_code (the code-unit separation) normalises to a unit vector.
     // Radiation pressure acts along this direction (photons push dust away from source)
     double dxyz[3];
-    Sp->nearest_image_intpos_to_pos(Sp->P[dust_idx].IntPos, Sp->P[si].IntPos, dxyz);
+    Sp->nearest_image_intpos_to_pos(Sp->P[dust_idx].IntPos, star.pos, dxyz);
     // Radiation pressure acceleration on the single grain:
     //   F = (L / 4πr²c) × Q_pr × πa²
     //   a = F / m_grain
@@ -3063,6 +3083,203 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
  *   5. Grain coagulation in dense cold gas
  *   6. Grain shattering in turbulent diffuse gas
  */
+// ═══════════════════════════════════════════════════════════════════════════════
+// Decomposition-independent dust–gas association
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Each grain interacts with its nearest gas particle within
+// DUST_GAS_SEARCH_RADIUS.  That particle may live on another task when the
+// grain sits near a domain boundary, so the search is global:
+//
+//   1. each task finds the nearest local gas for its grains;
+//   2. grains whose search sphere reaches cells where other tasks hold gas ask
+//      those tasks for anything closer (occupancy routing, as for D/G);
+//   3. a grain whose nearest gas is remote is processed for this update on
+//      the task holding that gas ("visiting") and then sent back, so every
+//      dust routine still sees its gas as a local particle.
+//
+// Ties are broken by gas ID, so the association does not depend on the
+// decomposition.  Gas eligibility matches the former gas_hash membership
+// (high-resolution gas inside the zoom bounding box).
+
+static constexpr double DUST_GAS_SEARCH_RADIUS = 10.0;  // code length units
+static constexpr double DUST_GAS_ROUTE_CELL    = 10.0;  // occupancy cell side
+
+struct dust_gas_link
+{
+  int gas;            // gas index on the task holding it, or -1 if none
+  int task;           // task holding the nearest gas, or -1 if none
+  double r2;
+  std::uint64_t id;   // nearest gas ID
+  double hsml;        // its smoothing length
+};
+
+struct dust_gas_query
+{
+  MyIntPosType pos[3];
+  double r2_max;
+  int slot;
+};
+
+struct dust_gas_reply
+{
+  int slot, index;
+  double r2, hsml;
+  std::uint64_t id;
+};
+
+// Particle records travel as raw bytes, as in Gadget's own domain exchange.
+struct dust_particle_bytes
+{
+  unsigned char P[sizeof(particle_data)];
+  unsigned char DustP[sizeof(dust_data)];
+
+  void store(simparticles *Sp, int i)
+  {
+    memcpy(P, static_cast<const void *>(&Sp->P[i]), sizeof(particle_data));
+    memcpy(DustP, static_cast<const void *>(&Sp->DustP[i]), sizeof(dust_data));
+  }
+  void load(simparticles *Sp, int i) const
+  {
+    memcpy(static_cast<void *>(&Sp->P[i]), P, sizeof(particle_data));
+    memcpy(static_cast<void *>(&Sp->DustP[i]), DustP, sizeof(dust_data));
+  }
+};
+
+struct dust_visitor
+{
+  dust_particle_bytes particle;
+  double local_DTG;
+  int home_slot, gas_index;
+  std::uint64_t gas_id;
+};
+
+struct dust_visitor_return
+{
+  dust_particle_bytes particle;
+  int home_slot;
+};
+
+static bool dust_gas_eligible(simparticles *Sp, int j)
+{
+  if(Sp->P[j].getType() != 0) return false;
+  const double m = Sp->P[j].getMass();
+  if(!(m > 0.0) || m > gas_hash.zoom_mass_threshold) return false;
+  double pos[3];
+  Sp->intpos_to_pos(Sp->P[j].IntPos, pos);
+  for(int d = 0; d < 3; d++)
+    if(!std::isfinite(pos[d]) || pos[d] < gas_hash.bbox_min[d] || pos[d] > gas_hash.bbox_max[d]) return false;
+  return true;
+}
+
+static inline bool dust_gas_better(double r2, std::uint64_t id, const dust_gas_link &cur)
+{
+  return cur.task < 0 || r2 < cur.r2 || (r2 == cur.r2 && id < cur.id);
+}
+
+// Collective.  links[i] receives the global nearest eligible gas of every
+// live local grain i.
+static void associate_dust_with_gas(simparticles *Sp, const cg_dist::LocalTree &gas_tree,
+                                    std::vector<dust_gas_link> &links, MPI_Comm Communicator)
+{
+  int n_task, this_task;
+  MPI_Comm_size(Communicator, &n_task);
+  MPI_Comm_rank(Communicator, &this_task);
+  const double r_max2 = DUST_GAS_SEARCH_RADIUS * DUST_GAS_SEARCH_RADIUS;
+
+  links.assign((size_t)Sp->NumPart, dust_gas_link{-1, -1, 0.0, 0, 0.0});
+  for(int i = 0; i < Sp->NumPart; i++) {
+    if(Sp->P[i].getType() != DUST_PARTICLE_TYPE || Sp->P[i].getMass() <= DUST_MASS_TO_DESTROY) continue;
+    int j;
+    double r2;
+    if(gas_tree.nearest(Sp, Sp->P[i].IntPos, j, r2) && r2 <= r_max2)
+      links[i] = dust_gas_link{j, this_task, r2, (std::uint64_t)Sp->P[j].ID.get(), Sp->SphP[j].Hsml};
+  }
+  if(n_task == 1) return;
+
+  // Occupancy of the eligible gas, by task.
+  const long long n_c = std::max(1LL, (long long)std::floor(All.BoxSize / DUST_GAS_ROUTE_CELL));
+  const double cc = All.BoxSize / n_c;
+  auto ckey = [n_c](long long ix, long long iy, long long iz) {
+    ix = ((ix % n_c) + n_c) % n_c;
+    iy = ((iy % n_c) + n_c) % n_c;
+    iz = ((iz % n_c) + n_c) % n_c;
+    return ix + n_c * (iy + n_c * iz);
+  };
+  std::unordered_set<long long> local_cells;
+  for(int j = 0; j < Sp->NumGas; j++)
+    if(dust_gas_eligible(Sp, j)) {
+      double pos[3];
+      Sp->intpos_to_pos(Sp->P[j].IntPos, pos);
+      local_cells.insert(ckey((long long)std::floor(pos[0] / cc), (long long)std::floor(pos[1] / cc),
+                              (long long)std::floor(pos[2] / cc)));
+    }
+  std::vector<long long> mine(local_cells.begin(), local_cells.end());
+  std::vector<int> cell_task;
+  const std::vector<long long> all_cells = cg_dist::allgather(mine, Communicator, &cell_task);
+  std::unordered_map<long long, std::vector<int>> owners;
+  owners.reserve(all_cells.size());
+  for(size_t k = 0; k < all_cells.size(); k++)
+    if(cell_task[k] != this_task) owners[all_cells[k]].push_back(cell_task[k]);
+
+  // Ask the other tasks with gas inside each grain's current search sphere.
+  std::vector<std::vector<dust_gas_query>> queries(n_task);
+  std::vector<int> last_query(n_task, -1);
+  for(int i = 0; i < Sp->NumPart; i++) {
+    if(Sp->P[i].getType() != DUST_PARTICLE_TYPE || Sp->P[i].getMass() <= DUST_MASS_TO_DESTROY) continue;
+    const double r2q = links[i].task >= 0 ? links[i].r2 : r_max2;
+    const double rq = std::sqrt(r2q);
+    double c[3];
+    Sp->intpos_to_pos(Sp->P[i].IntPos, c);
+    long long lo[3], hi[3];
+    for(int d = 0; d < 3; d++) {
+      lo[d] = (long long)std::floor((c[d] - rq) / cc);
+      hi[d] = (long long)std::floor((c[d] + rq) / cc);
+    }
+    for(long long ix = lo[0]; ix <= hi[0]; ix++)
+      for(long long iy = lo[1]; iy <= hi[1]; iy++)
+        for(long long iz = lo[2]; iz <= hi[2]; iz++) {
+          const long long ic[3] = {ix, iy, iz};
+          double near2 = 0.0;
+          for(int d = 0; d < 3; d++) {
+            const double b0 = ic[d] * cc, b1 = b0 + cc;
+            const double dn = c[d] - std::max(b0, std::min(b1, c[d]));
+            near2 += dn * dn;
+          }
+          if(near2 > r2q) continue;
+          const auto it = owners.find(ckey(ix, iy, iz));
+          if(it == owners.end()) continue;
+          for(int task : it->second)
+            if(last_query[task] != i) {
+              last_query[task] = i;
+              dust_gas_query q;
+              for(int d = 0; d < 3; d++) q.pos[d] = Sp->P[i].IntPos[d];
+              q.r2_max = r2q;
+              q.slot = i;
+              queries[task].push_back(q);
+            }
+        }
+  }
+  std::vector<int> source;
+  const std::vector<dust_gas_query> got = cg_dist::exchange(queries, Communicator, &source);
+  std::vector<std::vector<dust_gas_reply>> replies(n_task);
+  for(size_t k = 0; k < got.size(); k++) {
+    int j;
+    double r2;
+    if(gas_tree.nearest(Sp, got[k].pos, j, r2) && r2 <= got[k].r2_max)
+      replies[source[k]].push_back(dust_gas_reply{got[k].slot, j, r2, (double)Sp->SphP[j].Hsml,
+                                                  (std::uint64_t)Sp->P[j].ID.get()});
+  }
+  std::vector<int> reply_task;
+  const std::vector<dust_gas_reply> back = cg_dist::exchange(replies, Communicator, &reply_task);
+  for(size_t k = 0; k < back.size(); k++) {
+    dust_gas_link &l = links[back[k].slot];
+    // For remote gas, gas is its index on the task holding it.
+    if(dust_gas_better(back[k].r2, back[k].id, l))
+      l = dust_gas_link{back[k].index, reply_task[k], back[k].r2, back[k].id, back[k].hsml};
+  }
+}
+
 void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
 {
   // Includes the collective existence check, so MPI waiting is not hidden.
@@ -3129,24 +3346,42 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     DUST_PRINT("=========================\n");
     verified = true;
   }
-  std::vector<int> nearest_gas_by_particle((size_t)Sp->NumPart, -1);
-  std::vector<double> gas_distance_by_particle((size_t)Sp->NumPart, -1.0);
+  // Self-check on the first calls: dust updates exchange mass between gas
+  // and grains but must not create or lose any, including for grains
+  // processed on another task.
+  static int mass_check_remaining = 20;
+  const bool check_mass = mass_check_remaining > 0;
+  const double mass_before = check_mass ? cg_dist::total_baryon_mass(Sp, Communicator) : 0.0;
+
+  // Gas, grains, and stars at their current positions.
+  Sp->drift_all_particles();
+  refresh_young_star_list(Sp, Communicator);
+
+  cg_dist::LocalTree assoc_gas_tree;
+  assoc_gas_tree.build(Sp, 0, Sp->NumGas, [Sp](int j) { return dust_gas_eligible(Sp, j); });
+  std::vector<dust_gas_link> links;
+  associate_dust_with_gas(Sp, assoc_gas_tree, links, Communicator);
+
+  // Growth, coagulation, and shattering require a resolved local gas
+  // association.  A fixed 2-kpc cut is strongly resolution dependent: at
+  // modest resolution a grain can lie well inside the nearest gas particle's
+  // SPH kernel while being more than 2 kpc from its center.  Use the nearest
+  // gas smoothing length as the resolved neighborhood scale, retain 2 kpc as
+  // a floor, and cap at the 10-kpc nearest-gas search radius so this cannot
+  // create arbitrarily long-range coupling in diffuse CGM gas.
   std::vector<double> coagulation_radius_by_particle((size_t)Sp->NumPart, 0.0);
   for(int i = 0; i < Sp->NumPart; i++) {
     if(Sp->P[i].getType() != DUST_PARTICLE_TYPE ||
        Sp->P[i].getMass() <= DUST_MASS_TO_DESTROY)
       continue;
-
-    double dist_kpc = -1.0;
-    const int nearest_gas = find_nearest_gas_particle(Sp, i, 10.0, &dist_kpc);
-    if(nearest_gas < 0)
+    HashSearches++;
+    if(links[i].task < 0) {
+      HashSearchesFailed++;
       continue;
-
-    nearest_gas_by_particle[i] = nearest_gas;
-    gas_distance_by_particle[i] = dist_kpc;
+    }
     const double association_radius =
-        std::max(2.0, std::min((double)Sp->SphP[nearest_gas].Hsml, 10.0));
-    if(dist_kpc <= association_radius)
+        std::max(2.0, std::min(links[i].hsml, DUST_GAS_SEARCH_RADIUS));
+    if(std::sqrt(links[i].r2) <= association_radius)
       coagulation_radius_by_particle[i] = association_radius;
   }
 
@@ -3307,12 +3542,8 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   }
 
   // ── Main dust loop ────────────────────────────────────────────────────────
-  for(int i = 0; i < Sp->NumPart; i++) {
-    if(Sp->P[i].getType() != DUST_PARTICLE_TYPE) continue;
-    if(Sp->P[i].getMass() <= DUST_MASS_TO_DESTROY) continue;
-    const double dist_kpc = gas_distance_by_particle[i];
-    const int nearest_gas = nearest_gas_by_particle[i];
-    if(nearest_gas < 0) continue;
+  auto process_dust = [&](int i, int nearest_gas, double dist_kpc, double local_dust_gas_radius,
+                          double dtg) {
     // Gas temperature is shared by every process below.  Dust routines never
     // modify gas entropy, density, or Ne, so computing it once is exact.
     const double T_gas = get_temperature_from_entropy(Sp, nearest_gas);
@@ -3323,26 +3554,92 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
 
     dust_gas_interaction(Sp, i, nearest_gas, dt, T_gas);
     dust_radiation_pressure(Sp, i, nearest_gas, dt);
-    
-    // Growth, coagulation, and shattering require a resolved local gas
-    // association.  A fixed 2-kpc cut is strongly resolution dependent:
-    // at modest resolution a dust grain can lie well inside the nearest gas
-    // particle's SPH kernel while being more than 2 kpc from its center.
-    //
-    // Use the nearest gas smoothing length as the resolved neighborhood scale,
-    // retain 2 kpc as a floor, and cap at the existing 10-kpc nearest-gas
-    // search radius so this change cannot create arbitrarily long-range
-    // coupling in diffuse CGM gas.
-    const double local_dust_gas_radius = coagulation_radius_by_particle[i];
 
     if(local_dust_gas_radius > 0.0 && dist_kpc <= local_dust_gas_radius) {
       if(All.DustEnableGrowth)
         dust_grain_growth_subgrid(Sp, i, nearest_gas, dt, T_gas);
       if(All.DustEnableCoagulation)
-        dust_grain_coagulation(Sp, i, nearest_gas, dt, local_DTG[i], T_gas);
+        dust_grain_coagulation(Sp, i, nearest_gas, dt, dtg, T_gas);
       if(All.DustEnableShattering)
-        dust_grain_shattering(Sp, i, nearest_gas, dt, local_DTG[i], T_gas);
+        dust_grain_shattering(Sp, i, nearest_gas, dt, dtg, T_gas);
     }
+  };
+
+  int n_task_main = 1;
+  MPI_Comm_size(Communicator, &n_task_main);
+  std::vector<std::vector<dust_visitor>> visitors((size_t)n_task_main);
+  for(int i = 0; i < Sp->NumPart; i++) {
+    if(Sp->P[i].getType() != DUST_PARTICLE_TYPE) continue;
+    if(Sp->P[i].getMass() <= DUST_MASS_TO_DESTROY) continue;
+    const dust_gas_link &l = links[i];
+    if(l.task < 0) continue;
+    if(l.task != All.ThisTask) {
+      // Nearest gas is remote: process this grain where the gas lives.
+      dust_visitor v;
+      v.particle.store(Sp, i);
+      v.local_DTG = local_DTG[i];
+      v.home_slot = i;
+      v.gas_index = l.gas;
+      v.gas_id = l.id;
+      visitors[l.task].push_back(v);
+      continue;
+    }
+    process_dust(i, l.gas, std::sqrt(l.r2), coagulation_radius_by_particle[i], local_DTG[i]);
+  }
+
+  // Visiting grains occupy the free slots after NumPart for the duration of
+  // their update, so the dust routines treat them like local particles.
+  std::vector<int> visitor_home;
+  const std::vector<dust_visitor> arrived = cg_dist::exchange(visitors, Communicator, &visitor_home);
+  long long n_visiting = (long long)arrived.size();
+  std::vector<std::vector<dust_visitor_return>> returns((size_t)n_task_main);
+  if(!arrived.empty()) {
+    const int first = Sp->NumPart;
+    if(first + (long long)arrived.size() > Sp->MaxPart)
+      Terminate("dust: no room for %d visiting grains (NumPart=%d MaxPart=%d)",
+                (int)arrived.size(), Sp->NumPart, Sp->MaxPart);
+    for(size_t k = 0; k < arrived.size(); k++) {
+      arrived[k].particle.load(Sp, first + (int)k);
+    }
+    Sp->NumPart += (int)arrived.size();
+    for(size_t k = 0; k < arrived.size(); k++) {
+      const dust_visitor &v = arrived[k];
+      const int i = first + (int)k;
+      const int g = v.gas_index;
+      if(g < 0 || g >= Sp->NumGas || Sp->P[g].getType() != 0 || (std::uint64_t)Sp->P[g].ID.get() != v.gas_id)
+        Terminate("dust: visiting grain's gas ID %llu is not at index %d", (unsigned long long)v.gas_id, g);
+      double d[3];
+      Sp->nearest_image_intpos_to_pos(Sp->P[i].IntPos, Sp->P[g].IntPos, d);
+      const double dist = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+      const double association_radius =
+          std::max(2.0, std::min((double)Sp->SphP[g].Hsml, DUST_GAS_SEARCH_RADIUS));
+      process_dust(i, g, dist, dist <= association_radius ? association_radius : 0.0, v.local_DTG);
+      dust_visitor_return r;
+      r.particle.store(Sp, i);
+      r.home_slot = v.home_slot;
+      returns[visitor_home[k]].push_back(r);
+    }
+    Sp->NumPart = first;
+  }
+  const std::vector<dust_visitor_return> home = cg_dist::exchange(returns, Communicator);
+  for(const dust_visitor_return &r : home) {
+    if(r.home_slot < 0 || r.home_slot >= Sp->NumPart)
+      Terminate("dust: returning grain for invalid slot %d", r.home_slot);
+    r.particle.load(Sp, r.home_slot);
+  }
+  if(check_mass) {
+    mass_check_remaining--;
+    const double mass_after = cg_dist::total_baryon_mass(Sp, Communicator);
+    if(All.ThisTask == 0)
+      printf("[DUST_MASS_CHECK] step %d: gas+star+dust mass %.17g -> %.17g (rel. change %.3g)\n",
+             All.NumCurrentTiStep, mass_before, mass_after, (mass_after - mass_before) / mass_before);
+  }
+  {
+    long long n_visiting_global = 0;
+    MPI_Reduce(&n_visiting, &n_visiting_global, 1, MPI_LONG_LONG, MPI_SUM, 0, Communicator);
+    if(All.ThisTask == 0 && dust_call_count % 10 == 0)
+      printf("[DUST_ASSOC|Step=%d] %lld of %lld grains processed on the task of their nearest gas\n",
+             All.NumCurrentTiStep, n_visiting_global, global_count);
   }
   // ── Periodic diagnostics (every 500 steps, task 0) ───────────────────────
   if(All.NumCurrentTiStep % 500 == 0) {
@@ -3844,208 +4141,183 @@ static inline double shock_size_factor(double a_nm)
  * by a factor ~(R_search/R_phys)^(3/2) >> 1, dropping it below destruction
  * thresholds.
  */
-void erode_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx,
-                                   double sn_energy, MPI_Comm Communicator)
+void erode_dust_from_sn_shocks_batch(simparticles *Sp, const std::vector<DustShockEvent> &mine,
+                                     int first_new_dust, MPI_Comm Communicator)
 {
+  // Every task takes part, so the flag (identical everywhere) is the only
+  // early exit before the collectives.
   if(!All.DustEnableShockDestruction) return;
+
+  std::vector<int> owner;
+  const std::vector<DustShockEvent> all = cg_dist::allgather(mine, Communicator, &owner);
+  const size_t n_events = all.size();
+  if(n_events == 0) return;
+
   static long long sn_total_calls = 0, sn_found_dust = 0;
-  sn_total_calls++;
-  if(sn_total_calls % 1000 == 0)
-    DUST_PRINT("[SN_RATE] %lld SN calls, %lld found dust (%.1f%%)\n",
-               sn_total_calls, sn_found_dust, 100.0 * sn_found_dust / sn_total_calls);
-  // ── Guard: hash must be built ─────────────────────────────────────────────
-  static long long sn_skipped_no_hash = 0;
-  if(!dust_hash.is_built || dust_hash.total_particles == 0) {
-    sn_skipped_no_hash++;
-    if(sn_skipped_no_hash <= 20 && All.ThisTask == 0)
-      DUST_PRINT("[SN_SKIP] Call skipped: hash built=%d total=%d\n",
-                 dust_hash.is_built, dust_hash.total_particles);
-    return;
+
+  // ── Steps 1-4: shock radius, velocity, and search volume per event ───────
+  // Computed identically on every task from the event record.
+  struct Shock { double r_phys, r_search, v, f_vol, eps_carb, eps_sil; };
+  std::vector<Shock> shock(n_events);
+  for(size_t e = 0; e < n_events; e++) {
+    const DustShockEvent &ev = all[e];
+    double gas_density_cgs = 1.0 * PROTONMASS;  // fallback: ~1 cm^-3
+    if(ev.rho_cgs > 0.01 * PROTONMASS) gas_density_cgs = ev.rho_cgs;
+
+    // E_code is in code energy units, UnitEnergy_in_cgs / h erg.
+    double sn_energy_erg = ev.E_code * All.UnitEnergy_in_cgs / All.HubbleParam;
+    if(sn_energy_erg <= 0.0 || !isfinite(sn_energy_erg)) {
+      static long long bad_energy_warns = 0;
+      if(++bad_energy_warns <= 20 && All.ThisTask == 0)
+        printf("[SN_SHOCK_WARNING] Invalid sn_energy=%.3e code units — falling back to 1e51 erg\n", ev.E_code);
+      sn_energy_erg = 1e51;
+    }
+    const double rho_sedov = std::min(gas_density_cgs, All.DustShockAmbientDensity * PROTONMASS);
+    Shock &s = shock[e];
+    s.r_phys = std::max(calculate_sn_shock_radius(sn_energy_erg, rho_sedov, 0.3), 0.001);  // 1 pc floor
+    // Velocity from the PHYSICAL radius and the same energy: R(t) and v(R)
+    // are only a valid Sedov-Taylor pair when computed consistently, and
+    // using the inflated search radius would drop v below the thresholds.
+    s.v = calculate_sedov_velocity_from_radius(s.r_phys, rho_sedov, sn_energy_erg);
+    s.r_search = std::min(std::max(s.r_phys, 2.0 * dust_hash.cell_size), 3.0);
+    s.f_vol = std::max(0.0, std::min(1.0, pow(s.r_phys / s.r_search, 3.0)));
+    get_shock_destruction_efficiency(s.v, &s.eps_carb, &s.eps_sil);
+    if(All.DustDebugLevel > 0 && All.ThisTask == 0) {
+      static int sn_debug_count = 0;
+      sn_debug_count++;
+      if(sn_debug_count <= 20 || sn_debug_count % 500 == 0)
+        DUST_PRINT("[SN_SHOCK_DEBUG] Call #%d: physical_r=%.3f kpc  search_r=%.3f kpc  "
+                   "v_shock=%.1f km/s  rho_local=%.3e  rho_sedov=%.3e %s\n",
+                   sn_debug_count, s.r_phys, s.r_search, s.v, gas_density_cgs, rho_sedov,
+                   (rho_sedov < gas_density_cgs) ? "[DENSITY_CAPPED]" : "[LOCAL_DENSITY]");
+    }
   }
 
-  // ── Step 1: Local gas density ─────────────────────────────────────────────
-  double nearest_dist   = -1.0;
-  int    sn_nearest_gas = gas_hash.find_nearest_particle(Sp, sn_star_idx, 50.0, &nearest_dist);
-  if(sn_nearest_gas >= 0 && Sp->P[sn_nearest_gas].getType() != 0)
-    sn_nearest_gas = -1;
-  double gas_density_cgs = 1.0 * PROTONMASS;  // fallback: ~1 cm^-3
-  if(sn_nearest_gas >= 0 && sn_nearest_gas < Sp->NumGas) {
-    double measured = dust_gas_density_cgs(Sp, sn_nearest_gas);
-    if(measured > 0.01 * PROTONMASS) gas_density_cgs = measured;
-  }
+  // ── Step 5: dust in each search volume, summed over all tasks ────────────
+  // Dust created in this feedback call is excluded, as before.
+  cg_dist::LocalTree dust_tree;
+  dust_tree.build(Sp, 0, std::min(first_new_dust, Sp->NumPart), [Sp](int i) {
+    return Sp->P[i].getType() == DUST_PARTICLE_TYPE && Sp->P[i].getMass() > 0.0 && Sp->P[i].ID.get() != 0;
+  });
+  // Per event: M_carb, M_sil, size-weighted M_carb, size-weighted M_sil, count.
+  std::vector<double> sums(5 * n_events, 0.0);
+  std::vector<std::vector<int>> found(n_events);
+  for(size_t e = 0; e < n_events; e++)
+    dust_tree.radius(Sp, all[e].pos, shock[e].r_search, [&](int i, double) {
+      const double m  = Sp->P[i].getMass();
+      const double cf = std::max(0.0, std::min(1.0, (double)Sp->DustP[i].CarbonMassFraction));
+      const double sf = shock_size_factor(Sp->DustP[i].GrainRadius);
+      sums[5 * e + 0] += m * cf;
+      sums[5 * e + 1] += m * (1.0 - cf);
+      sums[5 * e + 2] += m * cf * sf;
+      sums[5 * e + 3] += m * (1.0 - cf) * sf;
+      sums[5 * e + 4] += 1.0;
+      found[e].push_back(i);
+    });
+  cg_dist::sum_over_tasks(sums, Communicator);
 
-  // ── Step 2: Physical shock radius at characteristic time 0.3 Myr ─────────
-  // sn_energy arrives in code energy units (matches feedback.cc's E_code
-  // convention); convert to erg for the Sedov-Taylor calculation. Fallback
-  // only guards against a malformed call — should not trigger from feedback.cc.
-  // Code energy unit is UnitEnergy_in_cgs / h erg.
-  double sn_energy_erg = sn_energy * All.UnitEnergy_in_cgs / All.HubbleParam;
-  if(sn_energy_erg <= 0.0 || !isfinite(sn_energy_erg)) {
-    static long long bad_energy_warns = 0;
-    bad_energy_warns++;
-    if(bad_energy_warns <= 20 && All.ThisTask == 0)
-      printf("[SN_SHOCK_WARNING|T=%d] Invalid sn_energy=%.3e code units passed to "
-             "destroy_dust_from_sn_shocks — falling back to 1e51 erg\n",
-             All.ThisTask, sn_energy);
-    sn_energy_erg = 1e51;
-  }
-  double rho_sedov = std::min(gas_density_cgs,
-                               All.DustShockAmbientDensity * PROTONMASS);
-  double physical_radius_kpc = calculate_sn_shock_radius(sn_energy_erg, rho_sedov, 0.3);
-  if(physical_radius_kpc < 0.001) physical_radius_kpc = 0.001;  // 1 pc floor
+  // ── Steps 6-8: species-resolved budgets, distributed over the grains ─────
+  // Each grain's share uses the global sums, so every task erodes its own
+  // grains exactly as a single task holding all of them would.  Events are
+  // applied in star-ID order; a grain hit by several events loses at most
+  // what it still has.
+  std::vector<size_t> order(n_events);
+  for(size_t e = 0; e < n_events; e++) order[e] = e;
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return all[a].key < all[b].key; });
 
-  // ── Step 3: Shock velocity from PHYSICAL radius ───────────────────────────
-  // Must use physical radius — see header comment for why using search radius
-  // would neuterise the destruction. Must also use the SAME sn_energy_erg as
-  // the radius calculation above — R(t) and v(R) are only a valid Sedov-Taylor
-  // pair when computed from the same explosion energy.
-  double shock_velocity_km_s = calculate_sedov_velocity_from_radius(physical_radius_kpc,
-                                                                      rho_sedov, sn_energy_erg);
-
-  // ── Step 4: Effective search radius for hash lookup ───────────────────────
-  double effective_search_radius = physical_radius_kpc;
-  if(effective_search_radius < 2.0 * dust_hash.cell_size)
-    effective_search_radius = 2.0 * dust_hash.cell_size;
-  if(effective_search_radius > 3.0) effective_search_radius = 3.0;
-
-  // ── Step 5: Diagnostic logging ────────────────────────────────────────────
-  if(All.DustDebugLevel > 0) {
-    static int sn_call_count = 0;
-    sn_call_count++;
-    if((sn_call_count <= 20 || sn_call_count % 500 == 0) && All.ThisTask == 0)
-      DUST_PRINT("[SN_SHOCK_DEBUG] Call #%d: "
-                 "physical_r=%.3f kpc  search_r=%.3f kpc  "
-                 "v_shock=%.1f km/s  rho_local=%.3e  rho_sedov=%.3e %s\n",
-                 sn_call_count, physical_radius_kpc, effective_search_radius,
-                 shock_velocity_km_s, gas_density_cgs, rho_sedov,
-                 (rho_sedov < gas_density_cgs) ? "[DENSITY_CAPPED]" : "[LOCAL_DENSITY]");
-  }
-
-  // ── Step 6: Find dust in search volume ───────────────────────────────────
-  int    neighbors[2048];
-  double distances[2048];
-  int    n_found = 0;
-  dust_hash.find_neighbors(Sp, sn_star_idx, effective_search_radius,
-                           neighbors, distances, &n_found, 2048);
-  if(n_found == 0) return;
-
-  // ── Step 7: Species-resolved mass-weighted subgrid approach ────────────────
-  double M_carb_local = 0.0;
-  double M_sil_local  = 0.0;
-  double weight_carb_sum = 0.0;
-  double weight_sil_sum  = 0.0;
-  int n_dust_found = 0;
-  for(int k = 0; k < n_found; k++) {
-    int i = neighbors[k];
-    if(Sp->P[i].getType() != DUST_PARTICLE_TYPE ||
-      Sp->P[i].getMass() <= 0.0)
-      continue;
-    double m  = Sp->P[i].getMass();
-    // make sure fraction is in [0,1] range to avoid trouble
-    double cf = std::max(0.0, std::min(1.0,
-                                      (double)Sp->DustP[i].CarbonMassFraction));
-    double sf = shock_size_factor(Sp->DustP[i].GrainRadius);
-    double M_carb = m * cf;
-    double M_sil  = m * (1.0 - cf);
-    M_carb_local += M_carb;
-    M_sil_local  += M_sil;
-    weight_carb_sum += M_carb * sf;
-    weight_sil_sum  += M_sil  * sf;
-    n_dust_found++;
-  }
-  double M_dust_local = M_carb_local + M_sil_local;
-  if(M_dust_local <= 0.0 || n_dust_found == 0)
-    return;
-  // ── Species-resolved shock destruction budgets ─────────────────────────────
-  double f_vol = std::max(0.0, std::min(1.0,
-                    pow(physical_radius_kpc / effective_search_radius, 3.0)));
-  double eps_carb, eps_sil;
-  get_shock_destruction_efficiency(shock_velocity_km_s,
-                                  &eps_carb,
-                                  &eps_sil);
-  double M_carb_destroy = M_carb_local * f_vol * eps_carb;
-  double M_sil_destroy = M_sil_local * f_vol * eps_sil;
-  // ── Step 8: Distribute mass destruction across found grains ──────────────
-  if(n_dust_found > 0) sn_found_dust++;
-  int    dust_destroyed  = 0;
-  int    dust_eroded     = 0;
-  double M_actually_lost = 0.0;
-  if(M_carb_destroy > 0.0 || M_sil_destroy > 0.0) {
-    for(int k = 0; k < n_found; k++) {
-      int i = neighbors[k];
-      if(Sp->P[i].getType() != DUST_PARTICLE_TYPE)
-        continue;
-      double m = Sp->P[i].getMass();
-      if(m <= 0.0)
-        continue;
-      // Handle carbonaceous and silicate mass separately so CarbonMassFraction
-      // evolves naturally under composition-dependent shock destruction...
-      double a_old  = Sp->DustP[i].GrainRadius;
-      double cf_old = std::max(0.0, std::min(1.0,(double)Sp->DustP[i].CarbonMassFraction));
-      double M_carb_old = m * cf_old;
-      double M_sil_old  = m * (1.0 - cf_old);
-      double sf = shock_size_factor(a_old);
-      double weight_carb = M_carb_old * sf;
-      double weight_sil  = M_sil_old  * sf;
-      double carb_loss = (weight_carb_sum > 0.0) ? M_carb_destroy * (weight_carb / weight_carb_sum) : 0.0;
-      double sil_loss = (weight_sil_sum > 0.0) ? M_sil_destroy * (weight_sil / weight_sil_sum) : 0.0;
+  // Carbon and silicate returned to each event's nearest gas.
+  std::vector<double> returned(2 * n_events, 0.0);
+  std::vector<double> lost(n_events, 0.0);
+  std::vector<int> n_destroyed(n_events, 0), n_eroded(n_events, 0);
+  for(size_t e : order) {
+    const Shock &s = shock[e];
+    const double M_carb_destroy = sums[5 * e + 0] * s.f_vol * s.eps_carb;
+    const double M_sil_destroy  = sums[5 * e + 1] * s.f_vol * s.eps_sil;
+    const double weight_carb_sum = sums[5 * e + 2], weight_sil_sum = sums[5 * e + 3];
+    if(!(M_carb_destroy > 0.0 || M_sil_destroy > 0.0)) continue;
+    const bool has_gas = all[e].gas_task >= 0;
+    for(int i : found[e]) {
+      if(Sp->P[i].getType() != DUST_PARTICLE_TYPE) continue;  // destroyed by an earlier event
+      const double m = Sp->P[i].getMass();
+      if(m <= 0.0) continue;
+      // Carbonaceous and silicate mass are handled separately so that
+      // CarbonMassFraction evolves under composition-dependent destruction.
+      const double a_old  = Sp->DustP[i].GrainRadius;
+      const double cf_old = std::max(0.0, std::min(1.0, (double)Sp->DustP[i].CarbonMassFraction));
+      const double M_carb_old = m * cf_old, M_sil_old = m * (1.0 - cf_old);
+      const double sf = shock_size_factor(a_old);
+      double carb_loss = weight_carb_sum > 0.0 ? M_carb_destroy * (M_carb_old * sf / weight_carb_sum) : 0.0;
+      double sil_loss  = weight_sil_sum  > 0.0 ? M_sil_destroy  * (M_sil_old  * sf / weight_sil_sum)  : 0.0;
       carb_loss = std::min(carb_loss, M_carb_old);
       sil_loss  = std::min(sil_loss, M_sil_old);
-      double M_carb_new = M_carb_old - carb_loss;
-      double M_sil_new  = M_sil_old  - sil_loss;
-      double mass_loss = carb_loss + sil_loss;
-      double new_mass  = M_carb_new + M_sil_new;
-      double CF_new = (new_mass > 0.0) ? M_carb_new / new_mass : cf_old;
-      double a_new = 0.0;
+      const double M_carb_new = M_carb_old - carb_loss, M_sil_new = M_sil_old - sil_loss;
+      const double new_mass = M_carb_new + M_sil_new;
+      const double a_new = new_mass > 0.0 ? a_old * cbrt(new_mass / m) : 0.0;
 
-      if(new_mass > 0.0)
-        a_new = a_old * cbrt(new_mass / m);
-
-      if(new_mass <= 0.0 ||
-        !isfinite(new_mass) ||
-        !isfinite(a_new) ||
-        a_new < All.DustMinGrainSize) {
-          log_dust_particle_event(Sp, i, sn_nearest_gas, DUST_EVENT_SHOCK);
-          M_actually_lost += m;
-          destroy_dust_particle_to_gas(Sp, i, sn_nearest_gas,
-                                      &NDustDestroyedByShock, &TotalMassDestroyedByShock);
-          dust_destroyed++;
+      if(new_mass <= 0.0 || !isfinite(new_mass) || !isfinite(a_new) || a_new < All.DustMinGrainSize) {
+        // Destruction returns the whole grain to the nearest gas; without
+        // one within reach the grain is left untouched.
+        if(!has_gas) continue;
+        log_dust_particle_event(Sp, i, -1, DUST_EVENT_SHOCK);
+        returned[2 * e + 0] += m * cf_old;
+        returned[2 * e + 1] += m * (1.0 - cf_old);
+        lost[e] += m;
+        mark_dust_particle_destroyed(Sp, i, &NDustDestroyedByShock, &TotalMassDestroyedByShock);
+        n_destroyed[e]++;
       } else {
         Sp->P[i].setMass(new_mass);
         Sp->DustP[i].GrainRadius = a_new;
-        Sp->DustP[i].CarbonMassFraction = (float)CF_new;
-
-        if(sn_nearest_gas >= 0)
-          return_dust_material_to_gas(Sp, sn_nearest_gas, carb_loss, sil_loss);
-
-        LocalDustMassChange    -= mass_loss;
-        M_actually_lost        += mass_loss;
-        TotalMassErodedByShock += mass_loss;
+        Sp->DustP[i].CarbonMassFraction = (float)(M_carb_new / new_mass);
+        if(has_gas) {
+          returned[2 * e + 0] += carb_loss;
+          returned[2 * e + 1] += sil_loss;
+        }
+        LocalDustMassChange    -= carb_loss + sil_loss;
+        lost[e]                += carb_loss + sil_loss;
+        TotalMassErodedByShock += carb_loss + sil_loss;
         NGrainErosionEvents++;
-        dust_eroded++;
+        n_eroded[e]++;
       }
     }
   }
-  // ── Diagnostics ─────────────────────────────────────────────────────────────
-  double mass_to_msun = All.UnitMass_in_g / 1.989e33 / All.HubbleParam;
-  double M_target     = M_carb_destroy + M_sil_destroy;
-  if(All.ThisTask == 0 && M_target > 0.0)
-    DUST_PRINT("[DUST_SN] physical_r=%.4f kpc  search_r=%.3f kpc  "
-              "v=%.1f km/s  f_vol=%.3e  "
-              "eps_C=%.3f eps_sil=%.3f  "
-              "M_C=%.3e M_sil=%.3e  "
-              "M_target_C=%.3e M_target_sil=%.3e  "
-              "M_target=%.3e code (%.3e Msun)  "
-              "M_lost=%.3e code (%.3e Msun)  "
-              "n_dust=%d destroyed=%d eroded=%d\n",
-              physical_radius_kpc, effective_search_radius,
-              shock_velocity_km_s, f_vol,
-              eps_carb, eps_sil,
-              M_carb_local, M_sil_local,
-              M_carb_destroy, M_sil_destroy,
-              M_target, M_target * mass_to_msun,
-              M_actually_lost, M_actually_lost * mass_to_msun,
-              n_dust_found, dust_destroyed, dust_eroded);
+  cg_dist::sum_over_tasks(returned, Communicator);
+
+  // The owner of each event's nearest gas receives the material.
+  for(size_t e : order)
+    if(all[e].gas_task == All.ThisTask && (returned[2 * e] > 0.0 || returned[2 * e + 1] > 0.0)) {
+      const int g = all[e].gas_index;
+      if(g < 0 || g >= Sp->NumGas || Sp->P[g].getType() != 0 || (std::uint64_t)Sp->P[g].ID.get() != all[e].gas_id)
+        Terminate("SN shock: nearest gas ID %llu is no longer at index %d", (unsigned long long)all[e].gas_id, g);
+      return_dust_material_to_gas(Sp, g, returned[2 * e], returned[2 * e + 1]);
+    }
+
+  // ── Diagnostics ──────────────────────────────────────────────────────────
+  for(size_t e = 0; e < n_events; e++) {
+    sn_total_calls++;
+    if(sums[5 * e + 4] > 0) sn_found_dust++;
+  }
+  if(All.ThisTask == 0) {
+    const double mass_to_msun = All.UnitMass_in_g / 1.989e33 / All.HubbleParam;
+    for(size_t e = 0; e < n_events; e++) {
+      if(owner[e] != 0) continue;  // one line per event, from task 0's events
+      const Shock &s = shock[e];
+      const double M_target = sums[5 * e] * s.f_vol * s.eps_carb + sums[5 * e + 1] * s.f_vol * s.eps_sil;
+      if(M_target > 0.0)
+        DUST_PRINT("[DUST_SN] physical_r=%.4f kpc  search_r=%.3f kpc  v=%.1f km/s  f_vol=%.3e  "
+                   "eps_C=%.3f eps_sil=%.3f  M_C=%.3e M_sil=%.3e  "
+                   "M_target=%.3e code (%.3e Msun)  n_dust=%.0f (all tasks)  "
+                   "local: lost=%.3e code destroyed=%d eroded=%d\n",
+                   s.r_phys, s.r_search, s.v, s.f_vol, s.eps_carb, s.eps_sil,
+                   sums[5 * e], sums[5 * e + 1], M_target, M_target * mass_to_msun,
+                   sums[5 * e + 4], lost[e], n_destroyed[e], n_eroded[e]);
+    }
+    static long long next_report = 1000;
+    if(sn_total_calls >= next_report) {
+      DUST_PRINT("[SN_RATE] %lld SN events, %lld found dust (%.1f%%)\n",
+                 sn_total_calls, sn_found_dust, 100.0 * sn_found_dust / sn_total_calls);
+      while(next_report <= sn_total_calls) next_report += 1000;
+    }
+  }
 }
 // ═══════════════════════════════════════════════════════════════════════════════
 // HK11 accretion timescale helper

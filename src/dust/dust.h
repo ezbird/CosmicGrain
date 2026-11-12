@@ -10,6 +10,8 @@
 
 #include "gadgetconfig.h"
 #include <mpi.h>                 /* for MPI_Comm */
+#include <cstdint>
+#include <vector>
 #include "../data/simparticles.h"
 
 
@@ -17,7 +19,11 @@
 #define DUST_PARTICLE_TYPE       6
 #define DUST_MIN_TIMEBIN         15
 
+// Queue astration for a star formed from gas_idx; the dust is consumed by
+// apply_queued_dust_astration(), which every task must call once all stars of
+// the step exist.
 void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mass_formed, int star_idx, double hsml);
+void apply_queued_dust_astration(simparticles *Sp, MPI_Comm comm);
 void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt,
                             double local_DTG, double T_gas);
 void dust_grain_shattering(simparticles *Sp, int dust_idx, int gas_idx, double dt,
@@ -105,8 +111,21 @@ int erode_dust_grain_thermal(simparticles *Sp, int dust_idx, int nearest_gas_inp
 
 // ========== SHOCK DESTRUCTION ==========
 
-void erode_dust_from_sn_shocks(simparticles *Sp, int sn_star_idx,
-                                double sn_energy, MPI_Comm comm);
+// One SN tranche whose shock erodes the surrounding dust.
+struct DustShockEvent
+{
+  MyIntPosType pos[3];
+  std::uint64_t key;    // star ID; events are applied in key order
+  double E_code;        // SN energy of the tranche, code units
+  double rho_cgs;       // physical density of the nearest gas; <= 0 if none
+  std::uint64_t gas_id; // nearest gas, which receives the eroded material
+  int gas_task, gas_index;  // gas_task < 0 if no gas within 50 kpc
+};
+
+// Collective: erode dust around every task's SN events.  Dust at indices
+// >= first_new_dust was created in this feedback call and is left alone.
+void erode_dust_from_sn_shocks_batch(simparticles *Sp, const std::vector<DustShockEvent> &events,
+                                     int first_new_dust, MPI_Comm comm);
 double calculate_sn_shock_radius(double sn_energy_erg, double gas_density_cgs, double time_myr);
 void get_shock_destruction_efficiency(double shock_velocity_km_s,
                                        double *eps_carb, double *eps_sil);
