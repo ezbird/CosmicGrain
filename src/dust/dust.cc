@@ -2649,10 +2649,22 @@ void apply_queued_dust_astration(simparticles *Sp, MPI_Comm Communicator)
   dust_tree.build(Sp, 0, Sp->NumPart, [Sp](int i) {
     return Sp->P[i].getType() == DUST_PARTICLE_TYPE && Sp->P[i].getMass() > 0.0 && Sp->P[i].ID.get() != 0;
   });
+  // Gas in the same spheres, for the local D/G.
+  cg_dist::LocalTree gas_tree;
+  gas_tree.build(Sp, 0, Sp->NumGas, [Sp](int j) { return Sp->P[j].getType() == 0 && Sp->P[j].getMass() > 0.0; });
+  std::vector<double> gas_in_sphere(n_events, 0.0);
+  for(size_t e = 0; e < n_events; e++)
+    gas_tree.radius(Sp, all[e].pos, all[e].radius, [&](int j, double) { gas_in_sphere[e] += Sp->P[j].getMass(); });
+  cg_dist::sum_over_tasks(gas_in_sphere, Communicator);
+
   // Per event: dust mass, 1/distance weight, count; summed over all tasks.
   std::vector<double> sums(3 * n_events, 0.0);
   std::vector<std::vector<std::pair<int, double>>> found(n_events);
+  // Test switch: CG_TEST_LOCAL_ASTRATION=1 restores the former behaviour in
+  // which a forming star only sees dust on its own task.
+  static const bool local_only = getenv("CG_TEST_LOCAL_ASTRATION") && atoi(getenv("CG_TEST_LOCAL_ASTRATION")) == 1;
   for(size_t e = 0; e < n_events; e++)
+    if(!local_only || owner[e] == this_task)
     dust_tree.radius(Sp, all[e].pos, all[e].radius, [&](int i, double d2) {
       const double d = std::sqrt(d2);
       const double w = d > 0 ? 1.0 / d : 1.0;
@@ -2675,12 +2687,13 @@ void apply_queued_dust_astration(simparticles *Sp, MPI_Comm Communicator)
     const double total_dust_mass = sums[3 * e];
     if(total_dust_mass < DUST_MASS_TO_DESTROY) { astration_zero_dustmass++; continue; }
     astration_count++;
-    // Dust mass to consume = stellar mass formed × local D/G, scaled by a
-    // calibration factor.  Roughly calibrating by destruction-timescale
-    // ratios from Jones & Nuth (2011) (SN shocks ~0.3-0.6 Gyr, astration
-    // ~2-6 Gyr => astration should be roughly 5-20% of the astration+shock
-    // destruction).
-    const double local_DG = total_dust_mass / all[e].gas_mass;
+    // Dust mass to consume = stellar mass formed × local D/G (times
+    // DustAstrationCalibration, physically 1).  D/G is dust over gas in the
+    // same sphere; the gas that just became the star counts as gas.  (D/G
+    // used to be all the dust in the sphere over the single gas particle's
+    // mass, ~DesNumNgb times too large.)
+    const double gas_mass = gas_in_sphere[e] + all[e].stellar_mass;
+    const double local_DG = total_dust_mass / gas_mass;
     const double dust_to_consume =
         std::min(all[e].stellar_mass * local_DG * All.DustAstrationCalibration, total_dust_mass);
     for(const auto &f : found[e]) {
@@ -4202,7 +4215,13 @@ void erode_dust_from_sn_shocks_batch(simparticles *Sp, const std::vector<DustSho
   // Per event: M_carb, M_sil, size-weighted M_carb, size-weighted M_sil, count.
   std::vector<double> sums(5 * n_events, 0.0);
   std::vector<std::vector<int>> found(n_events);
+  // Test switch: CG_TEST_LOCAL_SHOCK=1 restores the former behaviour in
+  // which an SN only sees dust on its own task (for attribution tests).
+  static const bool local_only = getenv("CG_TEST_LOCAL_SHOCK") && atoi(getenv("CG_TEST_LOCAL_SHOCK")) == 1;
+  int this_task_shock;
+  MPI_Comm_rank(Communicator, &this_task_shock);
   for(size_t e = 0; e < n_events; e++)
+    if(!local_only || owner[e] == this_task_shock)
     dust_tree.radius(Sp, all[e].pos, shock[e].r_search, [&](int i, double) {
       const double m  = Sp->P[i].getMass();
       const double cf = std::max(0.0, std::min(1.0, (double)Sp->DustP[i].CarbonMassFraction));
