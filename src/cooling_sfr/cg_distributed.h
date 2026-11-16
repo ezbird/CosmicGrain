@@ -23,6 +23,7 @@
 #include <climits>
 #include <cstdint>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #include "../data/macros.h"
@@ -131,6 +132,76 @@ inline void sum_over_tasks(std::vector<double> &v, MPI_Comm comm)
   if(n > 0)
     MPI_Allreduce(MPI_IN_PLACE, v.data(), n, MPI_DOUBLE, MPI_SUM, comm);
 }
+
+// Which tasks hold particles in each cell of a regular grid, without any task
+// holding the whole table.  Each cell is registered with a "home" task chosen
+// by hashing its key; a task asks the home tasks only about the cells it
+// needs.  Both steps cost time proportional to the task's own cells and
+// queries, so unlike gathering every task's cell list on every task, the
+// cost falls as tasks are added.
+class CellDirectory
+{
+  struct Entry
+  {
+    long long key;
+    int task;
+  };
+  std::unordered_map<long long, std::vector<int>> registered;  // cells homed on this task
+  MPI_Comm comm = MPI_COMM_NULL;
+  int ntask = 1;
+
+  int home(long long key) const
+  {
+    std::uint64_t x = (std::uint64_t)key + 0x9e3779b97f4a7c15ULL;
+    x               = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x               = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return (int)(x % (std::uint64_t)ntask);
+  }
+
+ public:
+  // Collective.  mine: this task's occupied cell keys, without duplicates.
+  void build(const std::vector<long long> &mine, MPI_Comm c)
+  {
+    comm = c;
+    int this_task;
+    MPI_Comm_size(comm, &ntask);
+    MPI_Comm_rank(comm, &this_task);
+    std::vector<std::vector<Entry>> out(ntask);
+    for(long long k : mine)
+      out[home(k)].push_back(Entry{k, this_task});
+    registered.clear();
+    for(const Entry &e : exchange(out, comm))
+      registered[e.key].push_back(e.task);
+    // Tasks arrive in ascending order from exchange(), so each list is sorted.
+  }
+
+  // Collective.  For each of the wanted keys (without duplicates) that some
+  // task has registered, the tasks holding particles there, in ascending order.
+  std::unordered_map<long long, std::vector<int>> lookup(const std::vector<long long> &wanted) const
+  {
+    std::vector<std::vector<long long>> ask(ntask);
+    for(long long k : wanted)
+      ask[home(k)].push_back(k);
+    std::vector<int> asker;
+    const std::vector<long long> asked = exchange(ask, comm, &asker);
+    std::vector<std::vector<Entry>> answer(ntask);
+    for(size_t i = 0; i < asked.size(); i++)
+      {
+        auto it = registered.find(asked[i]);
+        if(it != registered.end())
+          for(int t : it->second)
+            answer[asker[i]].push_back(Entry{asked[i], t});
+      }
+    std::unordered_map<long long, std::vector<int>> result;
+    result.reserve(wanted.size());
+    for(const Entry &e : exchange(answer, comm))
+      result[e.key].push_back(e.task);
+    for(auto &kv : result)
+      std::sort(kv.second.begin(), kv.second.end());
+    return result;
+  }
+};
 
 // Spatial index over a subset of this task's particles, using exact periodic
 // integer-position distances.  Rebuilt for each batch, so it never holds

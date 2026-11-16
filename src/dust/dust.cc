@@ -404,29 +404,51 @@ static void estimate_local_dust_to_gas_ratio(
               }
           }
 
-      std::vector<long long> mine(local_cells.begin(), local_cells.end());
-      int n_mine = (int)mine.size();
-      std::vector<int> cell_counts((size_t)n_task), cell_displs((size_t)n_task);
-      MPI_Allgather(&n_mine, 1, MPI_INT, cell_counts.data(), 1, MPI_INT, Communicator);
-      long long n_all = 0;
-      for(int task = 0; task < n_task; task++)
-        {
-          cell_displs[task] = (int)n_all;
-          n_all += cell_counts[task];
-        }
-      if(n_all > 2147483647LL)
-        Terminate("dust D/G routing: too many occupied cells for MPI_Allgatherv");
-      std::vector<long long> all_cells((size_t)std::max(n_all, 1LL));
-      long long empty_cell = 0;
-      MPI_Allgatherv(mine.empty() ? &empty_cell : mine.data(), n_mine, MPI_LONG_LONG,
-                     all_cells.data(), cell_counts.data(), cell_displs.data(),
-                     MPI_LONG_LONG, Communicator);
+      // Register the occupied cells in a distributed directory and look up
+      // only the cells this task's spheres touch.  (Gathering every task's
+      // cells on every task cost ~0.5 s per call regardless of task count.)
+      cg_dist::CellDirectory directory;
+      directory.build(std::vector<long long>(local_cells.begin(), local_cells.end()), Communicator);
 
-      std::unordered_map<long long, std::vector<int> > owners;
-      owners.reserve((size_t)n_all);
-      for(int task = 0; task < n_task; task++)
-        for(int k = cell_displs[task]; k < cell_displs[task] + cell_counts[task]; k++)
-          owners[all_cells[k]].push_back(task);
+      auto touched_cells = [&](const MyIntPosType *center_intpos, double radius, std::vector<long long> &keys) {
+        keys.clear();
+        MyIntPosType center_copy[3] = {center_intpos[0], center_intpos[1], center_intpos[2]};
+        double c[3];
+        Sp->intpos_to_pos(center_copy, c);
+        const double r2 = radius * radius;
+        long long lo[3], hi[3];
+        for(int d = 0; d < 3; d++)
+          {
+            lo[d] = (long long)std::floor((c[d] - radius) / cc);
+            hi[d] = (long long)std::floor((c[d] + radius) / cc);
+          }
+        for(long long ix = lo[0]; ix <= hi[0]; ix++)
+          for(long long iy = lo[1]; iy <= hi[1]; iy++)
+            for(long long iz = lo[2]; iz <= hi[2]; iz++)
+              {
+                const long long ic[3] = {ix, iy, iz};
+                double near2 = 0.0;
+                for(int d = 0; d < 3; d++)
+                  {
+                    const double b0 = ic[d] * cc, b1 = b0 + cc;
+                    const double dn = c[d] - std::max(b0, std::min(b1, c[d]));
+                    near2 += dn * dn;
+                  }
+                if(near2 <= r2)
+                  keys.push_back(ckey(ix, iy, iz));
+              }
+      };
+
+      std::unordered_set<long long> wanted;
+      std::vector<long long> keys;
+      for(size_t dust_idx = 0; dust_idx < radii.size(); dust_idx++)
+        if(radii[dust_idx] > 0.0)
+          {
+            touched_cells(Sp->P[dust_idx].IntPos, radii[dust_idx], keys);
+            wanted.insert(keys.begin(), keys.end());
+          }
+      const std::unordered_map<long long, std::vector<int>> owners =
+          directory.lookup(std::vector<long long>(wanted.begin(), wanted.end()));
 
       std::vector<long long> last_query((size_t)n_task, -1);
       for(size_t dust_idx = 0; dust_idx < radii.size(); dust_idx++)
@@ -438,40 +460,19 @@ static void estimate_local_dust_to_gas_ratio(
           for(int d = 0; d < 3; d++)
             query.center[d] = Sp->P[dust_idx].IntPos[d];
           query.radius = radii[dust_idx];
-
-          double c[3];
-          Sp->intpos_to_pos(query.center, c);
-          const double r2 = query.radius * query.radius;
-          long long lo[3], hi[3];
-          for(int d = 0; d < 3; d++)
+          touched_cells(query.center, query.radius, keys);
+          for(long long k : keys)
             {
-              lo[d] = (long long)std::floor((c[d] - query.radius) / cc);
-              hi[d] = (long long)std::floor((c[d] + query.radius) / cc);
+              const auto it = owners.find(k);
+              if(it == owners.end())
+                continue;
+              for(int task : it->second)
+                if(last_query[task] != (long long)dust_idx)
+                  {
+                    last_query[task] = (long long)dust_idx;
+                    requests[task].push_back(query);
+                  }
             }
-          for(long long ix = lo[0]; ix <= hi[0]; ix++)
-            for(long long iy = lo[1]; iy <= hi[1]; iy++)
-              for(long long iz = lo[2]; iz <= hi[2]; iz++)
-                {
-                  const long long ic[3] = {ix, iy, iz};
-                  double near2 = 0.0;
-                  for(int d = 0; d < 3; d++)
-                    {
-                      const double b0 = ic[d] * cc, b1 = b0 + cc;
-                      const double dn = c[d] - std::max(b0, std::min(b1, c[d]));
-                      near2 += dn * dn;
-                    }
-                  if(near2 > r2)
-                    continue;
-                  const auto it = owners.find(ckey(ix, iy, iz));
-                  if(it == owners.end())
-                    continue;
-                  for(int task : it->second)
-                    if(last_query[task] != (long long)dust_idx)
-                      {
-                        last_query[task] = (long long)dust_idx;
-                        requests[task].push_back(query);
-                      }
-                }
         }
 
       // The outer loop runs in ascending dust index, as in bounding-box
@@ -3190,6 +3191,34 @@ static inline bool dust_gas_better(double r2, std::uint64_t id, const dust_gas_l
   return cur.task < 0 || r2 < cur.r2 || (r2 == cur.r2 && id < cur.id);
 }
 
+// Collective.  Send each task its queries; keep any remote gas that is
+// nearer (ties by ID) than the current link.
+static void resolve_remote_gas(simparticles *Sp, const cg_dist::LocalTree &gas_tree,
+                               const std::vector<std::vector<dust_gas_query>> &queries,
+                               std::vector<dust_gas_link> &links, MPI_Comm Communicator)
+{
+  int n_task;
+  MPI_Comm_size(Communicator, &n_task);
+  std::vector<int> source;
+  const std::vector<dust_gas_query> got = cg_dist::exchange(queries, Communicator, &source);
+  std::vector<std::vector<dust_gas_reply>> replies(n_task);
+  for(size_t k = 0; k < got.size(); k++) {
+    int j;
+    double r2;
+    if(gas_tree.nearest(Sp, got[k].pos, j, r2) && r2 <= got[k].r2_max)
+      replies[source[k]].push_back(dust_gas_reply{got[k].slot, j, r2, (double)Sp->SphP[j].Hsml,
+                                                  (std::uint64_t)Sp->P[j].ID.get()});
+  }
+  std::vector<int> reply_task;
+  const std::vector<dust_gas_reply> back = cg_dist::exchange(replies, Communicator, &reply_task);
+  for(size_t k = 0; k < back.size(); k++) {
+    dust_gas_link &l = links[back[k].slot];
+    // For remote gas, gas is its index on the task holding it.
+    if(dust_gas_better(back[k].r2, back[k].id, l))
+      l = dust_gas_link{back[k].index, reply_task[k], back[k].r2, back[k].id, back[k].hsml};
+  }
+}
+
 // Collective.  links[i] receives the global nearest eligible gas of every
 // live local grain i.
 static void associate_dust_with_gas(simparticles *Sp, const cg_dist::LocalTree &gas_tree,
@@ -3209,6 +3238,7 @@ static void associate_dust_with_gas(simparticles *Sp, const cg_dist::LocalTree &
       links[i] = dust_gas_link{j, this_task, r2, (std::uint64_t)Sp->P[j].ID.get(), Sp->SphP[j].Hsml};
   }
   if(n_task == 1) return;
+  const std::vector<dust_gas_link> local_links = links;
 
   // Occupancy of the eligible gas, by task.
   const long long n_c = std::max(1LL, (long long)std::floor(All.BoxSize / DUST_GAS_ROUTE_CELL));
@@ -3227,20 +3257,11 @@ static void associate_dust_with_gas(simparticles *Sp, const cg_dist::LocalTree &
       local_cells.insert(ckey((long long)std::floor(pos[0] / cc), (long long)std::floor(pos[1] / cc),
                               (long long)std::floor(pos[2] / cc)));
     }
-  std::vector<long long> mine(local_cells.begin(), local_cells.end());
-  std::vector<int> cell_task;
-  const std::vector<long long> all_cells = cg_dist::allgather(mine, Communicator, &cell_task);
-  std::unordered_map<long long, std::vector<int>> owners;
-  owners.reserve(all_cells.size());
-  for(size_t k = 0; k < all_cells.size(); k++)
-    if(cell_task[k] != this_task) owners[all_cells[k]].push_back(cell_task[k]);
+  cg_dist::CellDirectory directory;
+  directory.build(std::vector<long long>(local_cells.begin(), local_cells.end()), Communicator);
 
-  // Ask the other tasks with gas inside each grain's current search sphere.
-  std::vector<std::vector<dust_gas_query>> queries(n_task);
-  std::vector<int> last_query(n_task, -1);
-  for(int i = 0; i < Sp->NumPart; i++) {
-    if(Sp->P[i].getType() != DUST_PARTICLE_TYPE || Sp->P[i].getMass() <= DUST_MASS_TO_DESTROY) continue;
-    const double r2q = links[i].task >= 0 ? links[i].r2 : r_max2;
+  auto touched_cells = [&](int i, double r2q, std::vector<long long> &keys) {
+    keys.clear();
     const double rq = std::sqrt(r2q);
     double c[3];
     Sp->intpos_to_pos(Sp->P[i].IntPos, c);
@@ -3259,37 +3280,73 @@ static void associate_dust_with_gas(simparticles *Sp, const cg_dist::LocalTree &
             const double dn = c[d] - std::max(b0, std::min(b1, c[d]));
             near2 += dn * dn;
           }
-          if(near2 > r2q) continue;
-          const auto it = owners.find(ckey(ix, iy, iz));
-          if(it == owners.end()) continue;
-          for(int task : it->second)
-            if(last_query[task] != i) {
-              last_query[task] = i;
-              dust_gas_query q;
-              for(int d = 0; d < 3; d++) q.pos[d] = Sp->P[i].IntPos[d];
-              q.r2_max = r2q;
-              q.slot = i;
-              queries[task].push_back(q);
-            }
+          if(near2 <= r2q) keys.push_back(ckey(ix, iy, iz));
         }
+  };
+  auto live_grain = [Sp](int i) {
+    return Sp->P[i].getType() == DUST_PARTICLE_TYPE && Sp->P[i].getMass() > DUST_MASS_TO_DESTROY;
+  };
+
+  // Ask the other tasks with gas inside each grain's current search sphere.
+  std::unordered_set<long long> wanted;
+  std::vector<long long> keys;
+  for(int i = 0; i < Sp->NumPart; i++)
+    if(live_grain(i)) {
+      touched_cells(i, links[i].task >= 0 ? links[i].r2 : r_max2, keys);
+      wanted.insert(keys.begin(), keys.end());
+    }
+  const std::unordered_map<long long, std::vector<int>> owners =
+      directory.lookup(std::vector<long long>(wanted.begin(), wanted.end()));
+
+  std::vector<std::vector<dust_gas_query>> queries(n_task);
+  std::vector<int> last_query(n_task, -1);
+  for(int i = 0; i < Sp->NumPart; i++) {
+    if(!live_grain(i)) continue;
+    const double r2q = links[i].task >= 0 ? links[i].r2 : r_max2;
+    touched_cells(i, r2q, keys);
+    for(long long k : keys) {
+      const auto it = owners.find(k);
+      if(it == owners.end()) continue;
+      for(int task : it->second)
+        if(task != this_task && last_query[task] != i) {
+          last_query[task] = i;
+          dust_gas_query q;
+          for(int d = 0; d < 3; d++) q.pos[d] = Sp->P[i].IntPos[d];
+          q.r2_max = r2q;
+          q.slot = i;
+          queries[task].push_back(q);
+        }
+    }
   }
-  std::vector<int> source;
-  const std::vector<dust_gas_query> got = cg_dist::exchange(queries, Communicator, &source);
-  std::vector<std::vector<dust_gas_reply>> replies(n_task);
-  for(size_t k = 0; k < got.size(); k++) {
-    int j;
-    double r2;
-    if(gas_tree.nearest(Sp, got[k].pos, j, r2) && r2 <= got[k].r2_max)
-      replies[source[k]].push_back(dust_gas_reply{got[k].slot, j, r2, (double)Sp->SphP[j].Hsml,
-                                                  (std::uint64_t)Sp->P[j].ID.get()});
-  }
-  std::vector<int> reply_task;
-  const std::vector<dust_gas_reply> back = cg_dist::exchange(replies, Communicator, &reply_task);
-  for(size_t k = 0; k < back.size(); k++) {
-    dust_gas_link &l = links[back[k].slot];
-    // For remote gas, gas is its index on the task holding it.
-    if(dust_gas_better(back[k].r2, back[k].id, l))
-      l = dust_gas_link{back[k].index, reply_task[k], back[k].r2, back[k].id, back[k].hsml};
+  resolve_remote_gas(Sp, gas_tree, queries, links, Communicator);
+
+  // Self-check on the first calls: asking every task must give the same
+  // nearest gas as asking only the tasks the directory names.
+  static int verify_remaining = 3;
+  if(verify_remaining > 0) {
+    verify_remaining--;
+    std::vector<dust_gas_link> all_links = local_links;
+    std::vector<std::vector<dust_gas_query>> all_queries(n_task);
+    for(int i = 0; i < Sp->NumPart; i++) {
+      if(!live_grain(i)) continue;
+      dust_gas_query q;
+      for(int d = 0; d < 3; d++) q.pos[d] = Sp->P[i].IntPos[d];
+      q.r2_max = local_links[i].task >= 0 ? local_links[i].r2 : r_max2;
+      q.slot = i;
+      for(int task = 0; task < n_task; task++)
+        if(task != this_task) all_queries[task].push_back(q);
+    }
+    resolve_remote_gas(Sp, gas_tree, all_queries, all_links, Communicator);
+    long long local[2] = {0, 0}, total[2];
+    for(int i = 0; i < Sp->NumPart; i++) {
+      if(!live_grain(i)) continue;
+      local[1]++;
+      if(all_links[i].task != links[i].task || all_links[i].id != links[i].id) local[0]++;
+    }
+    MPI_Reduce(local, total, 2, MPI_LONG_LONG, MPI_SUM, 0, Communicator);
+    if(this_task == 0)
+      printf("[DUST_ASSOC_VERIFY] directory routing vs asking every task: %lld of %lld grains differ\n",
+             total[0], total[1]);
   }
 }
 
@@ -3370,10 +3427,14 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   Sp->drift_all_particles();
   refresh_young_star_list(Sp, Communicator);
 
+  // Wall time per phase (this task), reported as maxima over tasks below.
+  static double t_phase[4] = {0, 0, 0, 0};  // association, D/G, local loop, visiting grains
+  double t_mark = MPI_Wtime();
   cg_dist::LocalTree assoc_gas_tree;
   assoc_gas_tree.build(Sp, 0, Sp->NumGas, [Sp](int j) { return dust_gas_eligible(Sp, j); });
   std::vector<dust_gas_link> links;
   associate_dust_with_gas(Sp, assoc_gas_tree, links, Communicator);
+  t_phase[0] += MPI_Wtime() - t_mark;
 
   // Growth, coagulation, and shattering require a resolved local gas
   // association.  A fixed 2-kpc cut is strongly resolution dependent: at
@@ -3425,6 +3486,7 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   static long long dtg_stale_hist[DTG_STALE_NBINS] = {0, 0, 0, 0, 0, 0};
   static double dtg_stale_sum_rel = 0.0;
 
+  t_mark = MPI_Wtime();
   std::vector<double> local_DTG((size_t)Sp->NumPart, 0.0);
   long long n_dtg_refreshed = 0, n_dtg_cached = 0, dtg_queries_sent = 0;
   double t_dtg_start = MPI_Wtime();
@@ -3516,6 +3578,7 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     }
   }
   double t_dtg_local = MPI_Wtime() - t_dtg_start;
+  t_phase[1] += MPI_Wtime() - t_mark;
 
   double t_dtg_max = 0.0, t_dtg_sum = 0.0;
   long long dtg_counts_local[3] = {n_dtg_refreshed, n_dtg_cached, dtg_queries_sent};
@@ -3578,6 +3641,7 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     }
   };
 
+  t_mark = MPI_Wtime();
   int n_task_main = 1;
   MPI_Comm_size(Communicator, &n_task_main);
   std::vector<std::vector<dust_visitor>> visitors((size_t)n_task_main);
@@ -3600,6 +3664,8 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     process_dust(i, l.gas, std::sqrt(l.r2), coagulation_radius_by_particle[i], local_DTG[i]);
   }
 
+  t_phase[2] += MPI_Wtime() - t_mark;
+  t_mark = MPI_Wtime();
   // Visiting grains occupy the free slots after NumPart for the duration of
   // their update, so the dust routines treat them like local particles.
   std::vector<int> visitor_home;
@@ -3640,6 +3706,7 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
       Terminate("dust: returning grain for invalid slot %d", r.home_slot);
     r.particle.load(Sp, r.home_slot);
   }
+  t_phase[3] += MPI_Wtime() - t_mark;
   if(check_mass) {
     mass_check_remaining--;
     const double mass_after = cg_dist::total_baryon_mass(Sp, Communicator);
@@ -3689,9 +3756,16 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   double dt_dust = MPI_Wtime() - t_start;
   total_time_in_dust += dt_dust;
   dust_call_count++;
-  if(dust_call_count % 100 == 0 && All.ThisTask == 0)
-    printf("[DUST_TIMING] Called %d times, avg %.3f sec/call, total %.1f sec\n",
-           dust_call_count, total_time_in_dust / dust_call_count, total_time_in_dust);
+  if(dust_call_count % 100 == 0) {
+    double t_max[4];
+    MPI_Reduce(t_phase, t_max, 4, MPI_DOUBLE, MPI_MAX, 0, Communicator);
+    if(All.ThisTask == 0) {
+      printf("[DUST_TIMING] Called %d times, avg %.3f sec/call, total %.1f sec\n",
+             dust_call_count, total_time_in_dust / dust_call_count, total_time_in_dust);
+      printf("[DUST_PHASE_TIMING] cumulative max over tasks [sec]: association=%.1f D/G=%.1f "
+             "local=%.1f visiting=%.1f\n", t_max[0], t_max[1], t_max[2], t_max[3]);
+    }
+  }
 }
 // ═══════════════════════════════════════════════════════════════════════════════
 // destroy_dust_particles
