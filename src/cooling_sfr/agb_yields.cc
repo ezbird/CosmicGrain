@@ -20,6 +20,17 @@
 #include <string>
 #include <cmath>
 #include <stdexcept>
+#include <mpi.h>
+
+// Yield tables are built on every MPI task; only task 0 reports them.
+static bool cg_yields_report()
+{
+    int initialized = 0, rank = 0;
+    MPI_Initialized(&initialized);
+    if(initialized)
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    return rank == 0;
+}
 
 // Global instance
 AGBYieldTable AGB_Yields;
@@ -88,18 +99,18 @@ bool AGBYieldTable::load_from_file(const char* filename) {
     is_loaded = true;
     build_imf_yield_table();
     /*
-    printf("[AGB_YIELDS] Successfully loaded yield table:\n");
-    printf("[AGB_YIELDS]   File: %s\n", filename);
-    printf("[AGB_YIELDS]   Entries: %zu\n", table.size());
-    printf("[AGB_YIELDS]   Mass range: %.2f - %.2f Msun (%zu points)\n",
+    if(cg_yields_report()) printf("[AGB_YIELDS] Successfully loaded yield table:\n");
+    if(cg_yields_report()) printf("[AGB_YIELDS]   File: %s\n", filename);
+    if(cg_yields_report()) printf("[AGB_YIELDS]   Entries: %zu\n", table.size());
+    if(cg_yields_report()) printf("[AGB_YIELDS]   Mass range: %.2f - %.2f Msun (%zu points)\n",
            mass_grid.front(), mass_grid.back(), mass_grid.size());
-    printf("[AGB_YIELDS]   Z range: %.6f - %.6f (%zu points)\n",
+    if(cg_yields_report()) printf("[AGB_YIELDS]   Z range: %.6f - %.6f (%zu points)\n",
            Z_grid.front(), Z_grid.back(), Z_grid.size());
 
     // Print first few entries as sanity check
-    printf("[AGB_YIELDS]   Sample entries:\n");
+    if(cg_yields_report()) printf("[AGB_YIELDS]   Sample entries:\n");
     for(size_t i = 0; i < std::min(size_t(3), table.size()); i++) {
-        printf("[AGB_YIELDS]     M=%.2f Z=%.4f: Z_yield=%.4f M_lost=%.3f\n",
+        if(cg_yields_report()) printf("[AGB_YIELDS]     M=%.2f Z=%.4f: Z_yield=%.4f M_lost=%.3f\n",
                table[i].mass_init, table[i].Z_init,
                table[i].Z_yield_total, table[i].M_lost);
     }
@@ -274,7 +285,7 @@ void AGBYieldTable::build_imf_yield_table()
 
     if(!imf_yields.empty())
     {
-        printf("[AGB_YIELDS] Built IMF-integrated SSP yield table "
+        if(cg_yields_report()) printf("[AGB_YIELDS] Built IMF-integrated SSP yield table "
                "for %zu metallicities\n",
                imf_yields.size());
     }

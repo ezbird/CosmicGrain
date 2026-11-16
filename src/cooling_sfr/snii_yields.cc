@@ -7,6 +7,17 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <mpi.h>
+
+// Yield tables are built on every MPI task; only task 0 reports them.
+static bool cg_yields_report()
+{
+    int initialized = 0, rank = 0;
+    MPI_Initialized(&initialized);
+    if(initialized)
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    return rank == 0;
+}
 
 SNIIYieldTable SNII_Yields;
 
@@ -336,10 +347,10 @@ bool SNIIYieldTable::load_sn_from_file(const char *filename)
 
     sn_loaded = true;
 
-    printf("[SNII_YIELDS] Loaded %zu ordinary SN models from %s\n",
+    if(cg_yields_report()) printf("[SNII_YIELDS] Loaded %zu ordinary SN models from %s\n",
            sn_table.size(), filename);
 
-    printf("[SNII_YIELDS] SN grid: %zu masses x %zu metallicities\n",
+    if(cg_yields_report()) printf("[SNII_YIELDS] SN grid: %zu masses x %zu metallicities\n",
            sn_mass_grid.size(), Z_grid.size());
 
     return true;
@@ -470,10 +481,10 @@ bool SNIIYieldTable::load_hn_from_file(const char *filename)
 
     hn_loaded = true;
 
-    printf("[SNII_YIELDS] Loaded %zu hypernova models from %s\n",
+    if(cg_yields_report()) printf("[SNII_YIELDS] Loaded %zu hypernova models from %s\n",
            hn_table.size(), filename);
 
-    printf("[SNII_YIELDS] HN grid: %zu masses x %zu metallicities\n",
+    if(cg_yields_report()) printf("[SNII_YIELDS] HN grid: %zu masses x %zu metallicities\n",
            hn_mass_grid.size(), Z_grid.size());
 
     return true;
@@ -745,13 +756,13 @@ void SNIIYieldTable::build_imf_yield_table()
         return;
     }
 
-    printf("[SNII_YIELDS] Building IMF-integrated SNII+HN yields\n");
-    printf("[SNII_YIELDS] HN fraction = %.3f\n",
+    if(cg_yields_report()) printf("[SNII_YIELDS] Building IMF-integrated SNII+HN yields\n");
+    if(cg_yields_report()) printf("[SNII_YIELDS] HN fraction = %.3f\n",
            hypernova_fraction);
-    printf("[SNII_YIELDS] Yield-supported progenitor range = "
+    if(cg_yields_report()) printf("[SNII_YIELDS] Yield-supported progenitor range = "
            "%.1f-%.1f Msun\n",
            SN_MASS_MIN, SN_MASS_MAX);
-    printf("[SNII_YIELDS] SSP IMF normalization range = "
+    if(cg_yields_report()) printf("[SNII_YIELDS] SSP IMF normalization range = "
            "%.2f-%.1f Msun\n",
            IMF_NORM_MASS_MIN, IMF_NORM_MASS_MAX);
 
@@ -978,7 +989,7 @@ void SNIIYieldTable::build_imf_yield_table()
 
         imf_yields.push_back(y);
 
-        printf("[SNII_YIELDS] Z=%7.4f  "
+        if(cg_yields_report()) printf("[SNII_YIELDS] Z=%7.4f  "
                "yZ=%10.4e  "
                "yC=%10.4e  "
                "yN=%10.4e  "
@@ -1008,7 +1019,7 @@ void SNIIYieldTable::build_imf_yield_table()
                   return a.Z_init < b.Z_init;
               });
 
-    printf("[SNII_YIELDS] Built IMF-integrated SSP yield table "
+    if(cg_yields_report()) printf("[SNII_YIELDS] Built IMF-integrated SSP yield table "
            "for %zu metallicities\n",
            imf_yields.size());
 }
