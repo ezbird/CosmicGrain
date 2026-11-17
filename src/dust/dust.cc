@@ -70,6 +70,8 @@ static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
                                          int nearest_gas, long long *counter,
                                          double *mass_counter);
 double dust_clumping_factor(double n_H, int is_star_forming);
+static inline bool dust_dense_phase_model(void);
+static double dust_dense_fraction(simparticles *Sp, int gas_idx, double *n_dense_cm3);
 
 static double sample_initial_grain_radius(double median_nm, double sigma_dex)
 {
@@ -1406,22 +1408,40 @@ if(shat_passed > 0)
 
     double n_H = dust_gas_nH_cgs(Sp, gas_idx);
 
-    double DustClumpingFactor =
-        dust_clumping_factor(
-            n_H,
-            Sp->SphP[gas_idx].Sfr >
-            DUST_SFR_EPS
-        );
-
-    double n_eff =
-        n_H *
-        DustClumpingFactor;
-
-    if(n_eff >
-       All.DustCollisionDensityThresh)
+    // Diffuse-phase fraction of the gas element. Legacy (mode <= 1): the whole
+    // particle shatters or none of it, switched at n_eff = DustCollisionDensityThresh.
+    // Dense-phase model (mode >= 2): shattering always acts on 1 - f_dense.
+    double f_diffuse = 1.0;
+    double n_eff = n_H;  // logged with each shattering event
+    if(dust_dense_phase_model())
     {
-        shat_failed_dens++;
-        return;
+        double n_dense_unused;
+        f_diffuse = 1.0 - dust_dense_fraction(Sp, gas_idx, &n_dense_unused);
+        if(!(f_diffuse >= 1.0e-4))
+        {
+            shat_failed_dens++;
+            return;
+        }
+    }
+    else
+    {
+        double DustClumpingFactor =
+            dust_clumping_factor(
+                n_H,
+                Sp->SphP[gas_idx].Sfr >
+                DUST_SFR_EPS
+            );
+
+        n_eff =
+            n_H *
+            DustClumpingFactor;
+
+        if(n_eff >
+           All.DustCollisionDensityThresh)
+        {
+            shat_failed_dens++;
+            return;
+        }
     }
 
 
@@ -1534,7 +1554,8 @@ if(shat_passed > 0)
         (0.01 / local_DTG) *
         (a_micron / 0.1) *
         density_factor *
-        All.DustShatteringCalibration;
+        All.DustShatteringCalibration /
+        f_diffuse;
 
     // Physical and numerical limits.
     tau_shat_yr =
@@ -4458,6 +4479,54 @@ static inline double tau_acc_yr_HK11(double nH_cm3, double T_K,
  *
  * Values: {1.5, 3, 10, 30} are fixed regardless of resolution
  */
+// ============================================================================
+// Dense-phase mass fraction (DustEnableClumping >= 2)
+// ============================================================================
+// Blitz & Rosolowsky (2006, ApJ 650, 933) pressure law for the molecular
+// (dense-phase) mass fraction of a gas element:
+//   R_mol = (P / P0)^alpha,  P0/k = 4.3e4 K cm^-3,  alpha = 0.92,
+//   f_dense = R_mol / (1 + R_mol).
+// P is the particle's pressure. Star-forming gas sits on the Springel &
+// Hernquist (2003) effective equation of state, so this is their effective
+// multiphase pressure. Non-star-forming gas hotter than 3e4 K cannot host
+// cold clouds and gets f_dense = 0.
+//
+// Dense-phase hydrogen density used in the coagulation and accretion rates:
+//   mode 2: fixed n_dense = 100 cm^-3;
+//   mode 3: pressure balance, n_dense = (P/k) / T_cold with T_cold = 100 K
+//           (never below the resolved n_H).
+// Coagulation and accretion act on the dense fraction (rates x f_dense);
+// shattering acts on the diffuse fraction (rate x (1 - f_dense)) at the
+// resolved n_H. Both run every step: there is no density switch.
+// Mode 1 keeps the legacy clumping tiers and n_eff switch unchanged.
+static const double DUST_BR06_P0_K_CM3   = 4.3e4;
+static const double DUST_BR06_ALPHA      = 0.92;
+static const double DUST_DENSE_FIXED_NH  = 100.0;
+static const double DUST_DENSE_T_COLD_K  = 100.0;
+static const double DUST_DENSE_T_HOT_MAX = 3.0e4;
+
+static inline bool dust_dense_phase_model(void) { return All.DustEnableClumping >= 2; }
+
+/** Return f_dense for gas_idx and set *n_dense_cm3 (mode >= 2 only). */
+static double dust_dense_fraction(simparticles *Sp, int gas_idx, double *n_dense_cm3)
+{
+  const double n_H = dust_gas_nH_cgs(Sp, gas_idx);
+  *n_dense_cm3     = std::max(n_H, DUST_DENSE_FIXED_NH);
+  const bool is_sf = Sp->SphP[gas_idx].Sfr > DUST_SFR_EPS;
+  if(!is_sf)
+    {
+      const double T = get_temperature_from_entropy(Sp, gas_idx);
+      if(!isfinite(T) || T > DUST_DENSE_T_HOT_MAX) return 0.0;
+    }
+  const double u_cgs = Sp->get_utherm_from_entropy(gas_idx) * (All.UnitEnergy_in_cgs / All.UnitMass_in_g);
+  const double P_over_k = GAMMA_MINUS1 * dust_gas_density_cgs(Sp, gas_idx) * u_cgs / BOLTZMANN;
+  if(!isfinite(P_over_k) || !(P_over_k > 0.0)) return 0.0;
+  if(All.DustEnableClumping >= 3)
+    *n_dense_cm3 = std::max(n_H, P_over_k / DUST_DENSE_T_COLD_K);
+  const double R = pow(P_over_k / DUST_BR06_P0_K_CM3, DUST_BR06_ALPHA);
+  return R / (1.0 + R);
+}
+
 double dust_clumping_factor(double n_H, int is_star_forming)
 {
   if(!All.DustEnableClumping) return 1.0;
@@ -4505,16 +4574,27 @@ void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double 
 
   const double n_H = dust_gas_nH_cgs(Sp, gas_idx);
   const bool is_star_forming = Sp->SphP[gas_idx].Sfr > DUST_SFR_EPS;
-  const double clumping = dust_clumping_factor(n_H, is_star_forming);
-  const double n_eff = n_H * clumping;
-  if(!isfinite(n_eff) || n_eff < All.DustCollisionDensityThresh ||
-     !(n_eff > 0.0)) { ++CoagFailedDensity; return; }
+  double n_eff;
+  double f_dense = 1.0;  // legacy: the whole particle coagulates or none of it
+  if(dust_dense_phase_model()) {
+    // Dense phase only: rate x f_dense at the dense-phase density; no switch.
+    f_dense = dust_dense_fraction(Sp, gas_idx, &n_eff);
+    if(!(f_dense >= 1.0e-4) || !isfinite(n_eff) || !(n_eff > 0.0)) {
+      ++CoagFailedDensity;
+      return;
+    }
+  } else {
+    const double clumping = dust_clumping_factor(n_H, is_star_forming);
+    n_eff = n_H * clumping;
+    if(!isfinite(n_eff) || n_eff < All.DustCollisionDensityThresh ||
+       !(n_eff > 0.0)) { ++CoagFailedDensity; return; }
 
-  // Effective-EOS star-forming temperatures do not resolve cold clouds.
-  // Retain the original T < 3000 K gate for non-star-forming gas.
-  if(!is_star_forming && (!isfinite(T_gas) || T_gas > 3000.0)) {
-    ++CoagFailedTemperature;
-    return;
+    // Effective-EOS star-forming temperatures do not resolve cold clouds.
+    // Retain the original T < 3000 K gate for non-star-forming gas.
+    if(!is_star_forming && (!isfinite(T_gas) || T_gas > 3000.0)) {
+      ++CoagFailedTemperature;
+      return;
+    }
   }
 
   const double a_nm = Sp->DustP[dust_idx].GrainRadius;
@@ -4538,7 +4618,7 @@ void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double 
   if(!isfinite(calibration) || !(calibration > 0.0)) return;
   const double tau_co_yr = tau0_yr * (a_nm / 100.0)
       * (0.01 / local_DTG) * (0.1 / v_co_kms)
-      * (10.0 / n_eff) * calibration;
+      * (10.0 / n_eff) * calibration / f_dense;
   if(!isfinite(tau_co_yr) || !(tau_co_yr > 0.0)) return;
 
   // update_dust_dynamics() receives elapsed physical time in code units.
@@ -4688,11 +4768,21 @@ void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, doub
   }
   // ── Gate 3: require sufficiently dense gas ──────────────────────────────────
   double n_H = dust_gas_nH_cgs(Sp, gas_idx);
-  double DustClumpingFactor = dust_clumping_factor(n_H, Sp->SphP[gas_idx].Sfr > DUST_SFR_EPS);
-  double n_eff_cm3 = n_H * DustClumpingFactor;
-  if(n_eff_cm3 < 0.1) {
-    failed_low_density++;
-    return;
+  // Dense-phase model (mode >= 2): f_dense replaces the f_mol tiers below and
+  // the dense-phase density replaces the clumped density in the HK11 timescale.
+  double f_dense_acc = -1.0;
+  double n_eff_cm3;
+  double DustClumpingFactor;  // logged: n_eff / n_H in either model
+  if(dust_dense_phase_model()) {
+    f_dense_acc = dust_dense_fraction(Sp, gas_idx, &n_eff_cm3);
+    DustClumpingFactor = (n_H > 0.0) ? n_eff_cm3 / n_H : 0.0;
+  } else {
+    DustClumpingFactor = dust_clumping_factor(n_H, Sp->SphP[gas_idx].Sfr > DUST_SFR_EPS);
+    n_eff_cm3 = n_H * DustClumpingFactor;
+    if(n_eff_cm3 < 0.1) {
+      failed_low_density++;
+      return;
+    }
   }
   // ── Redshift-dependent maximum dust-to-metal ratio ──────────────────────────
   double z_now = 1.0 / All.Time - 1.0;
@@ -4740,6 +4830,9 @@ void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, doub
   // Metal-rich gas self-shields more efficiently.
   if(Z_gas > 0.01)
     f_mol = std::min(1.0, 1.5 * f_mol);
+  // Dense-phase model: the Blitz & Rosolowsky fraction is the molecular fraction.
+  if(f_dense_acc >= 0.0)
+    f_mol = f_dense_acc;
   if(f_mol < 0.01) {
     failed_low_fmol++;
     return;

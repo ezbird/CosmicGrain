@@ -428,7 +428,11 @@ void sim::set_units(void)
     mpi_printf("  Dust cooling:     %s\n", All.DustEnableCooling ? "ON" : "OFF");
     mpi_printf("  Gas drag:         %s\n", All.DustEnableDrag ? "ON" : "OFF");
     mpi_printf("  Grain growth:     %s\n", All.DustEnableGrowth ? "ON" : "OFF");
-    mpi_printf("  Clumping:         %s\n", All.DustEnableClumping ? "ON" : "OFF");
+    mpi_printf("  Clumping:         %s\n",
+               All.DustEnableClumping >= 3   ? "dense phase (Blitz & Rosolowsky 2006; n_dense from pressure, T_cold=100 K)"
+               : All.DustEnableClumping == 2 ? "dense phase (Blitz & Rosolowsky 2006; n_dense=100 cm^-3)"
+               : All.DustEnableClumping == 1 ? "legacy tiers (n_eff switch)"
+                                             : "OFF");
     mpi_printf("  Coagulation:      %s\n", All.DustEnableCoagulation ? "ON" : "OFF");
     mpi_printf("  Sputtering:       %s\n", All.DustEnableSputtering ? "ON" : "OFF");
     mpi_printf("  Shock destruction: %s\n", All.DustEnableShockDestruction ? "ON" : "OFF");
