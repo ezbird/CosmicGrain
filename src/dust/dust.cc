@@ -2363,13 +2363,19 @@ for(int n = 0; n < n_create; n++) {
       const double star_mass_after = star_mass_remaining - dust_mass_per_particle;
       if(star_mass_after <= 0.0 || !std::isfinite(star_mass_after))
         Terminate("AGB dust recoil would exhaust stellar mass");
+      double dv2 = 0.0;
       for(int k = 0; k < 3; ++k) {
         const double star_vel_before = Sp->P[star_idx].Vel[k];
         const double dust_vel = Sp->P[new_idx].Vel[k];
         Sp->P[star_idx].Vel[k] =
             (star_mass_remaining * star_vel_before - dust_mass_per_particle * dust_vel) /
             star_mass_after;
+        dv2 += (Sp->P[star_idx].Vel[k] - star_vel_before) * (Sp->P[star_idx].Vel[k] - star_vel_before);
       }
+      if(sqrt(dv2) * All.cf_ainv > 100.0)
+        printf("[AGB_DUST_RECOIL_KICK|T=%d] star ID %llu changed velocity by %.0f km/s (dust %.3e of %.3e)\n",
+               All.ThisTask, (unsigned long long)Sp->P[star_idx].ID.get(), sqrt(dv2) * All.cf_ainv,
+               dust_mass_per_particle, star_mass_remaining);
       star_mass_remaining = star_mass_after;
     }
 
@@ -2491,6 +2497,14 @@ void spawn_dust_particle(simparticles *Sp, double offset_kpc[3], double dust_mas
     return;
   }
   int new_idx = Sp->NumPart;
+  // Start from a full copy of the parent star.  The slot at NumPart holds the
+  // record of whatever particle used it last (a destroyed or compacted grain,
+  // or a grain visiting from another task during the dust update), and fields
+  // set nowhere below, such as the stored gravitational acceleration used by
+  // the next half-kick, would otherwise be that particle's.  Stale
+  // accelerations launched some new grains at thousands of km/s.
+  Sp->P[new_idx] = Sp->P[star_idx];
+  memset(&Sp->DustP[new_idx], 0, sizeof(dust_data));
   // ── Position: parent star + random offset ─────────────────────────────────
   double star_pos[3];
   Sp->intpos_to_pos(Sp->P[star_idx].IntPos, star_pos);
@@ -2922,13 +2936,18 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
   double m_single_grain_cgs   = (4.0/3.0) * M_PI * a_cm*a_cm*a_cm * rho_grain_cgs;
   // Accumulate radiation acceleration from all young neighbours
   double a_rad[3] = {0.0, 0.0, 0.0};
+  // A star particle is a cluster spread over its softening length, so the
+  // 1/r^2 flux is evaluated no closer than that.  New grains are spawned
+  // 10-100 pc from their parent star, where the unsoftened flux on a small
+  // grain gave single-step kicks of thousands of km/s.
+  const double r_min_code = All.SofteningTable[All.SofteningClassOfPartType[4]];
   for(const auto &nb : neighbors) {
     const dust_young_star &star = young_stars[nb.first];
     double L_cgs = star.L_cgs;
-    // Convert code distance to physical cm
     double r_code = std::sqrt(nb.second);
-    double r_cgs  = r_code * (All.Time / All.HubbleParam) * 3.086e21;
-    if(r_cgs <= 0.0) continue;
+    if(!(r_code > 0.0)) continue;
+    // Convert the softened code distance to physical cm
+    double r_cgs  = std::max(r_code, r_min_code) * (All.Time / All.HubbleParam) * 3.086e21;
     // Vector from star to grain: nearest_image_intpos_to_pos(a, b) computes a - b,
     // so this is dust_pos - star_pos, pointing radially outward from the star.
     // Dividing by r_code (the code-unit separation) normalises to a unit vector.
@@ -2968,21 +2987,38 @@ void dust_radiation_pressure(simparticles *Sp, int dust_idx, int nearest_gas, do
   radp_total_coupling += coupling_factor;
   // ── Apply velocity kick with terminal velocity suppression ────────────────
   double accel_code = All.UnitVelocity_in_cm_per_s / dust_code_time_in_s();
+  // Physical velocity change this update (code velocity = km/s).  Optically
+  // thin radiation pressure drives grains to at most a few hundred km/s, so
+  // larger single-update kicks are numerical (a long dust step close to a
+  // luminous star) and are limited; radp_capped counts how often.
+  static constexpr double RADP_MAX_DV_KMS = 100.0;
+  static long long radp_capped = 0;
+  double dv[3], dv2 = 0.0;
+  for(int k = 0; k < 3; k++) {
+    dv[k] = (a_rad[k] / accel_code) * dt * coupling_factor;
+    dv2 += dv[k] * dv[k];
+  }
+  double dv_scale = 1.0;
+  if(dv2 > RADP_MAX_DV_KMS * RADP_MAX_DV_KMS) {
+    dv_scale = RADP_MAX_DV_KMS / sqrt(dv2);
+    radp_capped++;
+  }
   for(int k = 0; k < 3; k++)
     // Physical acceleration g changes p = a^2 dx/dt by a * g * dt.
-    Sp->P[dust_idx].Vel[k] += All.cf_atime * (a_rad[k] / accel_code) * dt * coupling_factor;
+    Sp->P[dust_idx].Vel[k] += All.cf_atime * dv[k] * dv_scale;
   // Update diagnostics
   double accel_mag = sqrt(a_rad[0]*a_rad[0] + a_rad[1]*a_rad[1] + a_rad[2]*a_rad[2]);
   if(accel_mag > 0.0) radp_with_young++;
   radp_total_accel += accel_mag;
   if(radp_calls % 500000 == 0 && All.ThisTask == 0)
     DUST_PRINT("[RADIATION_PRESSURE_RATE] calls=%lld  with_any_stars=%.1f%%  "
-               "with_young_stars=%.1f%%  avg_coupling=%.3e avg_|a|=%.2e code\n",
+               "with_young_stars=%.1f%%  avg_coupling=%.3e avg_|a|=%.2e code  capped=%lld\n",
                radp_calls,
                100.0 * radp_with_stars  / radp_calls,
                100.0 * radp_with_young  / radp_calls,
                radp_total_coupling      / radp_calls,
-               radp_total_accel         / radp_calls);
+               radp_total_accel         / radp_calls,
+               radp_capped);
 }
 // ═══════════════════════════════════════════════════════════════════════════════
 // update_dust_temperature
@@ -3741,6 +3777,35 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
     if(All.ThisTask == 0 && dust_call_count % 10 == 0)
       printf("[DUST_ASSOC|Step=%d] %lld of %lld grains processed on the task of their nearest gas\n",
              All.NumCurrentTiStep, n_visiting_global, global_count);
+  }
+  // ── Velocity watchdog ─────────────────────────────────────────────────────
+  // Physical peculiar speeds above 3000 km/s are not expected for stars or
+  // grains.  Each such star is reported once; grains are counted.
+  {
+    static constexpr double WATCH_KMS = 3000.0;
+    static std::unordered_set<long long> reported_stars;
+    long long n_fast[2] = {0, 0}, n_fast_sum[2] = {0, 0};
+    for(int i = 0; i < Sp->NumPart; i++) {
+      const int type = Sp->P[i].getType();
+      if(type != 4 && type != DUST_PARTICLE_TYPE) continue;
+      double v2 = 0.0;
+      for(int k = 0; k < 3; k++) v2 += (double)Sp->P[i].Vel[k] * Sp->P[i].Vel[k];
+      const double v_kms = sqrt(v2) * All.cf_ainv;
+      if(!(v_kms > WATCH_KMS)) continue;
+      if(type == 4) {
+        n_fast[0]++;
+        const long long id = (long long)Sp->P[i].ID.get();
+        if(reported_stars.size() < 10000 && reported_stars.insert(id).second)
+          printf("[FAST_STAR|T=%d|a=%.5f] star ID %lld moves at %.0f km/s; age %.1f Myr mass %.3e\n",
+                 All.ThisTask, (double)All.Time, id, v_kms,
+                 get_stellar_age_Myr(Sp->P[i].StellarAge, All.Time), Sp->P[i].getMass());
+      } else
+        n_fast[1]++;
+    }
+    MPI_Reduce(n_fast, n_fast_sum, 2, MPI_LONG_LONG, MPI_SUM, 0, Communicator);
+    if(All.ThisTask == 0 && dust_call_count % 10 == 0)
+      printf("[FAST_PARTICLES|Step=%d] above %.0f km/s: %lld stars, %lld of %lld grains\n",
+             All.NumCurrentTiStep, WATCH_KMS, n_fast_sum[0], n_fast_sum[1], global_count);
   }
   // ── Periodic diagnostics (every 500 steps, task 0) ───────────────────────
   if(All.NumCurrentTiStep % 500 == 0) {

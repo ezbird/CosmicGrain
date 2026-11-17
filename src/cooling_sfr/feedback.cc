@@ -1892,10 +1892,31 @@ static void apply_agb_deposit(simparticles *Sp, const AGBDeposit &d, double mome
       v[k]  = Sp->P[j].Vel[k];
       vp[k] = Sp->SphP[j].VelPred[k];
     }
+  // Inelastic mixing turns the donor-gas relative speed into heat.  Real AGB
+  // winds leave at tens of km/s relative to their star, so a relative speed
+  // of thousands of km/s means the donor's velocity is numerically corrupt;
+  // mixing it in would heat the gas to 1e9-1e10 K.  Take the ejecta at the
+  // gas velocity instead (no dissipation, momentum still conserved through
+  // the donor debit) and report the donor.
+  static constexpr double AGB_MAX_RELATIVE_KMS = 1000.0;
+  double ejecta_v[3] = {d.ejecta_v[0], d.ejecta_v[1], d.ejecta_v[2]};
+  double rel2 = 0;
+  for(int k = 0; k < 3; k++)
+    rel2 += (vp[k] - ejecta_v[k]) * (vp[k] - ejecta_v[k]);
+  if(rel2 * vfac > AGB_MAX_RELATIVE_KMS * AGB_MAX_RELATIVE_KMS)
+    {
+      static long long n_fast_donor = 0;
+      if(++n_fast_donor <= 50 || n_fast_donor % 1000 == 0)
+        printf("[AGB_FAST_DONOR|T=%d] star ID %llu moves %.0f km/s relative to gas ID %llu; ejecta taken at the gas "
+               "velocity (%lld cases on this task)\n",
+               All.ThisTask, (unsigned long long)d.star_id, sqrt(rel2 * vfac), (unsigned long long)d.gas_id, n_fast_donor);
+      for(int k = 0; k < 3; k++)
+        ejecta_v[k] = vp[k];
+    }
   agb_feedback::MixedGas mixed;
   try
     {
-      mixed = agb_feedback::mix_gas(old, d.dm, u_old, All.MinEgySpec, v, vp, d.ejecta_v, vfac);
+      mixed = agb_feedback::mix_gas(old, d.dm, u_old, All.MinEgySpec, v, vp, ejecta_v, vfac);
     }
   catch(const std::exception &e)
     {
@@ -1908,7 +1929,7 @@ static void apply_agb_deposit(simparticles *Sp, const AGBDeposit &d, double mome
   if(!std::isfinite(candidate_prediction) || candidate_prediction <= 0 || !std::isfinite(candidate_base) || candidate_base <= 0)
     Terminate("Invalid time-centered AGB entropy preflight");
 
-  cg_agb_probe::record(Sp, j, d.dm, d.distance, u_old, mixed, d.ejecta_v);
+  cg_agb_probe::record(Sp, j, d.dm, d.distance, u_old, mixed, ejecta_v);
   const double mass = mixed.mass;
   for(int x = 0; x < 7; x++)
     *fraction[x] = (old * *fraction[x] + d.f * d.elem[x]) / mass;
@@ -1950,8 +1971,17 @@ static void finish_agb(simparticles *Sp, const AGBPlan &plan, const double momen
       cg_agb_probe::sums[cg_agb_probe::metals] += plan.dust.gas_metals;
       Sp->P[p].setMass(plan.donor_mass - plan.gas);
       const double stored_mass = Sp->P[p].getMass();
+      double dv2 = 0;
       for(int k = 0; k < 3; k++)
-        Sp->P[p].Vel[k] = (plan.donor_mass * plan.ejecta_v[k] - momentum[k]) / stored_mass;
+        {
+          Sp->P[p].Vel[k] = (plan.donor_mass * plan.ejecta_v[k] - momentum[k]) / stored_mass;
+          dv2 += (Sp->P[p].Vel[k] - plan.ejecta_v[k]) * (Sp->P[p].Vel[k] - plan.ejecta_v[k]);
+        }
+      // The momentum debit changes the donor's velocity by ~(dm/M) x (wind
+      // speed); anything large signals inconsistent momentum bookkeeping.
+      if(sqrt(dv2) * All.cf_ainv > 100.0)
+        printf("[AGB_DONOR_KICK|T=%d] star ID %llu changed velocity by %.0f km/s (gas %.3e of %.3e)\n", All.ThisTask,
+               (unsigned long long)Sp->P[p].ID.get(), sqrt(dv2) * All.cf_ainv, plan.gas, plan.donor_mass);
     }
   Sp->P[p].AGBPendingCarbonMass += plan.dust.carbon_dust;
   Sp->P[p].AGBPendingSilicateMass += plan.dust.silicate_dust;
