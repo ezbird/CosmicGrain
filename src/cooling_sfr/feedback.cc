@@ -1892,13 +1892,15 @@ static void apply_agb_deposit(simparticles *Sp, const AGBDeposit &d, double mome
       v[k]  = Sp->P[j].Vel[k];
       vp[k] = Sp->SphP[j].VelPred[k];
     }
-  // Inelastic mixing turns the donor-gas relative speed into heat.  Real AGB
-  // winds leave at tens of km/s relative to their star, so a relative speed
-  // of thousands of km/s means the donor's velocity is numerically corrupt;
-  // mixing it in would heat the gas to 1e9-1e10 K.  Take the ejecta at the
-  // gas velocity instead (no dissipation, momentum still conserved through
-  // the donor debit) and report the donor.
-  static constexpr double AGB_MAX_RELATIVE_KMS = 1000.0;
+  // Inelastic mixing turns the donor-gas relative speed into heat.  Stars in
+  // galactic outflows legitimately see gas moving up to ~2000 km/s relative
+  // to them (512^3 test: 540 transactions, all below 1760 km/s), but a
+  // relative speed above 3000 km/s means the donor's velocity is numerically
+  // corrupt (runaway stars reached 5000-40000 km/s), and mixing it in would
+  // heat the gas to 1e9-1e10 K.  Take such ejecta at the gas velocity
+  // instead (no dissipation, momentum still conserved through the donor
+  // debit) and report the donor.
+  static constexpr double AGB_MAX_RELATIVE_KMS = 3000.0;
   double ejecta_v[3] = {d.ejecta_v[0], d.ejecta_v[1], d.ejecta_v[2]};
   double rel2 = 0;
   for(int k = 0; k < 3; k++)
