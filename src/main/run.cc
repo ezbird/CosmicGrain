@@ -38,6 +38,7 @@
 #include "../main/main.h"
 #include "../main/simulation.h"
 #include "../ngbtree/ngbtree.h"
+#include "../main/energy_ledger.h"
 #include "../sort/parallel_sort.h"
 #include "../system/system.h"
 
@@ -198,19 +199,23 @@ if(All.RestartFlag == RST_STARTFROMSNAP &&
        * accessed passively. This also creates the list of active hydro particles at this
        * synchronization point, which is stored in the list TimeBinsHydro.ActiveParticleList[].
        * This list is reused for the subsequent second and first hydro step. */
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_DRIFT);
       NgbTree.compute_densities();
 #ifdef FEEDBACK
       agb_probe_observe(&Sp,1);
 #endif
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_DENSITY);
 
       /* if particles have increased their smoothing lengths, this is recorded in parent tree nodes */
       NgbTree.update_maxhsml();
 
       /* hydro-forces, second half-step. This will also update the predicted velocities/entropies with the new current ones */
       do_hydro_step_second_half();
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_HYDRO2);
 
       /* this does the closing gravity half-step for the timebins that end at the current synchronization point */
       do_gravity_step_second_half();
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_GRAV2);
 
       /* do any extra physics, in a Strang-split way, for the timesteps that are finished */
       MPI_Barrier(Communicator);
@@ -256,6 +261,7 @@ if(All.RestartFlag == RST_STARTFROMSNAP &&
         DustNeedsSynchronization = 0;
       }
 #endif
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_DUST);
 
 #ifdef DEBUG_MD5
       Logs.log_debug_md5("A");
@@ -306,6 +312,7 @@ if(All.RestartFlag == RST_STARTFROMSNAP &&
 
       /* compute hydro-forces */
       do_hydro_step_first_half();
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_KICK1_HYDRO1);
 
       /* update the neighbor tree with the new velocities */
       NgbTree.update_velocities();
@@ -363,11 +370,13 @@ void sim::calculate_non_standard_physics_end_of_step(void)
     CoolSfr.sfr_create_star_particles(&Sp);
   #endif
   #endif
+    cg_ledger::point(&Sp, Communicator, cg_ledger::PH_COOLSFR);
 
   #ifdef FEEDBACK
     const double feedback_begin = MPI_Wtime();
     TIMER_START(CPU_FEEDBACK);
     apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain, Communicator);
+    cg_ledger::point(&Sp, Communicator, cg_ledger::PH_FEEDBACK);
     feedback_diag_try_flush(Communicator, /*cadence=*/50);
     agb_probe_flush(&Sp,Communicator);
     TIMER_STOP(CPU_FEEDBACK);

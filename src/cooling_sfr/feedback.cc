@@ -62,6 +62,12 @@ static const double CCSN_NUMBER_PER_MSUN     = 0.011;   // Number of CCSN progen
 // ΔT-target heating parameters
 static const double DELTA_T_TARGET        = 1.0e7; // 3.162277660168379e7;   // 10^7.5 K
 static const int    MAX_KERNEL_NEIGHBORS  = 512;
+// Stochastic heating never picks gas already this hot; the packet goes to
+// the next neighbour (or the star's reservoir), so repeated hits cannot stack
+// one particle far above the SN heating temperature.
+static const double FB_SKIP_HEATING_ABOVE_K = 1.0e8;
+static long long    FbHotSkips              = 0;  // local count, read by the energy ledger
+long long feedback_hot_skips(void) { return FbHotSkips; }
 
 // Adaptive feedback-kernel controls.
 //
@@ -1380,6 +1386,11 @@ static bool plan_thermal_event(simparticles *Sp, const Kernel &k, const ThermalE
               FB_PRINT("WARNING: gas ID %llu has invalid u_old=%g\n", (unsigned long long)c.id, c.u);
               continue;
             }
+          if(ucode_to_TK(c.u, c.ne) >= FB_SKIP_HEATING_ABOVE_K)
+            {
+              ++FbHotSkips;
+              continue;
+            }
           const double E_heat = (c.mass + dep[i].dMZ) * fb_code_mass_in_g() * c_v(mu_from_ne(c.ne)) * DELTA_T_TARGET /
                                 fb_code_energy_in_erg();
           if(E_heat <= 0 || !std::isfinite(E_heat))
@@ -1905,7 +1916,8 @@ static void apply_agb_deposit(simparticles *Sp, const AGBDeposit &d, double mome
   double rel2 = 0;
   for(int k = 0; k < 3; k++)
     rel2 += (vp[k] - ejecta_v[k]) * (vp[k] - ejecta_v[k]);
-  if(rel2 * vfac > AGB_MAX_RELATIVE_KMS * AGB_MAX_RELATIVE_KMS)
+  const bool fast_donor = rel2 * vfac > AGB_MAX_RELATIVE_KMS * AGB_MAX_RELATIVE_KMS;
+  if(fast_donor)
     {
       static long long n_fast_donor = 0;
       if(++n_fast_donor <= 50 || n_fast_donor % 1000 == 0)
@@ -1946,7 +1958,10 @@ static void apply_agb_deposit(simparticles *Sp, const AGBDeposit &d, double mome
       Sp->SphP[j].VelPred[k]    = mixed.predicted_velocity[k];
       // Debit the donor using the realized current-prediction momentum.
       // Stored midpoint momenta belong to different clocks on inactive gas.
-      momentum[k] = mass * Sp->SphP[j].VelPred[k] - old_momentum;
+      // A fast-donor deposit entered at the gas velocity: debit the donor at
+      // its own velocity instead, so the mismatch cannot kick the star
+      // (it is not momentum-conserving, but only in an already corrupt case).
+      momentum[k] = fast_donor ? (mass - old) * d.ejecta_v[k] : mass * Sp->SphP[j].VelPred[k] - old_momentum;
     }
   // Apply the current-time impulse to BOTH entropy time levels; preserve
   // their drift/kick offset instead of resetting an inactive prediction.

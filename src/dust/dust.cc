@@ -3780,13 +3780,35 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   }
   // ── Velocity watchdog ─────────────────────────────────────────────────────
   // Physical peculiar speeds above 3000 km/s are not expected for stars or
-  // grains.  Each such star is reported once; grains are counted.
+  // grains.  Each such star is reported once; grains are counted.  Gas that
+  // fast is possible in SN-driven winds, so gas is counted and the first
+  // sightings are reported with their thermodynamic state.
   {
     static constexpr double WATCH_KMS = 3000.0;
-    static std::unordered_set<long long> reported_stars;
-    long long n_fast[2] = {0, 0}, n_fast_sum[2] = {0, 0};
+    static std::unordered_set<long long> reported_stars, reported_gas;
+    long long n_fast[3] = {0, 0, 0}, n_fast_sum[3] = {0, 0, 0};
     for(int i = 0; i < Sp->NumPart; i++) {
       const int type = Sp->P[i].getType();
+      if(type == 0) {
+        double v2 = 0.0;
+        for(int k = 0; k < 3; k++) v2 += (double)Sp->P[i].Vel[k] * Sp->P[i].Vel[k];
+        const double v_kms = sqrt(v2) * All.cf_ainv;
+        if(!(v_kms > WATCH_KMS)) continue;
+        n_fast[2]++;
+        const long long id = (long long)Sp->P[i].ID.get();
+        if(reported_gas.size() < 2000 && reported_gas.insert(id).second) {
+          const double u    = Sp->get_utherm_from_entropy(i);
+          const double mu   = 4.0 / (1.0 + 3.0 * HYDROGEN_MASSFRAC + 4.0 * HYDROGEN_MASSFRAC * Sp->SphP[i].Ne);
+          const double T    = GAMMA_MINUS1 * u * All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s * mu * PROTONMASS / BOLTZMANN;
+          const double nH   = HYDROGEN_MASSFRAC * Sp->SphP[i].Density * All.cf_a3inv * All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam / PROTONMASS;
+          double pos[3];
+          Sp->intpos_to_pos(Sp->P[i].IntPos, pos);
+          printf("[FAST_GAS|T=%d|a=%.5f] gas ID %lld moves at %.0f km/s; T=%.3e K nH=%.3e cm^-3 Hsml=%.3e SFR=%.3e mass=%.3e pos=(%.1f|%.1f|%.1f)\n",
+                 All.ThisTask, (double)All.Time, id, v_kms, T, nH, (double)Sp->SphP[i].Hsml, (double)Sp->SphP[i].Sfr,
+                 Sp->P[i].getMass(), pos[0], pos[1], pos[2]);
+        }
+        continue;
+      }
       if(type != 4 && type != DUST_PARTICLE_TYPE) continue;
       double v2 = 0.0;
       for(int k = 0; k < 3; k++) v2 += (double)Sp->P[i].Vel[k] * Sp->P[i].Vel[k];
@@ -3802,10 +3824,10 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
       } else
         n_fast[1]++;
     }
-    MPI_Reduce(n_fast, n_fast_sum, 2, MPI_LONG_LONG, MPI_SUM, 0, Communicator);
+    MPI_Reduce(n_fast, n_fast_sum, 3, MPI_LONG_LONG, MPI_SUM, 0, Communicator);
     if(All.ThisTask == 0 && dust_call_count % 10 == 0)
-      printf("[FAST_PARTICLES|Step=%d] above %.0f km/s: %lld stars, %lld of %lld grains\n",
-             All.NumCurrentTiStep, WATCH_KMS, n_fast_sum[0], n_fast_sum[1], global_count);
+      printf("[FAST_PARTICLES|Step=%d] above %.0f km/s: %lld stars, %lld of %lld grains, %lld gas\n",
+             All.NumCurrentTiStep, WATCH_KMS, n_fast_sum[0], n_fast_sum[1], global_count, n_fast_sum[2]);
   }
   // ── Periodic diagnostics (every 500 steps, task 0) ───────────────────────
   if(All.NumCurrentTiStep % 500 == 0) {
