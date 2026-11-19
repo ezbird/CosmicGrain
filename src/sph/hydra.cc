@@ -30,6 +30,8 @@
 #include "../sort/cxxsort.h"
 #include "../sph/kernel.h"
 #include "../sph/sph.h"
+#include "../sph/hydro_watch.h"
+#include "../time_integration/driftfac.h"
 #include "../system/system.h"
 
 /*! This file contains the "second SPH loop", where the SPH forces are
@@ -520,6 +522,175 @@ void sph::hydro_forces_determine(int ntarget, int *targetlist)
   TIMER_STOP(CPU_LOGS);
 }
 
+
+/*! Runaway-force watchdog (see hydro_watch.h).  Called once per kernel
+ *  evaluation with this call's contribution to the acceleration and the raw
+ *  entropy rate; the neighbour list in Ngbhydrodat is still valid here.
+ */
+void sph::hydro_watch(pinfo &pdat, const double dacc[3], double dentr)
+{
+#ifndef LEAN
+  static int events = 0;
+  if(events >= cg_hydro_watch::MAX_EVENTS_PER_RANK)
+    return;
+
+  particle_data *P_i        = &Tp->P[pdat.target];
+  sph_particle_data *SphP_i = &Tp->SphP[pdat.target];
+
+  const int bin             = P_i->getTimeBinHydro();
+  const integertime ti_step = bin ? (((integertime)1) << bin) : 0;
+  if(ti_step == 0)
+    return;
+  const double dt_kick = All.ComovingIntegrationOn ? Driftfac.get_hydrokick_factor(All.Ti_Current, All.Ti_Current + ti_step / 2)
+                                                   : (ti_step / 2) * All.Timebase_interval;
+  const double dt_entr = (ti_step / 2) * All.Timebase_interval;
+
+  const double amag   = sqrt(dacc[0] * dacc[0] + dacc[1] * dacc[1] + dacc[2] * dacc[2]);
+  const double dv_kms = amag * dt_kick * All.cf_ainv;
+  const double efac   = GAMMA_MINUS1 / (All.cf_atime2_hubble_a * pow(SphP_i->Density, GAMMA_MINUS1));
+  const double drel   = SphP_i->Entropy > 0 ? dentr * efac * dt_entr / SphP_i->Entropy : 0;
+
+  const bool bad = !std::isfinite(amag) || !std::isfinite(dentr) || dv_kms > cg_hydro_watch::threshold_kms() ||
+                   drel > cg_hydro_watch::threshold_entropy_factor();
+  if(!bad)
+    return;
+  events++;
+
+  double pos[3];
+  Tp->intpos_to_pos(P_i->IntPos, pos);
+  const double nH = HYDROGEN_MASSFRAC * SphP_i->Density * All.cf_a3inv * All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam /
+                    PROTONMASS;
+  const double u_i = Tp->get_utherm_from_entropy(pdat.target);
+  const double mu  = 4.0 / (1.0 + 3.0 * HYDROGEN_MASSFRAC + 4.0 * HYDROGEN_MASSFRAC * SphP_i->Ne);
+  const double T_i = GAMMA_MINUS1 * u_i * All.UnitVelocity_in_cm_per_s * All.UnitVelocity_in_cm_per_s * mu * PROTONMASS / BOLTZMANN;
+  double vabs = 0;
+  for(int k = 0; k < 3; k++)
+    vabs += (double)SphP_i->VelPred[k] * SphP_i->VelPred[k];
+  vabs = sqrt(vabs) * All.cf_ainv;
+
+  printf(
+      "[HYDRO_WATCH|task=%d|step=%d|a=%.7f] ID %lld dv_halfkick=%.4g km/s dEntr/Entr=%.4g bin=%d numngb=%d | T=%.4g K nH=%.4g "
+      "rho=%.5g P=%.5g Csnd=%.5g Hsml=%.5g DhsmlFac=%.5g DivVel=%.4g CurlVel=%.4g NumNgb=%.4g mass=%.5g SFR=%.4g |v|=%.5g km/s "
+      "MaxSigVel=%.4g pos=(%.3f|%.3f|%.3f) dacc=(%.4g|%.4g|%.4g) dentr_raw=%.4g\n",
+      All.ThisTask, All.NumCurrentTiStep, (double)All.Time, (long long)P_i->ID.get(), dv_kms, drel, bin, pdat.numngb, T_i, nH,
+      (double)SphP_i->Density, (double)SphP_i->Pressure, (double)SphP_i->Csnd, (double)SphP_i->Hsml, (double)SphP_i->DhsmlDensityFactor,
+      (double)SphP_i->DivVel, (double)SphP_i->CurlVel, (double)SphP_i->NumNgb, P_i->getMass(), (double)SphP_i->Sfr, vabs,
+      (double)SphP_i->MaxSignalVel, pos[0], pos[1], pos[2], dacc[0], dacc[1], dacc[2], dentr);
+
+#if !defined(PRESSURE_ENTROPY_SPH) && !defined(TIMEDEP_ART_VISC)
+  /* scalar re-evaluation of each pair (no viscosity limiter for large timesteps) */
+  const double p_over_rho2_i = (double)SphP_i->Pressure / ((double)SphP_i->Density * (double)SphP_i->Density);
+  struct contrib
+  {
+    double dv, press, visc;
+    int n;
+  };
+  contrib top[cg_hydro_watch::MAX_NGB_LINES];
+  int ntop       = 0;
+  double sum_p   = 0, sum_v = 0;
+  double minrho  = 1e300, maxrho = 0, minh = 1e300, maxh = 0, maxP = 0, minDh = 1e300, maxDh = -1e300;
+  int nzero_rho  = 0;
+  for(int n = 0; n < pdat.numngb; n++)
+    {
+      sph_particle_data_hydrocore *SphP_j = Ngbhydrodat[n].SphCore;
+      double dx[3];
+      Tp->nearest_image_intpos_to_pos(P_i->IntPos, Ngbhydrodat[n].IntPos, dx);
+      const double r2 = dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2];
+      const double r  = sqrt(r2);
+      const double hj = SphP_j->Hsml, hi = SphP_i->Hsml;
+      minrho = std::min<double>(minrho, SphP_j->Density);
+      maxrho = std::max<double>(maxrho, SphP_j->Density);
+      minh   = std::min<double>(minh, hj);
+      maxh   = std::max<double>(maxh, hj);
+      maxP   = std::max<double>(maxP, SphP_j->Pressure);
+      minDh  = std::min<double>(minDh, SphP_j->DhsmlDensityFactor);
+      maxDh  = std::max<double>(maxDh, SphP_j->DhsmlDensityFactor);
+      if(SphP_j->Density <= 0)
+        nzero_rho++;
+      if(r <= 0 || (r >= hi && r >= hj))
+        continue;
+
+      double hinv, hinv3, hinv4, wk_i = 0, dwk_i = 0, wk_j = 0, dwk_j = 0;
+      if(r < hi)
+        {
+          kernel_hinv(hi, &hinv, &hinv3, &hinv4);
+          kernel_main(r * hinv, hinv3, hinv4, &wk_i, &dwk_i, COMPUTE_DWK);
+        }
+      if(r < hj)
+        {
+          kernel_hinv(hj, &hinv, &hinv3, &hinv4);
+          kernel_main(r * hinv, hinv3, hinv4, &wk_j, &dwk_j, COMPUTE_DWK);
+        }
+      const double dwk_ij = 0.5 * (dwk_i + dwk_j);
+      double vdotr2       = 0;
+      for(int k = 0; k < 3; k++)
+        vdotr2 += dx[k] * (SphP_i->VelPred[k] - SphP_j->VelPred[k]);
+      if(All.ComovingIntegrationOn)
+        vdotr2 += All.cf_atime2_hubble_a * r2;
+      double visc = 0;
+      if(vdotr2 < 0)
+        {
+          const double mu_ij = fac_mu * vdotr2 / r;
+          const double vsig  = SphP_i->Csnd + SphP_j->Csnd - 3 * mu_ij;
+#ifdef NO_SHEAR_VISCOSITY_LIMITER
+          const double f_i = 1, f_j = 1;
+#else
+          const double f_i =
+              fabs(SphP_i->DivVel) / (fabs(SphP_i->DivVel) + SphP_i->CurlVel + 0.0001 * SphP_i->Csnd / SphP_i->Hsml / fac_mu);
+          const double f_j = fabs(SphP_j->DivVel) / (fabs(SphP_j->DivVel) + SphP_j->CurlVel + 0.0001 * SphP_j->Csnd / fac_mu / hj);
+#endif
+          visc = 0.25 * All.ArtBulkViscConst * vsig * (-mu_ij) * (2.0 / (SphP_i->Density + SphP_j->Density)) * (f_i + f_j);
+        }
+      const double m_j          = Ngbhydrodat[n].Mass;
+      const double p_over_rho2j = (double)SphP_j->Pressure / ((double)SphP_j->Density * (double)SphP_j->Density);
+      const double hfc_press = m_j * (p_over_rho2_i * dwk_i * SphP_i->DhsmlDensityFactor + p_over_rho2j * dwk_j * SphP_j->DhsmlDensityFactor) / r;
+      const double hfc_visc  = m_j * visc * dwk_ij / r;
+      const double press_kms = fabs(hfc_press) * r * dt_kick * All.cf_ainv;
+      const double visc_kms  = fabs(hfc_visc) * r * dt_kick * All.cf_ainv;
+      sum_p += press_kms;
+      sum_v += visc_kms;
+
+      contrib c = {press_kms + visc_kms, press_kms, visc_kms, n};
+      int slot  = ntop < cg_hydro_watch::MAX_NGB_LINES ? ntop++ : -1;
+      if(slot < 0)
+        {
+          int wmin = 0;
+          for(int q = 1; q < ntop; q++)
+            if(top[q].dv < top[wmin].dv)
+              wmin = q;
+          if(top[wmin].dv < c.dv)
+            slot = wmin;
+        }
+      if(slot >= 0)
+        top[slot] = c;
+    }
+
+  printf("[HYDRO_WATCH_NGB|task=%d|ID %lld] sum|pair dv| pressure=%.4g visc=%.4g km/s; ngb rho %.4g..%.4g (zero/neg %d) Hsml %.4g..%.4g "
+         "Pmax %.4g DhsmlFac %.4g..%.4g\n",
+         All.ThisTask, (long long)P_i->ID.get(), sum_p, sum_v, minrho, maxrho, nzero_rho, minh, maxh, maxP, minDh, maxDh);
+  std::sort(top, top + ntop, [](const contrib &a, const contrib &b) { return a.dv > b.dv; });
+  for(int q = 0; q < ntop; q++)
+    {
+      const int n                         = top[q].n;
+      sph_particle_data_hydrocore *SphP_j = Ngbhydrodat[n].SphCore;
+      double dx[3];
+      Tp->nearest_image_intpos_to_pos(P_i->IntPos, Ngbhydrodat[n].IntPos, dx);
+      const double r = sqrt(dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]);
+      double dv2     = 0;
+      for(int k = 0; k < 3; k++)
+        dv2 += pow(SphP_i->VelPred[k] - SphP_j->VelPred[k], 2);
+      printf("[HYDRO_WATCH_NGB|task=%d|ID %lld] #%d dv=%.4g (press %.4g visc %.4g) km/s r=%.4g r/hi=%.3f r/hj=%.3f m=%.4g rho=%.5g P=%.5g "
+             "Csnd=%.4g Hsml=%.4g DhsmlFac=%.4g DivVel=%.4g CurlVel=%.4g |dvel|=%.4g bin=%d\n",
+             All.ThisTask, (long long)P_i->ID.get(), q, top[q].dv, top[q].press, top[q].visc, r, r / SphP_i->Hsml, r / SphP_j->Hsml,
+             (double)Ngbhydrodat[n].Mass, (double)SphP_j->Density, (double)SphP_j->Pressure, (double)SphP_j->Csnd, (double)SphP_j->Hsml,
+             (double)SphP_j->DhsmlDensityFactor, (double)SphP_j->DivVel, (double)SphP_j->CurlVel, sqrt(dv2) * All.cf_ainv,
+             (int)Ngbhydrodat[n].TimeBinHydro);
+    }
+#endif
+  fflush(stdout);
+#endif
+}
+
 #ifdef EXPLICIT_VECTORIZATION
 void sph::hydro_evaluate_kernel(pinfo &pdat)
 {
@@ -778,6 +949,8 @@ void sph::hydro_evaluate_kernel(pinfo &pdat)
       dentr += horizontal_add(0.5 * (hfc_visc)*vdotr2);
     }
 
+  hydro_watch(pdat, dacc, dentr);
+
   SphP_i->HydroAccel[0] += dacc[0];
   SphP_i->HydroAccel[1] += dacc[1];
   SphP_i->HydroAccel[2] += dacc[2];
@@ -969,6 +1142,11 @@ void sph::hydro_evaluate_kernel(pinfo &pdat)
             }
         }
     }
+
+  {
+    const double dacc_s[3] = {daccx, daccy, daccz};
+    hydro_watch(pdat, dacc_s, dentr);
+  }
 
   SphP_i->HydroAccel[0] += daccx;
   SphP_i->HydroAccel[1] += daccy;

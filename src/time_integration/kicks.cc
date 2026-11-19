@@ -30,6 +30,7 @@
 #include "../system/system.h"
 #include "../time_integration/driftfac.h"
 #include "../time_integration/timestep.h"
+#include "../sph/hydro_watch.h"
 
 /*! \brief performs the first half step kick operator for the gravity
  *
@@ -553,11 +554,32 @@ void sim::hydro_force(int step_indicator)
       else
         dt_hydrokick = dt_entr;
 
+      const double entr_before = Sp.SphP[target].Entropy;
+
       Sp.SphP[target].Entropy += Sp.SphP[target].DtEntropy * dt_entr;
 
       Sp.P[target].Vel[0] += Sp.SphP[target].HydroAccel[0] * dt_hydrokick;
       Sp.P[target].Vel[1] += Sp.SphP[target].HydroAccel[1] * dt_hydrokick;
       Sp.P[target].Vel[2] += Sp.SphP[target].HydroAccel[2] * dt_hydrokick;
+
+      {
+        static int kick_events = 0;
+        const double a[3] = {Sp.SphP[target].HydroAccel[0], Sp.SphP[target].HydroAccel[1], Sp.SphP[target].HydroAccel[2]};
+        const double dv  = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]) * dt_hydrokick * All.cf_ainv;
+        const double fac = entr_before > 0 ? Sp.SphP[target].Entropy / entr_before : 0;
+        if(kick_events < cg_hydro_watch::MAX_KICK_EVENTS_PER_RANK &&
+           (!std::isfinite(dv) || dv > cg_hydro_watch::threshold_kms() || fac > 1 + cg_hydro_watch::threshold_entropy_factor()))
+          {
+            kick_events++;
+            printf("[HYDRO_KICK|task=%d|step=%d|a=%.7f|%s] ID %lld dv=%.4g km/s entropy x%.4g (%.4g -> %.4g) bin=%d dt_hydrokick=%.4g "
+                   "dt_entr=%.4g HydroAccel=(%.4g|%.4g|%.4g) rho=%.5g Hsml=%.5g Csnd=%.4g\n",
+                   ThisTask, All.NumCurrentTiStep, (double)All.Time, step_indicator == SECOND_HALF_STEP ? "2nd" : "1st",
+                   (long long)Sp.P[target].ID.get(), dv, fac, entr_before, (double)Sp.SphP[target].Entropy, timebin, dt_hydrokick,
+                   dt_entr, a[0], a[1], a[2], (double)Sp.SphP[target].Density, (double)Sp.SphP[target].Hsml,
+                   (double)Sp.SphP[target].Csnd);
+            fflush(stdout);
+          }
+      }
 
       if(step_indicator == SECOND_HALF_STEP)
         {

@@ -113,6 +113,7 @@ class sph : public ngbtree
   inline void clear_density_result(sph_particle_data *SphP);
 
   void hydro_evaluate_kernel(pinfo &pdat);
+  void hydro_watch(pinfo &pdat, const double dacc[3], double dentr);
   inline void sph_hydro_interact(pinfo &pdat, int no, char no_type, unsigned char shmrank, int mintopleafnode, int committed);
   inline void sph_hydro_open_node(pinfo &pdat, ngbnode *nop, int mintopleafnode, int committed);
   inline int sph_hydro_evaluate_particle_node_opening_criterion(pinfo &pdat, ngbnode *nop);
