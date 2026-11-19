@@ -135,7 +135,7 @@ DustEnableCoagulation                             1
 DustEnableShattering                              1
 DustEnableRadiationPressure                       1
 StarformationDebugLevel                           0
-FeedbackDebugLevel                                0
+FeedbackDebugLevel                                1
 DustDebugLevel                                    1
 SpatialHashDebugLevel                             0
 CheckpointDebugLevel                              0
