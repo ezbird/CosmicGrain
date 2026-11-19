@@ -919,7 +919,9 @@ static void build_cosmic_time_table()
     return;
   }
 
-  cosmic_time_a_min = All.TimeBegin;
+  // Snapshot restarts set TimeBegin to the snapshot time; the table must still
+  // cover the birth times of all existing stars (runs start at a = 0.01).
+  cosmic_time_a_min = std::min(All.TimeBegin, 0.01);
   cosmic_time_a_max = 1.0;
   cosmic_time_N     = 2000;
   cosmic_time_tGyr.assign(cosmic_time_N, 0.0);

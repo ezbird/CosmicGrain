@@ -41,6 +41,9 @@
 #include "../subfind/subfind_readid_io.h"
 #include "../system/system.h"
 #include "../time_integration/timestep.h"
+#ifdef FEEDBACK
+#include "../cooling_sfr/feedback.h"
+#endif
 
 #ifdef DUST
 extern double get_random_number(void);
@@ -300,6 +303,37 @@ void sim::init(int RestartSnapNum)
       else
         All.SnapshotFileCount = RestartSnapNum + 1;
     }
+
+#ifdef FEEDBACK
+  if(All.RestartFlag == RST_STARTFROMSNAP)
+    {
+      // Snapshots store the stellar birth scale factor in single precision,
+      // so a star's recomputed age can fall slightly (~1e-3 Myr) below the
+      // double-precision AGBLastProcessedAgeMyr written at the same time.
+      // Clamp the ledger to the recomputed age; the next AGB tranche then
+      // starts there instead of failing the eligibility check.  A larger
+      // shift means the ages themselves are wrong.
+      long long clamped = 0, clamped_sum = 0;
+      double max_shift = 0, max_shift_all = 0;
+      for(int i = 0; i < Sp.NumPart; i++)
+        if(Sp.P[i].getType() == 4)
+          {
+            const double age = get_stellar_age_Myr(Sp.P[i].StellarAge, 0.0);
+            if(Sp.P[i].AGBLastProcessedAgeMyr > age)
+              {
+                max_shift = std::max(max_shift, Sp.P[i].AGBLastProcessedAgeMyr - age);
+                Sp.P[i].AGBLastProcessedAgeMyr = age;
+                clamped++;
+              }
+          }
+      MPI_Allreduce(&clamped, &clamped_sum, 1, MPI_LONG_LONG, MPI_SUM, Communicator);
+      MPI_Allreduce(&max_shift, &max_shift_all, 1, MPI_DOUBLE, MPI_MAX, Communicator);
+      mpi_printf("INIT: snapshot restart clamped AGBLastProcessedAgeMyr of %lld stars to their recomputed age (max shift %.3g Myr)\n",
+                 clamped_sum, max_shift_all);
+      if(max_shift_all > 1.0)
+        Terminate("Snapshot restart: recomputed stellar ages disagree with the AGB ledger by %g Myr", max_shift_all);
+    }
+#endif
 
   All.TotNumOfForces     = 0;
   All.TotNumDirectForces = 0;
