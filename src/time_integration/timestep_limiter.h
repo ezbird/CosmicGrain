@@ -24,12 +24,19 @@
  *      velocity raised to the new sound speed (plus the kick), and is woken
  *      to the step that implies if it is inactive.
  *
+ *   3. Signal-velocity rule.  In the same walk, a neighbour j on a longer
+ *      step than i is shortened to its own Courant step for the pair signal
+ *      velocity, 2 C h_j / (c_i + c_j - 3 mu_ij).  The delta rule alone let
+ *      quiet gas sleep 4 steps of an approaching shock: the 2048 run with it
+ *      (job 480) still showed density jumps of up to x8000 on bins 16-17.
+ *
  *  Cooling and star formation integrate over 2^bin; a woken particle's step
  *  is longer than that, so the difference is kept in LimiterExtraTi and added
  *  to their dt.
  *
  *  Environment: CG_TIMESTEP_LIMITER=0 disables both rules (default on);
- *  CG_LIMITER_DELTA sets delta (default 2).
+ *  CG_LIMITER_DELTA sets delta (default 2);
+ *  CG_LIMITER_VSIG=0 disables rule 3 (default on).
  */
 
 #ifndef TIMESTEP_LIMITER_H
@@ -55,6 +62,7 @@ struct counters
   long long wake_skipped;
   long long source_bumped;
   long long source_woke;
+  long long vsig_requests; /* requests stricter than the delta rule, from the signal-velocity rule */
 };
 
 extern counters Count;
@@ -82,6 +90,18 @@ inline bool enabled(void)
   if(e < 0)
     {
       const char *s = getenv("CG_TIMESTEP_LIMITER");
+      e             = (s && atoi(s) == 0) ? 0 : 1;
+    }
+  return e == 1;
+}
+
+/* CG_LIMITER_VSIG=0 disables the signal-velocity rule (default on) */
+inline bool vsig_rule(void)
+{
+  static int e = -1;
+  if(e < 0)
+    {
+      const char *s = getenv("CG_LIMITER_VSIG");
       e             = (s && atoi(s) == 0) ? 0 : 1;
     }
   return e == 1;

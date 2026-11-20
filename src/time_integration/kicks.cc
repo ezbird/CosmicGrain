@@ -641,7 +641,7 @@ void sim::hydro_force(int step_indicator)
 /*  SPH timestep limiter (see timestep_limiter.h)                                                                     */
 /* ------------------------------------------------------------------------------------------------------------------ */
 
-cg_limiter::counters cg_limiter::Count = {0, 0, 0, 0, 0, 0};
+cg_limiter::counters cg_limiter::Count = {0, 0, 0, 0, 0, 0, 0};
 
 /* signed hydro-kick factor between two points of the integer timeline */
 static double limiter_hydrokick(integertime t0, integertime t1)
@@ -802,15 +802,16 @@ void cg_limiter::report(simparticles *Sp, MPI_Comm comm)
   static int calls = 0;
   if(++calls % 500 != 0)
     return;
-  long long loc[6] = {Count.requests_sent, Count.moved_active, Count.woke_inactive, Count.wake_skipped, Count.source_bumped,
-                      Count.source_woke},
-            glob[6];
-  MPI_Reduce(loc, glob, 6, MPI_LONG_LONG, MPI_SUM, 0, comm);
+  long long loc[7] = {Count.requests_sent, Count.moved_active, Count.woke_inactive, Count.wake_skipped, Count.source_bumped,
+                      Count.source_woke, Count.vsig_requests},
+            glob[7];
+  MPI_Reduce(loc, glob, 7, MPI_LONG_LONG, MPI_SUM, 0, comm);
   if(All.ThisTask == 0)
     {
       printf("[TIMESTEP_LIMITER|step=%d|a=%.6f] delta=%d cumulative: requests=%lld moved_active=%lld woke_inactive=%lld skipped=%lld "
-             "source_bumped=%lld source_woke=%lld\n",
-             All.NumCurrentTiStep, (double)All.Time, delta(), glob[0], glob[1], glob[2], glob[3], glob[4], glob[5]);
+             "source_bumped=%lld source_woke=%lld vsig=%d vsig_pairs=%lld\n",
+             All.NumCurrentTiStep, (double)All.Time, delta(), glob[0], glob[1], glob[2], glob[3], glob[4], glob[5], (int)vsig_rule(),
+             glob[6]);
       fflush(stdout);
     }
 }

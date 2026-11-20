@@ -540,10 +540,58 @@ void sph::hydro_forces_determine(int ntarget, int *targetlist)
  *  target's freshly assigned bin by more than delta.  Duplicates are merged before the requests are sent. */
 void sph::limiter_collect(pinfo &pdat)
 {
-  const int allowed = Tp->P[pdat.target].getTimeBinHydro() + cg_limiter::delta();
+  particle_data *P_i        = &Tp->P[pdat.target];
+  sph_particle_data *SphP_i = &Tp->SphP[pdat.target];
+  const int bin_i           = P_i->getTimeBinHydro();
+  const int allowed         = bin_i + cg_limiter::delta();
+  const bool use_vsig       = cg_limiter::vsig_rule();
+
+  /* physical Courant step 2 C h_j / vsig_ij, converted to dloga and then to integer time */
+  const double courant_to_ti =
+      (All.cf_atime / All.cf_afac3) * All.CourantFac * 2.0 * All.cf_hubble_a / All.Timebase_interval;
+
   for(int n = 0; n < pdat.numngb; n++)
-    if(Ngbhydrodat[n].TimeBinHydro > allowed && Ngbhydrodat[n].OriginTask >= 0)
-      LimiterRequests.push_back({Ngbhydrodat[n].OriginTask, Ngbhydrodat[n].OriginIndex, allowed});
+    {
+      if(Ngbhydrodat[n].OriginTask < 0)
+        continue;
+      const int bin_j = Ngbhydrodat[n].TimeBinHydro;
+      int bin_req     = allowed;
+
+      /* Signal-velocity rule: a neighbour on a longer step than i is woken to its own Courant step for the signal
+       * velocity of this pair.  The pair vsig includes the approach speed, so quiet gas in front of a shock is
+       * shortened before the shock crosses its kernel, not after. */
+      if(use_vsig && bin_j > bin_i)
+        {
+          sph_particle_data_hydrocore *SphP_j = Ngbhydrodat[n].SphCore;
+          double dx[3];
+          Tp->nearest_image_intpos_to_pos(P_i->IntPos, Ngbhydrodat[n].IntPos, dx);
+          const double r2 = dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2];
+          const double r  = sqrt(r2);
+          double vdotr2   = 0;
+          for(int k = 0; k < 3; k++)
+            vdotr2 += dx[k] * (SphP_i->VelPred[k] - SphP_j->VelPred[k]);
+          if(All.ComovingIntegrationOn)
+            vdotr2 += All.cf_atime2_hubble_a * r2;
+          const double mu_ij = (vdotr2 < 0 && r > 0) ? fac_mu * vdotr2 / r : 0;
+          const double vsig  = SphP_i->Csnd + SphP_j->Csnd - 3 * mu_ij;
+          if(vsig > 0)
+            {
+              const double ti = courant_to_ti * SphP_j->Hsml / vsig;
+              int b           = 0;
+              while(b < TIMEBINS - 1 && ti >= (double)(((integertime)1) << (b + 1)))
+                b++;
+              if(b < bin_req)
+                bin_req = b;
+            }
+        }
+
+      if(bin_j > bin_req)
+        {
+          if(bin_req < allowed)
+            cg_limiter::Count.vsig_requests++;
+          LimiterRequests.push_back({Ngbhydrodat[n].OriginTask, Ngbhydrodat[n].OriginIndex, bin_req});
+        }
+    }
 }
 
 /*! Runaway-force watchdog (see hydro_watch.h).  Called once per kernel
