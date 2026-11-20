@@ -18,8 +18,9 @@
 
 namespace cg_hydro_watch
 {
-static const int MAX_EVENTS_PER_RANK      = 40;
-static const int MAX_KICK_EVENTS_PER_RANK = 200;
+static const int MAX_EVENTS_PER_RANK      = 200;
+static const int SKIP_FIRST_STEPS         = 100; /* restart transients: step counter restarts at 0 */
+static const int MAX_KICK_EVENTS_PER_RANK = 400;
 static const int MAX_NGB_LINES            = 12;
 
 inline double threshold_kms(void)

@@ -568,7 +568,8 @@ void sim::hydro_force(int step_indicator)
         const double dv  = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]) * dt_hydrokick * All.cf_ainv;
         const double fac = entr_before > 0 ? Sp.SphP[target].Entropy / entr_before : 0;
         if(kick_events < cg_hydro_watch::MAX_KICK_EVENTS_PER_RANK &&
-           (!std::isfinite(dv) || dv > cg_hydro_watch::threshold_kms() || fac > 1 + cg_hydro_watch::threshold_entropy_factor()))
+           (!std::isfinite(dv) || (All.NumCurrentTiStep >= cg_hydro_watch::SKIP_FIRST_STEPS &&
+                                   (dv > cg_hydro_watch::threshold_kms() || fac > 1 + cg_hydro_watch::threshold_entropy_factor()))))
           {
             kick_events++;
             printf("[HYDRO_KICK|task=%d|step=%d|a=%.7f|%s] ID %lld dv=%.4g km/s entropy x%.4g (%.4g -> %.4g) bin=%d dt_hydrokick=%.4g "

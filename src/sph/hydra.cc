@@ -550,8 +550,9 @@ void sph::hydro_watch(pinfo &pdat, const double dacc[3], double dentr)
   const double efac   = GAMMA_MINUS1 / (All.cf_atime2_hubble_a * pow(SphP_i->Density, GAMMA_MINUS1));
   const double drel   = SphP_i->Entropy > 0 ? dentr * efac * dt_entr / SphP_i->Entropy : 0;
 
-  const bool bad = !std::isfinite(amag) || !std::isfinite(dentr) || dv_kms > cg_hydro_watch::threshold_kms() ||
-                   drel > cg_hydro_watch::threshold_entropy_factor();
+  const bool bad = !std::isfinite(amag) || !std::isfinite(dentr) ||
+                   (All.NumCurrentTiStep >= cg_hydro_watch::SKIP_FIRST_STEPS &&
+                    (dv_kms > cg_hydro_watch::threshold_kms() || (drel > cg_hydro_watch::threshold_entropy_factor() && dv_kms > 300)));
   if(!bad)
     return;
   events++;
