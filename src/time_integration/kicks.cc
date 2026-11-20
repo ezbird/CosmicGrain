@@ -31,6 +31,10 @@
 #include "../time_integration/driftfac.h"
 #include "../time_integration/timestep.h"
 #include "../sph/hydro_watch.h"
+#include "../time_integration/timestep_limiter.h"
+
+#include <algorithm>
+#include <vector>
 
 /*! \brief performs the first half step kick operator for the gravity
  *
@@ -519,12 +523,30 @@ void sim::hydro_force(int step_indicator)
       targetlist[Nhydroforces++] = target;
     }
 
+  const bool limiter = cg_limiter::enabled() && step_indicator == FIRST_HALF_STEP;
+#ifdef REUSE_HYDRO_ACCELERATIONS_FROM_PREVIOUS_STEP
+  if(limiter)
+    Terminate("the timestep limiter needs the first-half hydro force walk (undefine REUSE_HYDRO_ACCELERATIONS_FROM_PREVIOUS_STEP)");
+#endif
+  if(limiter)
+    {
+      NgbTree.LimiterRequests.clear();
+      NgbTree.LimiterCollect = true;
+    }
+
 #ifdef REUSE_HYDRO_ACCELERATIONS_FROM_PREVIOUS_STEP
   /* in this case, the forces for the first hydro step are simply kept */
   if(step_indicator != FIRST_HALF_STEP)
 #endif
     {
       NgbTree.hydro_forces_determine(Nhydroforces, targetlist);
+    }
+
+  if(limiter)
+    {
+      NgbTree.LimiterCollect = false;
+      limiter_exchange_and_apply(NgbTree.LimiterRequests);
+      cg_limiter::report(&Sp, Communicator);
     }
 
   /* let's now do the hydrodynamical kicks */
@@ -548,6 +570,14 @@ void sim::hydro_force(int step_indicator)
         }
 
       double dt_hydrokick, dt_entr = (tend - tstart) * All.Timebase_interval;
+
+      if(step_indicator != SECOND_HALF_STEP)
+        {
+          /* a new hydro step starts here (timestep limiter bookkeeping) */
+          Sp.SphP[target].TiStepStart    = tstart;
+          Sp.SphP[target].TiFirstKickEnd = tend;
+          Sp.SphP[target].LimiterExtraTi = 0;
+        }
 
       if(All.ComovingIntegrationOn)
         dt_hydrokick = Driftfac.get_hydrokick_factor(tstart, tend);
@@ -604,4 +634,183 @@ void sim::hydro_force(int step_indicator)
     Mem.myfree(Old);
 
   Mem.myfree(targetlist);
+}
+
+
+/* ------------------------------------------------------------------------------------------------------------------ */
+/*  SPH timestep limiter (see timestep_limiter.h)                                                                     */
+/* ------------------------------------------------------------------------------------------------------------------ */
+
+cg_limiter::counters cg_limiter::Count = {0, 0, 0, 0, 0, 0};
+
+/* signed hydro-kick factor between two points of the integer timeline */
+static double limiter_hydrokick(integertime t0, integertime t1)
+{
+  if(t0 == t1)
+    return 0;
+  const integertime a = std::min(t0, t1), b = std::max(t0, t1);
+  const double k      = All.ComovingIntegrationOn ? Driftfac.get_hydrokick_factor(a, b) : (b - a) * All.Timebase_interval;
+  return t1 > t0 ? k : -k;
+}
+
+int cg_limiter::wake(simparticles *Sp, int j, int bin_new, bool start_of_step)
+{
+  if(j < 0 || j >= Sp->NumGas || Sp->P[j].getType() != 0 || Sp->P[j].getMass() <= 0)
+    return 0;
+
+  const int bin_old = Sp->P[j].getTimeBinHydro();
+  if(bin_new < 1)
+    bin_new = 1;
+  if(bin_new >= bin_old)
+    return 0;
+
+  sph_particle_data *SphP = &Sp->SphP[j];
+
+  if(!start_of_step)
+    {
+      if(Sp->TimeBinSynchronized[bin_old])
+        return 0; /* its step ends now; its next step is chosen with the current state anyway */
+
+      const integertime dti_old = ((integertime)1) << bin_old;
+      const integertime dti_new = ((integertime)1) << bin_new;
+      const integertime t0      = SphP->TiStepStart;
+      const integertime tm_old  = SphP->TiFirstKickEnd;
+      const integertime tend_old = All.Ti_Current - (All.Ti_Current % dti_old) + dti_old;
+      const integertime tend_new = All.Ti_Current - (All.Ti_Current % dti_new) + dti_new; /* strictly after now */
+      const integertime tm_new   = tend_new - dti_new / 2;
+
+      if(tend_new >= tend_old)
+        return 0;
+      if(t0 > All.Ti_Current || tm_old <= t0 || tm_old > tend_old || tm_new <= t0)
+        {
+          Count.wake_skipped++; /* bookkeeping not valid (should not happen) */
+          return 0;
+        }
+
+      /* remove the part of the first half kick beyond the new midpoint (or add the missing part) */
+      const double dk = limiter_hydrokick(tm_old, tm_new);
+      for(int k = 0; k < 3; k++)
+        Sp->P[j].Vel[k] += SphP->HydroAccel[k] * dk;
+
+      const double entropy_new = SphP->Entropy + SphP->DtEntropy * ((double)tm_new - (double)tm_old) * All.Timebase_interval;
+      if(std::isfinite(entropy_new) && entropy_new > 0)
+        SphP->Entropy = entropy_new;
+      else
+        Count.wake_skipped++;
+
+      SphP->TiFirstKickEnd = tm_new;
+      SphP->LimiterExtraTi = (tend_new - t0) - dti_new;
+      Count.woke_inactive++;
+    }
+  else
+    Count.moved_active++;
+
+#ifdef STARFORMATION
+  Sp->TimeBinSfr[bin_old] -= SphP->Sfr;
+  Sp->TimeBinSfr[bin_new] += SphP->Sfr;
+#endif
+  Sp->TimeBinsHydro.timebin_move_particle(j, bin_old, bin_new);
+  Sp->P[j].setTimeBinHydro(bin_new);
+  return 1;
+}
+
+void sim::limiter_exchange_and_apply(std::vector<cg_limiter::request> &req)
+{
+  /* merge duplicates: keep the smallest requested bin per particle */
+  std::sort(req.begin(), req.end(), [](const cg_limiter::request &a, const cg_limiter::request &b) {
+    return a.task != b.task ? a.task < b.task : (a.index != b.index ? a.index < b.index : a.bin < b.bin);
+  });
+  std::vector<int> send;
+  std::vector<int> sendcount(NTask, 0), recvcount(NTask), sendoff(NTask), recvoff(NTask);
+  send.reserve(2 * req.size());
+  for(size_t n = 0; n < req.size(); n++)
+    {
+      if(n > 0 && req[n].task == req[n - 1].task && req[n].index == req[n - 1].index)
+        continue;
+      if(req[n].task < 0 || req[n].task >= NTask)
+        Terminate("timestep limiter: bad request task %d", req[n].task);
+      send.push_back(req[n].index);
+      send.push_back(req[n].bin);
+      sendcount[req[n].task] += 2;
+    }
+  cg_limiter::Count.requests_sent += send.size() / 2;
+
+  MPI_Alltoall(sendcount.data(), 1, MPI_INT, recvcount.data(), 1, MPI_INT, Communicator);
+  int nrecv = 0;
+  for(int t = 0; t < NTask; t++)
+    {
+      sendoff[t] = (t == 0) ? 0 : sendoff[t - 1] + sendcount[t - 1];
+      recvoff[t] = nrecv;
+      nrecv += recvcount[t];
+    }
+  std::vector<int> recv(std::max(nrecv, 1));
+  MPI_Alltoallv(send.data(), sendcount.data(), sendoff.data(), MPI_INT, recv.data(), recvcount.data(), recvoff.data(), MPI_INT,
+                Communicator);
+
+  for(int n = 0; n < nrecv; n += 2)
+    {
+      const int j = recv[n], bin = recv[n + 1];
+      if(j < 0 || j >= Sp.NumGas)
+        continue;
+      /* a particle whose bin is synchronized now starts a new step at this point and has not been kicked yet */
+      const bool start_of_step = Sp.TimeBinSynchronized[Sp.P[j].getTimeBinHydro()];
+      cg_limiter::wake(&Sp, j, bin, start_of_step);
+    }
+  req.clear();
+}
+
+void cg_limiter::after_sources(simparticles *Sp, int nsaved, const long long *id, const float *entropy_pred, const float *velpred)
+{
+  const double fac_mu = pow(All.Time, 3 * (GAMMA - 1) / 2) / All.Time;
+  const int n         = std::min(nsaved, Sp->NumGas);
+  for(int i = 0; i < n; i++)
+    {
+      if(Sp->P[i].getType() != 0 || Sp->P[i].getMass() <= 0 || (long long)Sp->P[i].ID.get() != id[i])
+        continue;
+      sph_particle_data *SphP = &Sp->SphP[i];
+      double dv2              = 0;
+      for(int k = 0; k < 3; k++)
+        dv2 += pow((double)SphP->VelPred[k] - velpred[3 * i + k], 2);
+      const double dv = sqrt(dv2);
+      if(!(SphP->EntropyPred > 1.2 * entropy_pred[i] || dv * All.cf_ainv > 20.0))
+        continue;
+
+      SphP->set_thermodynamic_variables();
+      const double vsig = 2 * SphP->Csnd + 3 * fac_mu * dv;
+      if(vsig > SphP->MaxSignalVel)
+        SphP->MaxSignalVel = vsig;
+      Count.source_bumped++;
+
+      const int bin = Sp->P[i].getTimeBinHydro();
+      if(Sp->TimeBinSynchronized[bin])
+        continue; /* its new step is chosen right after this with the raised signal velocity */
+
+      integertime ti_step = Sp->get_timestep_hydro(i);
+      int bin_new         = 0;
+      while(ti_step > 1)
+        {
+          bin_new++;
+          ti_step >>= 1;
+        }
+      if(wake(Sp, i, bin_new, false))
+        Count.source_woke++;
+    }
+}
+
+void cg_limiter::report(simparticles *Sp, MPI_Comm comm)
+{
+  static int calls = 0;
+  if(++calls % 500 != 0)
+    return;
+  long long loc[6] = {Count.requests_sent, Count.moved_active, Count.woke_inactive, Count.wake_skipped, Count.source_bumped,
+                      Count.source_woke},
+            glob[6];
+  MPI_Reduce(loc, glob, 6, MPI_LONG_LONG, MPI_SUM, 0, comm);
+  if(All.ThisTask == 0)
+    {
+      printf("[TIMESTEP_LIMITER|step=%d|a=%.6f] delta=%d cumulative: requests=%lld moved_active=%lld woke_inactive=%lld skipped=%lld "
+             "source_bumped=%lld source_woke=%lld\n",
+             All.NumCurrentTiStep, (double)All.Time, delta(), glob[0], glob[1], glob[2], glob[3], glob[4], glob[5]);
+      fflush(stdout);
+    }
 }

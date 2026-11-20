@@ -113,6 +113,9 @@ struct foreign_sphpoint_data
   unsigned char Nextnode_shmrank;
 
   signed char TimeBinHydro;
+
+  int OriginTask;  /* owner rank (simulation communicator) and local index, for timestep-limiter wake-up requests */
+  int OriginIndex;
 };
 
 class ngbtree : public tree<ngbnode, simparticles, ngbpoint_data, foreign_sphpoint_data>

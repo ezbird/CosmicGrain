@@ -1077,7 +1077,7 @@ void coolsfr::cool_sph_particle(simparticles *Sp, int i, gas_state *gs, do_cool_
    * cycles are handled locally in convert_u_to_temp(). */
   double rho_phys = dens * All.cf_a3inv * All.UnitDensity_in_cgs * All.HubbleParam * All.HubbleParam;
 
-  double dt = (Sp->P[i].getTimeBinHydro() ? (((integertime)1) << Sp->P[i].getTimeBinHydro()) : 0) * All.Timebase_interval;
+  double dt = ((Sp->P[i].getTimeBinHydro() ? (((integertime)1) << Sp->P[i].getTimeBinHydro()) : 0) + Sp->SphP[i].LimiterExtraTi) * All.Timebase_interval;
   double dtime = All.cf_atime * dt / All.cf_atime_hubble_a;
   double utherm = Sp->get_utherm_from_entropy(i);
   double ne      = Sp->SphP[i].Ne;

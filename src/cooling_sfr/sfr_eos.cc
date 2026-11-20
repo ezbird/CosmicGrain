@@ -88,7 +88,7 @@ void coolsfr::cooling_and_starformation(simparticles *Sp)
           double dens = Sp->SphP[target].Density;
 
           double dt =
-              (Sp->P[target].getTimeBinHydro() ? (((integertime)1) << Sp->P[target].getTimeBinHydro()) : 0) * All.Timebase_interval;
+              ((Sp->P[target].getTimeBinHydro() ? (((integertime)1) << Sp->P[target].getTimeBinHydro()) : 0) + Sp->SphP[target].LimiterExtraTi) * All.Timebase_interval;
           /*  the actual time-step */
 
           double dtime = All.cf_atime * dt / All.cf_atime_hubble_a;

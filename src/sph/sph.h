@@ -16,6 +16,9 @@
 
 #include "../mpi_utils/shared_mem_handler.h"
 #include "../ngbtree/ngbtree.h"
+#include "../time_integration/timestep_limiter.h"
+
+#include <vector>
 
 #define MAX_NGBS 500000
 
@@ -96,9 +99,21 @@ class sph : public ngbtree
 
     MyDouble Mass;
     signed char TimeBinHydro;
+    int OriginTask;
+    int OriginIndex;
   };
 
   ngbdata_hydro *Ngbhydrodat;
+
+ public:
+  /* timestep limiter: when set, the hydro force walk records neighbours whose hydro bin exceeds the target's new bin by
+   * more than cg_limiter::delta() (see timestep_limiter.h) */
+  bool LimiterCollect = false;
+  std::vector<cg_limiter::request> LimiterRequests;
+
+ private:
+  std::vector<int> LimiterShmToTask;
+  void limiter_collect(pinfo &pdat);
 
   inline foreign_sphpoint_data *get_foreignpointsp(int n, unsigned char shmrank)
   {

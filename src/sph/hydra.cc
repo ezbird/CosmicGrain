@@ -124,6 +124,8 @@ inline void sph::sph_hydro_check_particle_particle_interaction(pinfo &pdat, int 
 #ifndef LEAN
       Ngbhydrodat[n].TimeBinHydro = P->TimeBinHydro;
 #endif
+      Ngbhydrodat[n].OriginTask  = LimiterCollect ? LimiterShmToTask[shmrank] : -1;
+      Ngbhydrodat[n].OriginIndex = p;
     }
   else if(p_type == NODE_TYPE_FETCHED_PARTICLE)
     {
@@ -149,6 +151,8 @@ inline void sph::sph_hydro_check_particle_particle_interaction(pinfo &pdat, int 
       Ngbhydrodat[n].IntPos       = foreignpoint->IntPos;
       Ngbhydrodat[n].Mass         = foreignpoint->Mass;
       Ngbhydrodat[n].TimeBinHydro = foreignpoint->TimeBinHydro;
+      Ngbhydrodat[n].OriginTask   = foreignpoint->OriginTask;
+      Ngbhydrodat[n].OriginIndex  = foreignpoint->OriginIndex;
     }
   else
     Terminate("unexpected");
@@ -280,6 +284,15 @@ void sph::hydro_forces_determine(int ntarget, int *targetlist)
                 Tp->NumGas, ntarget);
 
   double ta = Logs.second();
+
+  if(LimiterCollect)
+    {
+      /* shared-memory rank -> simulation rank, to address wake-up requests to the owner of a local-island neighbour */
+      int nshm;
+      MPI_Comm_size(TreeSharedMemComm, &nshm);
+      LimiterShmToTask.resize(nshm);
+      MPI_Allgather(&D->ThisTask, 1, MPI_INT, LimiterShmToTask.data(), 1, MPI_INT, TreeSharedMemComm);
+    }
 
   // let's grab at most half the still available memory for imported points and nodes
   int nspace = (0.33 * Mem.FreeBytes) / (sizeof(ngbnode) + 8 * sizeof(foreign_sphpoint_data));
@@ -522,6 +535,16 @@ void sph::hydro_forces_determine(int ntarget, int *targetlist)
   TIMER_STOP(CPU_LOGS);
 }
 
+
+/*! Timestep limiter, neighbour rule (see timestep_limiter.h): record every SPH neighbour whose hydro bin exceeds the
+ *  target's freshly assigned bin by more than delta.  Duplicates are merged before the requests are sent. */
+void sph::limiter_collect(pinfo &pdat)
+{
+  const int allowed = Tp->P[pdat.target].getTimeBinHydro() + cg_limiter::delta();
+  for(int n = 0; n < pdat.numngb; n++)
+    if(Ngbhydrodat[n].TimeBinHydro > allowed && Ngbhydrodat[n].OriginTask >= 0)
+      LimiterRequests.push_back({Ngbhydrodat[n].OriginTask, Ngbhydrodat[n].OriginIndex, allowed});
+}
 
 /*! Runaway-force watchdog (see hydro_watch.h).  Called once per kernel
  *  evaluation with this call's contribution to the acceleration and the raw
@@ -951,6 +974,8 @@ void sph::hydro_evaluate_kernel(pinfo &pdat)
     }
 
   hydro_watch(pdat, dacc, dentr);
+  if(LimiterCollect)
+    limiter_collect(pdat);
 
   SphP_i->HydroAccel[0] += dacc[0];
   SphP_i->HydroAccel[1] += dacc[1];
@@ -1148,6 +1173,8 @@ void sph::hydro_evaluate_kernel(pinfo &pdat)
     const double dacc_s[3] = {daccx, daccy, daccz};
     hydro_watch(pdat, dacc_s, dentr);
   }
+  if(LimiterCollect)
+    limiter_collect(pdat);
 
   SphP_i->HydroAccel[0] += daccx;
   SphP_i->HydroAccel[1] += daccy;

@@ -375,7 +375,26 @@ void sim::calculate_non_standard_physics_end_of_step(void)
   #ifdef FEEDBACK
     const double feedback_begin = MPI_Wtime();
     TIMER_START(CPU_FEEDBACK);
+    /* timestep limiter, source rule: remember the gas state so heated or kicked gas can be woken afterwards */
+    std::vector<long long> lim_id;
+    std::vector<float> lim_entr, lim_vel;
+    const bool lim_on = cg_limiter::enabled();
+    if(lim_on)
+      {
+        lim_id.resize(Sp.NumGas);
+        lim_entr.resize(Sp.NumGas);
+        lim_vel.resize(3 * (size_t)Sp.NumGas);
+        for(int i = 0; i < Sp.NumGas; i++)
+          {
+            lim_id[i]   = (long long)Sp.P[i].ID.get();
+            lim_entr[i] = Sp.SphP[i].EntropyPred;
+            for(int k = 0; k < 3; k++)
+              lim_vel[3 * i + k] = Sp.SphP[i].VelPred[k];
+          }
+      }
     apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain, Communicator);
+    if(lim_on)
+      cg_limiter::after_sources(&Sp, (int)lim_id.size(), lim_id.data(), lim_entr.data(), lim_vel.data());
     cg_ledger::point(&Sp, Communicator, cg_ledger::PH_FEEDBACK);
     feedback_diag_try_flush(Communicator, /*cadence=*/50);
     agb_probe_flush(&Sp,Communicator);
