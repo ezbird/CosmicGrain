@@ -1,6 +1,6 @@
 # CosmicGrain run tracker
 
-Last updated: 2026-11-20 23:10 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
+Last updated: 2026-11-20 23:30 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
 Quick status from a terminal: `tmux ls`, `cat dT_tests.status`, `cat analysis/cs_grid/summary.txt`,
 `ssh colibri squeue -u ez`.
 
@@ -104,6 +104,19 @@ Note: a feedback change will shift the 1024 GSD/R_V too → re-check the grid wi
   z=0 copied to `halo441_output_2048_br06_lim`. Central is gas/dust-poor (see §2).
 - **Job 552 `cg2048vsig`** (Colibri, 2 nodes): same restart (snap 24) with the stronger signal-velocity
   wake rule. Early: fewer, smaller jumps (102 vs 150; max ×737 vs ×1505), almost none on bins 17–18, same cost.
+  **Result (stopped 11-20 23:20 at a = 0.850).** a = 0.769–0.850, same restart and same 374 cores:
+
+  | | 480 (limiter) | 552 (limiter + vsig) |
+  |---|---|---|
+  | density jumps | 1298 | 881 (−32%) |
+  | jumps > ×100 / > ×1000 | 86 / 10 | 56 / 5 |
+  | largest jump | ×8028 | ×4823 |
+  | jumps on bins 17–19 | 709 | 90 |
+  | sync points | 17 926 | 25 065 |
+  | wall time | 6.6 h | 7.7 h (+17%) |
+
+  vsig removes most jumps on the longest steps and halves the extreme ones, but it does not eliminate them.
+  At 4096 the extremes matter most, so **keep vsig on** (default) for +17% cost.
   Decision 11-20: **stop at a = 0.85** (a background watcher scancels it); running to z=0 would only reproduce 480's gas-poor galaxy. Its 2 nodes then go to grid job 626.
 - 512 tests: limiter on/vsig raise central M* by 20–30% vs off (noise ~15%); vsig cost +28% wall at 512.
 
@@ -131,6 +144,7 @@ Before merging: choose final ΔT / SF law and C–S calibration, update param de
 - [x] Commits: fine to keep committing on fix/energy-ledger; **end goal = one final, well-tested merge to main** (see §5).
 
 ## Log
+- 11-20 23:20 Job 552 auto-cancelled at a=0.850; compared to 480 (§3). Job 626 (dup) now waits on 2 free nodes.
 - 11-20 23:05 Grid watcher had stopped after run 610 (ssh inside the read loop ate the job list). Fixed with ssh -n and restarted (tmux csgrid); it also scores at 3.5 kpc now. 552 at a=0.846, auto-cancel at 0.85. ΔT 512 tests done; 1024 10^7.5 at z≈3.3.
 - 11-20 19:00 Colibri cleanup (372 → 94 GB): deleted 1024 br06/shat3/paper/colibri/celldir/dist*/scale380, 2048 sf03/sf10/hwatch*/ledger, 512 br06_velfix, restart files of 2048_br06 and 2048_br06_lim. Copies of br06, shat3, paper, sf03, sf10 verified on cygnus. Kept: velfix, grid, 2048_br06 (snapdir_024 for 552/480), 2048_br06_lim, 2048_br06_vsig, ICs.
 - 11-20 18:21 ΔT tests started on cygnus (512 10^7.5 first).
