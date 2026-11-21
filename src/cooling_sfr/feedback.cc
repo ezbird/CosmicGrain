@@ -19,6 +19,7 @@
 #ifdef FEEDBACK
 
 #include <math.h>
+#include <cstdlib>
 #include <algorithm>
 #include <cfloat>
 #include <cstdint>
@@ -60,7 +61,19 @@ static const double AGB_E_ERG                = 1.0e47;  // Energy per Msun of me
 static const double CCSN_NUMBER_PER_MSUN     = 0.011;   // Number of CCSN progenitors per Msun formed; Kroupa IMF, 8-100 Msun. (needed for LRN-rate)
 
 // ΔT-target heating parameters
-static const double DELTA_T_TARGET        = 1.0e7; // 3.162277660168379e7;   // 10^7.5 K
+// SN heating temperature jump.  Default 1e7 K; CG_FEEDBACK_DELTA_T (in K,
+// e.g. 3.16e7 for 10^7.5) overrides it for feedback-convergence tests.
+static double fb_delta_t_target(void)
+{
+  static double dT = -1;
+  if(dT < 0)
+    {
+      const char *s = getenv("CG_FEEDBACK_DELTA_T");
+      dT            = (s && atof(s) > 0) ? atof(s) : 1.0e7;
+    }
+  return dT;
+}
+#define DELTA_T_TARGET (fb_delta_t_target())
 static const int    MAX_KERNEL_NEIGHBORS  = 512;
 // Stochastic heating never picks gas already this hot; the packet goes to
 // the next neighbour (or the star's reservoir), so repeated hits cannot stack
