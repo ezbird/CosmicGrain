@@ -1,6 +1,6 @@
 # CosmicGrain run tracker
 
-Last updated: 2026-11-20 18:30 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
+Last updated: 2026-11-20 23:10 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
 Quick status from a terminal: `tmux ls`, `cat dT_tests.status`, `cat analysis/cs_grid/summary.txt`,
 `ssh colibri squeue -u ez`.
 
@@ -31,8 +31,8 @@ Snapshot-to-snapshot spread of S2 ≈ ±0.07 dex.
 | run | job | status | S2 dex | σ_RV ratio | GSD→HD23 | GSD→base | R_V |
 |---|---|---|---|---|---|---|---|
 | velfix (reference) | – | done | +0.83 | 2.53 | 0.37 | 0 | 3.65 |
-| c100_r100 (baseline, new code) | 610 | running | | | | | |
-| c050_r100 | 611 | queued | | | | | |
+| c100_r100 (baseline, new code) | 610 | done | +0.83 | 2.83 | 0.35 | 0.09 | 4.09 |
+| c050_r100 | 611 | running | | | | | |
 | c200_r100 | 612 | queued | | | | | |
 | c025_r100 | 613 | queued | | | | | |
 | c100_r050 / r071 / r141 | 614–616 | queued | | | | | |
@@ -42,6 +42,14 @@ Snapshot-to-snapshot spread of S2 ≈ ±0.07 dex.
 | c100_r100_dup (2 nodes) | 626 | waiting for nodes | | | | | |
 
 Expected completion: ~Sunday 22 Nov afternoon.
+
+Note: c100_r100 (new code, limiter + vsig) reproduces velfix's S2 (+0.83) but has a higher median R_V (4.09 vs 3.65).
+**Compare grid runs to c100_r100, not to velfix.**
+
+**Second score at R = 3.5 kpc (~2 disk scale lengths)** in `analysis/cs_grid_R3.5/summary.txt`. A Sun-like 5.5 kpc
+(3 R_d) is too dust-thin: 4 of 8 observers have no pixels with E(B-V) ≥ 0.03. Velfix snapshot 29, S2 excess by radius:
+2.57 kpc +0.81, 3.5 kpc +0.93, 4.5 kpc +0.91, 5.5 kpc +1.03 (2 observers only). **The ~1 dex gap does not come from
+where the mock Sun sits.** At 3.5 kpc, snapshots 27–29: velfix +0.86, c100_r100 +0.81.
 
 **Open:** check how much the Zhang & Green inference compresses R_V variance (could be part of the 1 dex gap).
 
@@ -69,10 +77,21 @@ and the 512→1024 trend.
 
 | run | ΔT | status | control |
 |---|---|---|---|
-| halo441_output_512_dT3e7 | 10^7.5 | running (started 18:21) | 512_lim_vsig (ΔT 1e7, same code) |
-| halo441_output_512_dT1e8 | 10^8 | queued | 〃 |
-| halo441_output_1024_dT3e7 | 10^7.5 | queued (~10 h on cygnus) | Colibri c100_r100 (grid baseline) |
+| halo441_output_512_dT3e7 | 10^7.5 | done | 512_lim_vsig (ΔT 1e7, same code) |
+| halo441_output_512_dT1e8 | 10^8 | done | 〃 |
+| halo441_output_1024_dT3e7 | 10^7.5 | running (z≈3.3 at 23:00; ~6 h to go) | Colibri c100_r100 (grid baseline) |
 | halo441_output_1024_dT1e8 | 10^8 | queued (~10 h) | 〃 |
+
+512 results, mean SFR in M☉/yr (box total):
+
+| z | ΔT 1e7 (control) | 10^7.5 | 10^8 |
+|---|---|---|---|
+| 3–4 | 51 | 43 | 40 |
+| 2.5–3 | 32 | 28 | 39 |
+| 2–2.5 | 25 | 21 | 25 |
+| 1.8–2 | 25 | 22 | 21 |
+
+At 512 the effect is modest: 10–20% suppression, and 10^8 is noisy. What matters is the 1024 runs, i.e. whether the 512→1024 rise shrinks.
 
 Next if a ΔT converges 512→1024: 2048 to z=2 on Colibri (~12–17 h, 3 nodes), then a full 2048.
 Note: a feedback change will shift the 1024 GSD/R_V too → re-check the grid winner afterwards.
@@ -85,7 +104,7 @@ Note: a feedback change will shift the 1024 GSD/R_V too → re-check the grid wi
   z=0 copied to `halo441_output_2048_br06_lim`. Central is gas/dust-poor (see §2).
 - **Job 552 `cg2048vsig`** (Colibri, 2 nodes): same restart (snap 24) with the stronger signal-velocity
   wake rule. Early: fewer, smaller jumps (102 vs 150; max ×737 vs ×1505), almost none on bins 17–18, same cost.
-  At a = 0.796 (z = 0.26) after 3.3 h. **Decide** after it passes a ≈ 0.83 whether to continue to z = 0.
+  Decision 11-20: **stop at a = 0.85** (a background watcher scancels it); running to z=0 would only reproduce 480's gas-poor galaxy. Its 2 nodes then go to grid job 626.
 - 512 tests: limiter on/vsig raise central M* by 20–30% vs off (noise ~15%); vsig cost +28% wall at 512.
 
 ---
@@ -96,15 +115,24 @@ Note: a feedback change will shift the 1024 GSD/R_V too → re-check the grid wi
   To fix: cite keys `Schlafly2016`, `Hensley2023`; stale "Discussion"/"Planned Figures" text; old PNG figure near the top.
 - Figures: `python3 scripts/cosmicgrain_paper_II_figures.py --run halo441_output_1024_br06_velfix
   --zg-map data/observations/zhang_green/Rv_map_new.h5 --outdir paper_II_figures_v2 --skip-analysis`
+- New figure 5f (`figure5f_mocksun_example`): ZG vs best-matching CG mock-Sun cutout + R_V PDFs + S2 (remake of the old 4-panel plot). Open: mock-Sun radius 2.57 kpc is only ~1.5 disk scale lengths (Sun ≈ 3 R_d ≈ 5.5 kpc here) — consider rescoring grid at ~5.5 kpc too.
 - Figures will need regenerating from the grid winner (or a new paper run) once chosen.
 
 ---
 
+## 5. Path to the final main-branch commit
+Branch `fix/energy-ledger` carries: energy ledger + SN/AGB guards (69a798b), restart ages (f660434), hydro watchdog (72a3cba, f343548),
+timestep limiter (ce434b0) + vsig rule (11d2b48), C–S grid tooling (d1a36e0), ΔT switch (2429f28).
+Before merging: choose final ΔT / SF law and C–S calibration, update param defaults and docs, a clean 1024 paper run on the final commit,
+512 regression vs the reference, then merge + tag.
+
 ## Decisions waiting on you
-- [ ] Continue job 552 to z=0 after it passes a ≈ 0.83?
-- [ ] Push commit d1a36e0 (and the ΔT switch once committed) to GitHub?
+- [x] Job 552: stop at a = 0.85 (decided 11-20).
+- [x] Commits: fine to keep committing on fix/energy-ledger; **end goal = one final, well-tested merge to main** (see §5).
 
 ## Log
+- 11-20 23:05 Grid watcher had stopped after run 610 (ssh inside the read loop ate the job list). Fixed with ssh -n and restarted (tmux csgrid); it also scores at 3.5 kpc now. 552 at a=0.846, auto-cancel at 0.85. ΔT 512 tests done; 1024 10^7.5 at z≈3.3.
+- 11-20 19:00 Colibri cleanup (372 → 94 GB): deleted 1024 br06/shat3/paper/colibri/celldir/dist*/scale380, 2048 sf03/sf10/hwatch*/ledger, 512 br06_velfix, restart files of 2048_br06 and 2048_br06_lim. Copies of br06, shat3, paper, sf03, sf10 verified on cygnus. Kept: velfix, grid, 2048_br06 (snapdir_024 for 552/480), 2048_br06_lim, 2048_br06_vsig, ICs.
 - 11-20 18:21 ΔT tests started on cygnus (512 10^7.5 first).
 - 11-20 17:00 C–S grid submitted (610–626); grid A/B/C deleted from Colibri (verified copies on cygnus).
 - 11-20 15:05 Job 480 finished (2048 limiter, z=0).

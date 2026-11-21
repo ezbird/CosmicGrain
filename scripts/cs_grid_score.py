@@ -205,7 +205,13 @@ def main():
     p.add_argument("runs", nargs="*")
     p.add_argument("--snaps", type=int, nargs="+", default=[27, 28, 29])
     p.add_argument("--summary-only", action="store_true")
+    p.add_argument("--observer-radius", type=float, default=None,
+                   help="mock-Sun radius in kpc (default 2.574); other radii write to analysis/cs_grid_R<radius>")
     a = p.parse_args()
+    global OUT, OBSERVER_RADIUS_KPC
+    if a.observer_radius is not None and abs(a.observer_radius - OBSERVER_RADIUS_KPC) > 1e-3:
+        OBSERVER_RADIUS_KPC = a.observer_radius
+        OUT = ROOT / "analysis" / f"cs_grid_R{a.observer_radius:g}"
     OUT.mkdir(parents=True, exist_ok=True)
     if not a.summary_only:
         base_cache = {}

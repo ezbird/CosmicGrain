@@ -1,6 +1,7 @@
 #!/bin/bash
 # Poll Colibri for finished C-S grid runs; copy snaps 027-029, all group
 # catalogues and logs to cygnus, then score them (scripts/cs_grid_score.py).
+# ssh/rsync run with -n: inside the while-read loop they would otherwise eat the job list.
 # Light work only (rsync + ~1 min of Python per run). Log: analysis/cs_grid/watch.log
 cd ~/gadget4
 mkdir -p analysis/cs_grid
@@ -12,15 +13,16 @@ while true; do
     [ -z "$jid" ] && continue
     out=halo441_output_1024_cs_$name
     [ -f "$out/.scored" ] && continue
-    state=$(ssh colibri "sacct -j $jid -X -n -o State" 2>/dev/null | awk '{print $1}')
+    state=$(ssh -n colibri "sacct -j $jid -X -n -o State" 2>/dev/null | awk '{print $1}')
     case "$state" in
       COMPLETED)
         echo "$(date '+%F %T') $name ($jid) completed; fetching" >> $LOG
         mkdir -p $out
-        rsync -a colibri:CosmicGrain-br06/$out/{snapdir_027,snapdir_028,snapdir_029,cpu.txt,sfr.txt,energy.txt,timebins.txt,dust_evolution.txt,parameters-usedvalues,stellar_evolution.txt} $out/ >> $LOG 2>&1
-        rsync -a --include='groups_*/***' --exclude='*' colibri:CosmicGrain-br06/$out/ $out/ >> $LOG 2>&1
-        rsync -a colibri:CosmicGrain-br06/slurm-cs_$name-$jid.out $out/ >> $LOG 2>&1
-        if python3 scripts/cs_grid_score.py $out >> $LOG 2>&1; then
+        rsync -a -e "ssh -n" colibri:CosmicGrain-br06/$out/{snapdir_027,snapdir_028,snapdir_029,cpu.txt,sfr.txt,energy.txt,timebins.txt,dust_evolution.txt,parameters-usedvalues,stellar_evolution.txt} $out/ >> $LOG 2>&1
+        rsync -a -e "ssh -n" --include='groups_*/***' --exclude='*' colibri:CosmicGrain-br06/$out/ $out/ >> $LOG 2>&1
+        rsync -a -e "ssh -n" colibri:CosmicGrain-br06/slurm-cs_$name-$jid.out $out/ >> $LOG 2>&1
+        python3 scripts/cs_grid_score.py --observer-radius 3.5 $out < /dev/null >> $LOG 2>&1   # secondary score, ~2 R_d
+        if python3 scripts/cs_grid_score.py $out < /dev/null >> $LOG 2>&1; then
           touch $out/.scored; echo "$(date '+%F %T') $name scored" >> $LOG
         else
           echo "$(date '+%F %T') $name scoring FAILED" >> $LOG; touch $out/.scored
