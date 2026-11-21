@@ -228,6 +228,10 @@ def main():
         for x in base_rows:
             x["gsd_l1_base"] = 0.0
         write_rows(base_rows + rows)
+        missing = [r for r in a.runs if Path(r).name != BASELINE and not any(x["run"] == Path(r).name for x in rows)]
+        if missing:
+            summary()
+            sys.exit(f"no snapshots scored for: {', '.join(missing)}")
     summary()
     print((OUT / "summary.txt").read_text() if (OUT / "summary.txt").exists() else "no summary yet")
 

@@ -1,6 +1,6 @@
 # CosmicGrain run tracker
 
-Last updated: 2026-11-20 23:30 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
+Last updated: 2026-11-21 09:45 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
 Quick status from a terminal: `tmux ls`, `cat dT_tests.status`, `cat analysis/cs_grid/summary.txt`,
 `ssh colibri squeue -u ez`.
 
@@ -32,14 +32,14 @@ Snapshot-to-snapshot spread of S2 ≈ ±0.07 dex.
 |---|---|---|---|---|---|---|---|
 | velfix (reference) | – | done | +0.83 | 2.53 | 0.37 | 0 | 3.65 |
 | c100_r100 (baseline, new code) | 610 | done | +0.83 | 2.83 | 0.35 | 0.09 | 4.09 |
-| c050_r100 | 611 | running | | | | | |
-| c200_r100 | 612 | queued | | | | | |
-| c025_r100 | 613 | queued | | | | | |
-| c100_r050 / r071 / r141 | 614–616 | queued | | | | | |
+| c050_r100 | 611 | done, scoring | | | | | |
+| c200_r100 | 612 | done, scoring | | | | | |
+| c025_r100 | 613 | done, scoring | | | | | |
+| c100_r050 / r071 / r141 | 614–616 | 614 running | | | | | |
 | c050_r050 / r071 / r141 | 617–619 | queued | | | | | |
 | c200_r050 / r071 / r141 | 620–622 | queued | | | | | |
 | c025_r050 / r071 / r141 | 623–625 | queued | | | | | |
-| c100_r100_dup (2 nodes) | 626 | waiting for nodes | | | | | |
+| c100_r100_dup (2 nodes) | 626 | done, scoring | | | | | |
 
 Expected completion: ~Sunday 22 Nov afternoon.
 
@@ -79,8 +79,8 @@ and the 512→1024 trend.
 |---|---|---|---|
 | halo441_output_512_dT3e7 | 10^7.5 | done | 512_lim_vsig (ΔT 1e7, same code) |
 | halo441_output_512_dT1e8 | 10^8 | done | 〃 |
-| halo441_output_1024_dT3e7 | 10^7.5 | running (z≈3.3 at 23:00; ~6 h to go) | Colibri c100_r100 (grid baseline) |
-| halo441_output_1024_dT1e8 | 10^8 | queued (~10 h) | 〃 |
+| halo441_output_1024_dT3e7 | 10^7.5 | done | Colibri c100_r100 (grid baseline) |
+| halo441_output_1024_dT1e8 | 10^8 | done | 〃 |
 
 512 results, mean SFR in M☉/yr (box total):
 
@@ -92,6 +92,20 @@ and the 512→1024 trend.
 | 1.8–2 | 25 | 22 | 21 |
 
 At 512 the effect is modest: 10–20% suppression, and 10^8 is noisy. What matters is the 1024 runs, i.e. whether the 512→1024 rise shrinks.
+
+**1024 results (11-21).** Mean SFR (M☉/yr):
+
+| run | z 3–4 | 2.5–3 | 2–2.5 | 1.8–2 |
+|---|---|---|---|---|
+| 512 ΔT 1e7 | 51 | 32 | 25 | 25 |
+| 512 ΔT 10^7.5 | 43 | 28 | 21 | 22 |
+| 1024 ΔT 1e7 (c100_r100, same code) | 67 | 38 | 47 | 44 |
+| 1024 ΔT 10^7.5 | 66 | 30 | 26 | 25 |
+| 1024 ΔT 10^8 | 58 | 28 | 23 | 25 |
+| 1024 velfix (old code, no limiter) | 54 | 28 | 27 | 32 |
+
+512→1024 rise at z = 1.8–2.5: ×1.8 at 1e7 vs ×1.2 at 10^7.5. **10^7.5 (the EAGLE value) mostly removes the
+resolution trend**, and 10^8 adds little beyond it. Candidate: ΔT = 10^7.5 → 2048 test to z=2.
 
 Next if a ΔT converges 512→1024: 2048 to z=2 on Colibri (~12–17 h, 3 nodes), then a full 2048.
 Note: a feedback change will shift the 1024 GSD/R_V too → re-check the grid winner afterwards.
@@ -144,6 +158,7 @@ Before merging: choose final ΔT / SF law and C–S calibration, update param de
 - [x] Commits: fine to keep committing on fix/energy-ledger; **end goal = one final, well-tested merge to main** (see §5).
 
 ## Log
+- 11-21 09:35 Watcher fix of 11-20 broke rsync (ssh -n); runs 611/612/613/626 were marked scored without data. Fixed (rsync </dev/null; scoring now fails if nothing was scored) and refetching. ΔT 1024 tests done: 10^7.5 converges SFR 512→1024.
 - 11-20 23:20 Job 552 auto-cancelled at a=0.850; compared to 480 (§3). Job 626 (dup) now waits on 2 free nodes.
 - 11-20 23:05 Grid watcher had stopped after run 610 (ssh inside the read loop ate the job list). Fixed with ssh -n and restarted (tmux csgrid); it also scores at 3.5 kpc now. 552 at a=0.846, auto-cancel at 0.85. ΔT 512 tests done; 1024 10^7.5 at z≈3.3.
 - 11-20 19:00 Colibri cleanup (372 → 94 GB): deleted 1024 br06/shat3/paper/colibri/celldir/dist*/scale380, 2048 sf03/sf10/hwatch*/ledger, 512 br06_velfix, restart files of 2048_br06 and 2048_br06_lim. Copies of br06, shat3, paper, sf03, sf10 verified on cygnus. Kept: velfix, grid, 2048_br06 (snapdir_024 for 552/480), 2048_br06_lim, 2048_br06_vsig, ICs.
