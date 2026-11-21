@@ -1,6 +1,6 @@
 # CosmicGrain run tracker
 
-Last updated: 2026-11-21 10:30 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
+Last updated: 2026-11-21 09:50 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
 Quick status from a terminal: `tmux ls`, `cat dT_tests.status`, `cat analysis/cs_grid/summary.txt`,
 `ssh colibri squeue -u ez`.
 
@@ -43,7 +43,7 @@ Snapshot-to-snapshot spread of S2 ≈ ±0.07 dex.
 | c100_r100_dup (2 nodes) | 626 | done | +0.72 | 2.07 | 0.40 | 0.11 | 4.04 |
 
 Expected completion: ~Monday 23 Nov midday (runs take ~3.5 h, not 3), sooner if nodes free up.
-**11-21 10:30, chain split into lanes.** The other user's CFD jobs reserve 8 GB per core, so n5–n7 have no
+**11-21 09:50, chain split into lanes.** The other user's CFD jobs reserve 8 GB per core, so n5–n7 have no
 memory left despite their idle cores. Only n8 had room (40 cores). Lanes B and C start on any node that
 frees (when the 2048 test stops, or the CFD jobs end). Same binary (11d2b48) and ΔT 1e7 everywhere.
 **Noise floor (dup vs c100_r100; differs in core count and chaos): S2 ±0.1 dex, σ_RV ratio ±0.4, GSD→HD23 ±0.05,
@@ -173,7 +173,7 @@ Before merging: choose final ΔT / SF law and C–S calibration, update param de
 - [x] Commits: fine to keep committing on fix/energy-ledger; **end goal = one final, well-tested merge to main** (see §5).
 
 ## Log
-- 11-21 10:30 Grid re-queued as 4 lanes (A–D); old 615–625 chain cancelled (backup ~/cs_grid_jobs.chain-backup.txt on Colibri).
+- 11-21 09:50 Grid re-queued as 4 lanes (A–D); old 615–625 chain cancelled (backup ~/cs_grid_jobs.chain-backup.txt on Colibri).
 - 11-21 09:40 Started 2048 ΔT=10^7.5 (job 786, 2 nodes) and resumed 1024 dT3e7 to z=0 on cygnus. Grid c-axis scored: c025 S2 +0.10 but GSD drifts.
 - 11-21 09:35 Watcher fix of 11-20 broke rsync (ssh -n); runs 611/612/613/626 were marked scored without data. Fixed (rsync </dev/null; scoring now fails if nothing was scored) and refetching. ΔT 1024 tests done: 10^7.5 converges SFR 512→1024.
 - 11-20 23:20 Job 552 auto-cancelled at a=0.850; compared to 480 (§3). Job 626 (dup) now waits on 2 free nodes.
