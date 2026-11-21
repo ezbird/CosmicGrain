@@ -595,6 +595,113 @@ def plot_gsd_comparison(radius_nm, mass_weight, xyz, hd23_fits, outdir,
     np.savez_compressed(outdir / f"{stem}.npz", **saved)
 
 
+def plot_mocksun_example(store, native_results, native_pairs, sep, sf_args, a, stem):
+    """ZG vs one CG mock-Sun cutout: R_V maps, R_V distributions and S2 (abs and normalised).
+
+    The displayed observer is the one whose R_V S2 is closest to ZG (mean |log ratio| over
+    0.3-2 kpc); the S2 panels also show the median and 16-84% range over all observers.
+    """
+    if not store:
+        return
+    n = len(store)
+    zg_s2 = np.asarray([native_results["zg_rv"][i][0] for i in range(n)], dtype=float)
+    cg_s2 = np.asarray([native_results["cg_rv"][i][0] for i in range(n)], dtype=float)
+    zg_nm = np.asarray([native_results["zg_rv"][i][1] for i in range(n)], dtype=float)
+    cg_nm = np.asarray([native_results["cg_rv"][i][1] for i in range(n)], dtype=float)
+    ok_pairs = ((native_pairs["cg_rv"] >= a.sf_min_pairs) &
+                (native_pairs["zg_rv"] >= a.sf_min_pairs))
+    cg_s2 = np.where(ok_pairs, cg_s2, np.nan); cg_nm = np.where(ok_pairs, cg_nm, np.nan)
+    zg_s2 = np.where(ok_pairs, zg_s2, np.nan); zg_nm = np.where(ok_pairs, zg_nm, np.nan)
+    use = (sep >= 0.3) & (sep <= 2.0)
+    with np.errstate(all="ignore"):
+        score = np.nanmean(np.abs(np.log10(cg_s2[:, use] / zg_s2[:, use])), axis=1)
+    score = np.where(np.isfinite(score), score, np.inf)
+    best = int(np.argmin(score))
+    ex = store[best]
+    half = sf_args.half_size
+    extent = (-half, half, -half, half)
+    norm = Normalize(2.5, 5.0)
+
+    fig = plt.figure(figsize=(11.0, 9.6), constrained_layout=True)
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.0])
+    top = gs[0, :].subgridspec(1, 2)
+    for k, (key, mkey, tag) in enumerate((("zg_rv", "ZG", "Milky Way (Zhang & Green)"),
+                                          ("cg_rv", "CG10", rf"CG10, $R={sf_args.observer_radius:.1f}$ kpc, "
+                                                            rf"$\phi={ex['phi']:.0f}^\circ$"))):
+        ax = fig.add_subplot(top[0, k])
+        img = np.where(ex["masks"][mkey], ex["fields"][key], np.nan)
+        im = ax.imshow(img.T, origin="lower", extent=extent, cmap="viridis", norm=norm,
+                       interpolation="nearest", aspect="equal")
+        ax.grid(False)
+        ax.set_xlabel("x (kpc)")
+        if k == 0:
+            ax.set_ylabel("y (kpc)")
+        else:
+            ax.tick_params(labelleft=False)
+        tag = f"({'ab'[k]}) " + tag
+        ax.text(0.03, 0.97, tag, transform=ax.transAxes, ha="left", va="top", fontsize=10,
+                bbox=dict(fc="white", ec="none", alpha=0.8, pad=2))
+        if k == 1:
+            cax = ax.inset_axes([1.03, 0.0, 0.05, 1.0])
+            cb = fig.colorbar(im, cax=cax, extend="both")
+            cb.set_label(r"$R_V$")
+
+    # R_V distributions
+    axc = fig.add_subplot(gs[1, 0])
+    bins = np.linspace(1.5, 7.0, 56)
+    zg_vals = ex["fields"]["zg_rv"][ex["masks"]["ZG"]]
+    for i, item in enumerate(store):
+        if i == best:
+            continue
+        v = item["fields"]["cg_rv"][item["masks"]["CG10"]]
+        if v.size:
+            axc.hist(v, bins=bins, density=True, histtype="step", color="#397da1", alpha=0.25, lw=0.8)
+    cg_vals = ex["fields"]["cg_rv"][ex["masks"]["CG10"]]
+    axc.hist(zg_vals, bins=bins, density=True, histtype="step", color="#222222", lw=2.2,
+             label="Zhang & Green")
+    axc.hist(cg_vals, bins=bins, density=True, histtype="step", color="#397da1", lw=2.2,
+             label=rf"CG10, $\phi={ex['phi']:.0f}^\circ$")
+    axc.plot([], [], color="#397da1", alpha=0.3, lw=0.8, label="other CG10 observers")
+    for vals, col in ((zg_vals, "#222222"), (cg_vals, "#397da1")):
+        if vals.size:
+            axc.axvline(np.median(vals), color=col, ls="--", lw=1.2)
+    axc.set(xlabel=r"$R_V$", ylabel="Probability density", xlim=(2.0, 6.0))
+    axc.text(0.03, 0.97, "(c)", transform=axc.transAxes, ha="left", va="top")
+    axc.legend(frameon=False, fontsize=9)
+
+    # S2 panels
+    right = gs[1, 1].subgridspec(2, 1, hspace=0.0)
+    for row, (zc, cc, ylab) in enumerate(((zg_s2, cg_s2, r"$S_2(R_V)$"),
+                                          (zg_nm, cg_nm, r"$S_2/(2\sigma^2_{R_V})$"))):
+        ax = fig.add_subplot(right[row, 0])
+        with np.errstate(all="ignore"):
+            zmed = np.nanmedian(zc, axis=0)
+            cmed = np.nanmedian(cc, axis=0)
+            clo = np.nanpercentile(cc, 16, axis=0)
+            chi = np.nanpercentile(cc, 84, axis=0)
+        vis = np.isfinite(zmed)
+        ax.plot(sep[vis], zmed[vis], "o-", color="#222222", ms=3, lw=1.8, label="Zhang & Green")
+        vis = np.isfinite(cmed)
+        ax.fill_between(sep[vis], clo[vis], chi[vis], color="#397da1", alpha=0.2, lw=0,
+                        label="CG10 16–84% over observers")
+        ax.plot(sep[vis], cmed[vis], "o-", color="#397da1", ms=3, lw=1.6, label="CG10 median")
+        vb = np.isfinite(cc[best])
+        ax.plot(sep[vb], cc[best][vb], "--", color="#1d4e6b", lw=1.6,
+                label=rf"CG10 $\phi={ex['phi']:.0f}^\circ$")
+        ax.set_yscale("log")
+        ax.set_ylabel(ylab)
+        ax.text(0.03, 0.95, ("(d1)", "(d2)")[row], transform=ax.transAxes, ha="left", va="top")
+        ax.grid(alpha=.15, which="both")
+        if row == 0:
+            ax.tick_params(labelbottom=False)
+            ax.legend(frameon=False, fontsize=8, loc="lower right")
+        else:
+            ax.set_xlabel("Separation (kpc)")
+    save_figure(fig, stem)
+    print(f"Mock-Sun example: displayed phi={ex['phi']:.0f} deg (S2 |log ratio| {score[best]:.2f} dex; "
+          f"all observers {np.round(score, 2).tolist()})")
+
+
 def axis_map(ax, image, radius, cmap, norm=None):
     return ax.imshow(image, origin="lower", extent=(-radius, radius, -radius, radius),
                      interpolation="nearest", cmap=cmap, norm=norm, aspect="equal")
@@ -1035,6 +1142,7 @@ def main():
                     np.full(nbin, np.nan), np.nan, int(np.count_nonzero(valid)))
         return base.structure_function(field, mask, sf_args.pixel, sf_edges)
 
+    example_store = []  # per-observer projected maps for the example-cutout figure
     for phi in phi_deg:
         sim_av, sim_rv = make_mock_sun_cube(
             base, edges, zedges, xyz, weight_b, weight_v, phi,
@@ -1099,6 +1207,9 @@ def main():
                 record["pixels"].append(int(reliability_mask.sum()))
                 record["pairs"].append(rpairs)
 
+        example_store.append({"phi": float(phi),
+                              "fields": {k: v.copy() for k, v in fields.items()},
+                              "masks": {k: v.copy() for k, v in native_masks.items()}})
         for key, field in fields.items():
             dataset = "ZG" if key.startswith("zg_") else "CG10"
             native_sf, native_npair, native_norm, std, _n = safe_structure_function(
@@ -1109,6 +1220,8 @@ def main():
 
     native_pairs = {key: np.asarray(value, dtype=float)
                     for key, value in native_pairs.items()}
+    plot_mocksun_example(example_store, native_results, native_pairs, sf_sep,
+                         sf_args, a, a.outdir / "figure5f_mocksun_example")
     plot_figure3(*(zg_hist_medians or (np.nan, np.nan)), *zg_hist_values)
     if zg_hist_medians:
         print(f"Zhang & Green medians marked in figure 3 (local E(B-V)>={a.local_ebv_min:g}): "
