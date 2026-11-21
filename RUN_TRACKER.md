@@ -1,6 +1,6 @@
 # CosmicGrain run tracker
 
-Last updated: 2026-11-21 09:45 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
+Last updated: 2026-11-21 10:00 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
 Quick status from a terminal: `tmux ls`, `cat dT_tests.status`, `cat analysis/cs_grid/summary.txt`,
 `ssh colibri squeue -u ez`.
 
@@ -32,16 +32,20 @@ Snapshot-to-snapshot spread of S2 ≈ ±0.07 dex.
 |---|---|---|---|---|---|---|---|
 | velfix (reference) | – | done | +0.83 | 2.53 | 0.37 | 0 | 3.65 |
 | c100_r100 (baseline, new code) | 610 | done | +0.83 | 2.83 | 0.35 | 0.09 | 4.09 |
-| c050_r100 | 611 | done, scoring | | | | | |
-| c200_r100 | 612 | done, scoring | | | | | |
-| c025_r100 | 613 | done, scoring | | | | | |
+| c050_r100 | 611 | done | +0.34 | 1.45 | 0.48 | 0.16 | 3.10 |
+| c200_r100 | 612 | done | +0.68 | 2.48 | 0.35 | 0.10 | 3.95 |
+| c025_r100 | 613 | done | **+0.10** | **0.96** | 0.50 | 0.25 | 3.02 |
 | c100_r050 / r071 / r141 | 614–616 | 614 running | | | | | |
 | c050_r050 / r071 / r141 | 617–619 | queued | | | | | |
 | c200_r050 / r071 / r141 | 620–622 | queued | | | | | |
 | c025_r050 / r071 / r141 | 623–625 | queued | | | | | |
 | c100_r100_dup (2 nodes) | 626 | done, scoring | | | | | |
 
-Expected completion: ~Sunday 22 Nov afternoon.
+Expected completion: ~Monday 23 Nov midday (runs take ~3.5 h, not 3).
+
+**First axis (11-21):** slowing coagulation lowers S2 steeply. At c = 0.25, S2 reaches +0.10 dex and the σ_RV ratio
+0.96, but the GSD drifts from HD23 (0.50 vs 0.35; f(<20 nm) 0.33 vs HD23 0.23; a_med 56 vs 104 nm). The r rows
+(less shattering at low c) are what may recover the GSD; watch c025_r141 and c050_r141.
 
 Note: c100_r100 (new code, limiter + vsig) reproduces velfix's S2 (+0.83) but has a higher median R_V (4.09 vs 3.65).
 **Compare grid runs to c100_r100, not to velfix.**
@@ -79,7 +83,7 @@ and the 512→1024 trend.
 |---|---|---|---|
 | halo441_output_512_dT3e7 | 10^7.5 | done | 512_lim_vsig (ΔT 1e7, same code) |
 | halo441_output_512_dT1e8 | 10^8 | done | 〃 |
-| halo441_output_1024_dT3e7 | 10^7.5 | done | Colibri c100_r100 (grid baseline) |
+| halo441_output_1024_dT3e7 | 10^7.5 | done to z=1.8; **resumed to z=0** (tmux dT1024, 11-21 09:40, ~12 h) | Colibri c100_r100 (grid baseline) |
 | halo441_output_1024_dT1e8 | 10^8 | done | 〃 |
 
 512 results, mean SFR in M☉/yr (box total):
@@ -106,6 +110,11 @@ At 512 the effect is modest: 10–20% suppression, and 10^8 is noisy. What matte
 
 512→1024 rise at z = 1.8–2.5: ×1.8 at 1e7 vs ×1.2 at 10^7.5. **10^7.5 (the EAGLE value) mostly removes the
 resolution trend**, and 10^8 adds little beyond it. Candidate: ΔT = 10^7.5 → 2048 test to z=2.
+
+**2048 test RUNNING (11-21 09:40):** Colibri job 786 `cg2048dT`, 2 nodes (n10–11), ΔT 10^7.5 (env verified on
+the ranks), params/param_halo441_2048_dT3e7.txt (= 2048 vsig physics, fresh start), binary 2429f28 code.
+Output ~/CosmicGrain-br06/halo441_output_2048_dT3e7. cygnus tmux `stop2048` writes the stop file after
+groups_014 (z=1.8); restart files allow continuing to z=0. Judge: zoom SFR at z=1.8–3 vs 1024 dT3e7 (26/25).
 
 Next if a ΔT converges 512→1024: 2048 to z=2 on Colibri (~12–17 h, 3 nodes), then a full 2048.
 Note: a feedback change will shift the 1024 GSD/R_V too → re-check the grid winner afterwards.
@@ -158,6 +167,7 @@ Before merging: choose final ΔT / SF law and C–S calibration, update param de
 - [x] Commits: fine to keep committing on fix/energy-ledger; **end goal = one final, well-tested merge to main** (see §5).
 
 ## Log
+- 11-21 09:40 Started 2048 ΔT=10^7.5 (job 786, 2 nodes) and resumed 1024 dT3e7 to z=0 on cygnus. Grid c-axis scored: c025 S2 +0.10 but GSD drifts.
 - 11-21 09:35 Watcher fix of 11-20 broke rsync (ssh -n); runs 611/612/613/626 were marked scored without data. Fixed (rsync </dev/null; scoring now fails if nothing was scored) and refetching. ΔT 1024 tests done: 10^7.5 converges SFR 512→1024.
 - 11-20 23:20 Job 552 auto-cancelled at a=0.850; compared to 480 (§3). Job 626 (dup) now waits on 2 free nodes.
 - 11-20 23:05 Grid watcher had stopped after run 610 (ssh inside the read loop ate the job list). Fixed with ssh -n and restarted (tmux csgrid); it also scores at 3.5 kpc now. 552 at a=0.846, auto-cancel at 0.85. ΔT 512 tests done; 1024 10^7.5 at z≈3.3.
