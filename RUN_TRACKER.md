@@ -186,6 +186,7 @@ Before merging: choose final ΔT / SF law and C–S calibration, update param de
 - [x] Commits: fine to keep committing on fix/energy-ledger; **end goal = one final, well-tested merge to main** (see §5).
 
 ## Log
+- 11-22 09:50 Paused csgrid and stop2048 watchers during the Colibri SSH outage (possible IP block on cygnus); one probe every 30 min. Restart both when back: tmux new -d -s csgrid 'bash scripts/cs_grid_watch.sh'; tmux new -d -s stop2048 'bash scripts/colibri/stop_2048dT_at_z18.sh'.
 - 11-22 09:30 Colibri SSH refuses connections since some time after 05:59 (handshake reset; TCP fine). Jobs unaffected; watchers retry. If it persists the 2048 stop at z=1.8 cannot be written; stop it manually later. cygnus dT3e7 hit TimeLimitCPU at snap 25, resumed.
 - 11-21 17:00 c100_r050 is the best grid point so far (S2 +0.06, GSD within noise of baseline). c025_r141 S2 +0.28, GSD 0.47.
 - 11-21 09:50 Grid re-queued as 4 lanes (A–D); old 615–625 chain cancelled (backup ~/cs_grid_jobs.chain-backup.txt on Colibri).
