@@ -40,6 +40,6 @@ ax[0].plot(hd_r, hd_p / np.trapz(hd_p, np.log10(hd_r)), color="k", lw=2.5, ls="-
 ax[1].plot(sep, zg, "k--", lw=2.5, label="Zhang & Green"); ax[2].plot(sep, zga, "k--", lw=2.5, label="Zhang & Green")
 ax[0].set(xscale="log", xlim=(1, 2000), xlabel="grain radius (nm)", ylabel="dust mass fraction per dex", title="GSD, 5–20 kpc")
 for i, q in [(1, "R_V"), (2, "A_V")]:
-    ax[i].set(yscale="log", xlim=(0.3, 4.6), xlabel="separation (kpc)", ylabel=f"$S_2({q[0]}_{q[2]})$", title=f"${q[0]}_{q[2]}$ structure function (mock Suns at {RSUN} kpc)")
+    ax[i].set(yscale="log", xlim=(0.3, 4.6), xlabel="separation (kpc)", ylabel=f"$S_2({q[0]}_{q[2]})$", title=f"${q[0]}_{q[2]}$ (cutouts at {RSUN} kpc from center)")
 for x in ax: x.legend(frameon=False, fontsize=8)
 Path(a.out).parent.mkdir(parents=True, exist_ok=True); fig.savefig(a.out, dpi=150); print("saved", a.out)
