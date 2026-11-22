@@ -14,7 +14,7 @@ p = argparse.ArgumentParser(); p.add_argument("runs", nargs="+"); p.add_argument
 p.add_argument("--grid-dir", default=None, help="scoring dir, e.g. analysis/cs_grid_R3.5 (default analysis/cs_grid)")
 a = p.parse_args()
 if a.grid_dir: G = ROOT / a.grid_dir
-RSUN = "2.57" if not a.grid_dir else a.grid_dir.split("_R")[-1]
+RSUN = a.grid_dir.split("_R")[-1] if a.grid_dir and "_R" in a.grid_dir else "2.57"
 cols = ["0.55", "#d95f02", "#1b9e77", "#7570b3", "#e7298a"]
 fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), constrained_layout=True)
 for k, run in enumerate(a.runs):
