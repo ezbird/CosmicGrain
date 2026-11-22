@@ -1,6 +1,6 @@
 # CosmicGrain run tracker
 
-Last updated: 2026-11-21 17:05 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
+Last updated: 2026-11-22 09:40 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
 Quick status from a terminal: `tmux ls`, `cat dT_tests.status`, `cat analysis/cs_grid/summary.txt`,
 `ssh colibri squeue -u ez`.
 
@@ -50,6 +50,11 @@ frees (when the 2048 test stops, or the CFD jobs end). Same binary (11d2b48) and
 **Noise floor (dup vs c100_r100; differs in core count and chaos): S2 ±0.1 dex, σ_RV ratio ±0.4, GSD→HD23 ±0.05,
 R_V ±0.05.** Core count matters no more than run-to-run chaos does.
 
+**11-22 09:40: 14 of 16 grid runs scored, plus the dup** (full table: `analysis/cs_grid/summary.txt`, heatmaps: `summary.png`).
+Remaining: c200_r050, c050_r050 (full nodes), c025_r050 (n8).
+S2 ≤ 0.15 dex: c100_r050 (+0.06, GSD 0.41), c025_r100 (+0.10, GSD 0.50), c050_r141 (+0.10, GSD 0.48).
+On the c = 1 column, r alone takes S2 from +1.08 (r141) to +0.06 (r050), monotonic. At c ≤ 0.5, S2 is ~0.1–0.35 everywhere.
+The c = 2 column keeps the GSD closest to HD23 (0.31–0.35) but S2 stays at ~0.7. c200_r050 decides whether that column can reach both.
 **Best so far (11-21 17:00): c100_r050**, i.e. baseline coagulation with 2× faster shattering: S2 +0.06, σ_RV ratio 1.05,
 R_V 3.11, f(<20 nm) 0.21 (HD23 0.23), and a 5–20 kpc GSD distance of 0.41 (dup baseline 0.40, so within noise).
 Lowering C/S through faster shattering fixes S2 without drifting the GSD; slowing coagulation drifts it.
@@ -97,7 +102,7 @@ and the 512→1024 trend.
 |---|---|---|---|
 | halo441_output_512_dT3e7 | 10^7.5 | done | 512_lim_vsig (ΔT 1e7, same code) |
 | halo441_output_512_dT1e8 | 10^8 | done | 〃 |
-| halo441_output_1024_dT3e7 | 10^7.5 | done to z=1.8; **resumed to z=0** (tmux dT1024, 11-21 09:40; at z=0.76 at 17:00, done ~Sun morning) | Colibri c100_r100 (grid baseline) |
+| halo441_output_1024_dT3e7 | 10^7.5 | done to z=1.8; resumed; stopped at snap 25 on TimeLimitCPU (85% of 80000 s); limit raised to 300000 and **resumed again 11-22 09:30** (~4–5 h to z=0) | Colibri c100_r100 (grid baseline) |
 | halo441_output_1024_dT1e8 | 10^8 | done | 〃 |
 
 512 results, mean SFR in M☉/yr (box total):
@@ -181,6 +186,7 @@ Before merging: choose final ΔT / SF law and C–S calibration, update param de
 - [x] Commits: fine to keep committing on fix/energy-ledger; **end goal = one final, well-tested merge to main** (see §5).
 
 ## Log
+- 11-22 09:30 Colibri SSH refuses connections since some time after 05:59 (handshake reset; TCP fine). Jobs unaffected; watchers retry. If it persists the 2048 stop at z=1.8 cannot be written; stop it manually later. cygnus dT3e7 hit TimeLimitCPU at snap 25, resumed.
 - 11-21 17:00 c100_r050 is the best grid point so far (S2 +0.06, GSD within noise of baseline). c025_r141 S2 +0.28, GSD 0.47.
 - 11-21 09:50 Grid re-queued as 4 lanes (A–D); old 615–625 chain cancelled (backup ~/cs_grid_jobs.chain-backup.txt on Colibri).
 - 11-21 09:40 Started 2048 ΔT=10^7.5 (job 786, 2 nodes) and resumed 1024 dT3e7 to z=0 on cygnus. Grid c-axis scored: c025 S2 +0.10 but GSD drifts.

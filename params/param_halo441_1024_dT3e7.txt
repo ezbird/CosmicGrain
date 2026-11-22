@@ -31,7 +31,7 @@ TimeBegin                 0.01    % z=99
 TimeMax	                  1.0     % z=0
 ICFormat                  3
 SnapFormat                3
-TimeLimitCPU   80000
+TimeLimitCPU   300000
 CpuTimeBetRestartFile     7200    % 2h, in seconds
 MaxMemSize   5200    % MB per rank on cygnus (24 ranks)
 ComovingIntegrationOn     1
