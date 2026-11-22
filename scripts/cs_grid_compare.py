@@ -31,6 +31,7 @@ for k, run in enumerate(a.runs):
             s2.append(np.nanmedian(d["cg_rv_s2"], 0)); s2a.append(np.nanmedian(d["cg_av_s2"], 0))
             zg, zga = np.nanmedian(d["zg_rv_s2"], 0), np.nanmedian(d["zg_av_s2"], 0)
     lab = run.replace("halo441_output_1024_", "")
+    lab = {"br06_velfix": "Original CG run"}.get(lab, lab)
     ax[0].stairs(np.mean(gsd, 0), edges, color=cols[k], lw=2, label=lab)
     with np.errstate(all="ignore"):
         ax[1].plot(sep, np.nanmean(s2, 0), "o-", ms=3, color=cols[k], lw=2, label=lab)
@@ -40,7 +41,5 @@ ax[1].plot(sep, zg, "k--", lw=2.5, label="Zhang & Green"); ax[2].plot(sep, zga, 
 ax[0].set(xscale="log", xlim=(1, 2000), xlabel="grain radius (nm)", ylabel="dust mass fraction per dex", title="GSD, 5–20 kpc")
 for i, q in [(1, "R_V"), (2, "A_V")]:
     ax[i].set(yscale="log", xlim=(0.3, 4.6), xlabel="separation (kpc)", ylabel=f"$S_2({q[0]}_{q[2]})$", title=f"${q[0]}_{q[2]}$ structure function (mock Suns at {RSUN} kpc)")
-    ax[i].axvspan(0.3, 2.0, color="0.9", zorder=0)
 for x in ax: x.legend(frameon=False, fontsize=8)
-ax[1].text(0.32, ax[1].get_ylim()[0] * 1.15, "scored range", fontsize=8, color="0.4")
 Path(a.out).parent.mkdir(parents=True, exist_ok=True); fig.savefig(a.out, dpi=150); print("saved", a.out)
