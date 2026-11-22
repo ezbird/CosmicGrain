@@ -54,6 +54,9 @@ R_V ±0.05.** Core count matters no more than run-to-run chaos does.
 R_V 3.11, f(<20 nm) 0.21 (HD23 0.23), and a 5–20 kpc GSD distance of 0.41 (dup baseline 0.40, so within noise).
 Lowering C/S through faster shattering fixes S2 without drifting the GSD; slowing coagulation drifts it.
 The r050 row (c050/c200/c025) is next to confirm.
+Full Paper II figure set for c100_r050 (snap 29, own dust half-mass radius 1.90 kpc): `paper_II_figures_c100_r050/`.
+Caveat: the A_V S2 sits above ZG in the new-code runs (+0.69 c100_r100, +1.36 dup, +0.78 c100_r050 vs +0.24 velfix,
+at 2.57 kpc). This comes from the limiter code, not the calibration. Watch it as a second score.
 **First axis (11-21):** slowing coagulation lowers S2 steeply. At c = 0.25, S2 reaches +0.10 dex and the σ_RV ratio
 0.96, but the GSD drifts from HD23 (0.50 vs 0.35; f(<20 nm) 0.33 vs HD23 0.23; a_med 56 vs 104 nm). The r rows
 (less shattering at low c) are what may recover the GSD; watch c025_r141 and c050_r141.
