@@ -198,3 +198,10 @@ Before merging: choose final ΔT / SF law and C–S calibration, update param de
 - 11-20 18:21 ΔT tests started on cygnus (512 10^7.5 first).
 - 11-20 17:00 C–S grid submitted (610–626); grid A/B/C deleted from Colibri (verified copies on cygnus).
 - 11-20 15:05 Job 480 finished (2048 limiter, z=0).
+
+### 2026-11-22 16:17 — cygnus 1024 dT3e7 reached z=0 (snap 29)
+Same calibrations as c100_r100; only change is ΔT = 10^7.5 K. Scores (snaps 27–29):
+S2 0.95 (2.57 kpc) / 0.95 (3 kpc) / 0.89 (3.5 kpc); GSD→HD23 0.447; GSD→base 0.123; f<20 nm 0.056 (c100_r100 0.162); R_V 3.65.
+Galaxy (snap 27/28/29) vs c100_r100: map dust mass +55–75%; dust half-mass radius 2.85/3.26/3.69 vs 1.90/1.77/2.76 kpc; SFR at z=0 1.0 vs 1.8 M☉/yr.
+Reading: the disk is more extended and dustier, as hoped, but the small-grain peak is mostly gone, so the C–S calibration must be re-tuned for 10^7.5 K.
+Plot: analysis/cs_grid/compare/dT3e7_vs_c100*.png. cygnus is now idle.
