@@ -11,7 +11,10 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parents[1]
 G = ROOT / "analysis" / "cs_grid"
 p = argparse.ArgumentParser(); p.add_argument("runs", nargs="+"); p.add_argument("--out", default=str(G / "compare" / "compare.png"))
+p.add_argument("--grid-dir", default=None, help="scoring dir, e.g. analysis/cs_grid_R3.5 (default analysis/cs_grid)")
 a = p.parse_args()
+if a.grid_dir: G = ROOT / a.grid_dir
+RSUN = "2.57" if not a.grid_dir else a.grid_dir.split("_R")[-1]
 cols = ["0.55", "#d95f02", "#1b9e77", "#7570b3", "#e7298a"]
 fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), constrained_layout=True)
 for k, run in enumerate(a.runs):
@@ -36,7 +39,7 @@ ax[0].plot(hd_r, hd_p / np.trapz(hd_p, np.log10(hd_r)), color="k", lw=2.5, ls="-
 ax[1].plot(sep, zg, "k--", lw=2.5, label="Zhang & Green"); ax[2].plot(sep, zga, "k--", lw=2.5, label="Zhang & Green")
 ax[0].set(xscale="log", xlim=(1, 2000), xlabel="grain radius (nm)", ylabel="dust mass fraction per dex", title="GSD, 5–20 kpc")
 for i, q in [(1, "R_V"), (2, "A_V")]:
-    ax[i].set(yscale="log", xlim=(0.3, 4.6), xlabel="separation (kpc)", ylabel=f"$S_2({q[0]}_{q[2]})$", title=f"${q[0]}_{q[2]}$ structure function (mock Suns at 2.57 kpc)")
+    ax[i].set(yscale="log", xlim=(0.3, 4.6), xlabel="separation (kpc)", ylabel=f"$S_2({q[0]}_{q[2]})$", title=f"${q[0]}_{q[2]}$ structure function (mock Suns at {RSUN} kpc)")
     ax[i].axvspan(0.3, 2.0, color="0.9", zorder=0)
 for x in ax: x.legend(frameon=False, fontsize=8)
 ax[1].text(0.32, ax[1].get_ylim()[0] * 1.15, "scored range", fontsize=8, color="0.4")
