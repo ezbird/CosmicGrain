@@ -1,6 +1,6 @@
 # CosmicGrain run tracker
 
-Last updated: 2026-11-21 09:50 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
+Last updated: 2026-11-21 17:05 MST. Claude updates this file whenever a job starts, finishes or a decision is made.
 Quick status from a terminal: `tmux ls`, `cat dT_tests.status`, `cat analysis/cs_grid/summary.txt`,
 `ssh colibri squeue -u ez`.
 
@@ -35,11 +35,12 @@ Snapshot-to-snapshot spread of S2 ≈ ±0.07 dex.
 | c050_r100 | 611 | done | +0.34 | 1.45 | 0.48 | 0.16 | 3.10 |
 | c200_r100 | 612 | done | +0.68 | 2.48 | 0.35 | 0.10 | 3.95 |
 | c025_r100 | 613 | done | **+0.10** | **0.96** | 0.50 | 0.25 | 3.02 |
-| c100_r050 | 614 | running (n9) | | | | | |
-| lane A (full node, after 614): c025_r141 → c100_r071 → c200_r141 | 787–789 | queued | | | | | |
+| c100_r050 | 614 | done | **+0.06** | **1.05** | 0.41 | 0.13 | **3.11** |
+| c025_r141 | 787 | done | +0.28 | 1.28 | 0.47 | 0.18 | 3.00 |
+| lane A (n9): c100_r071 → c200_r141 | 788–789 | 788 running (done ~19:10), 789 ~22:50 | | | | | |
 | lane B (full node, starts when a node frees): c050_r141 → c100_r141 → c200_r050 | 798–800 | waiting for a node | | | | | |
 | lane C (full node, starts when a node frees): c025_r071 → c200_r071 → c050_r050 | 801–803 | waiting for a node | | | | | |
-| lane D (40 cores on n8, shared): c050_r071 → c025_r050 | 806–807 | 806 running | | | | | |
+| lane D (40 cores on n8, shared): c050_r071 → c025_r050 | 806–807 | 806 running, 4× slower than a full node (~14.5 h/run): done ~00:30, 807 ~Sun 15:00 | | | | | |
 | c100_r100_dup (2 nodes) | 626 | done | +0.72 | 2.07 | 0.40 | 0.11 | 4.04 |
 
 Expected completion: ~Monday 23 Nov midday (runs take ~3.5 h, not 3), sooner if nodes free up.
@@ -49,6 +50,10 @@ frees (when the 2048 test stops, or the CFD jobs end). Same binary (11d2b48) and
 **Noise floor (dup vs c100_r100; differs in core count and chaos): S2 ±0.1 dex, σ_RV ratio ±0.4, GSD→HD23 ±0.05,
 R_V ±0.05.** Core count matters no more than run-to-run chaos does.
 
+**Best so far (11-21 17:00): c100_r050**, i.e. baseline coagulation with 2× faster shattering: S2 +0.06, σ_RV ratio 1.05,
+R_V 3.11, f(<20 nm) 0.21 (HD23 0.23), and a 5–20 kpc GSD distance of 0.41 (dup baseline 0.40, so within noise).
+Lowering C/S through faster shattering fixes S2 without drifting the GSD; slowing coagulation drifts it.
+The r050 row (c050/c200/c025) is next to confirm.
 **First axis (11-21):** slowing coagulation lowers S2 steeply. At c = 0.25, S2 reaches +0.10 dex and the σ_RV ratio
 0.96, but the GSD drifts from HD23 (0.50 vs 0.35; f(<20 nm) 0.33 vs HD23 0.23; a_med 56 vs 104 nm). The r rows
 (less shattering at low c) are what may recover the GSD; watch c025_r141 and c050_r141.
@@ -89,7 +94,7 @@ and the 512→1024 trend.
 |---|---|---|---|
 | halo441_output_512_dT3e7 | 10^7.5 | done | 512_lim_vsig (ΔT 1e7, same code) |
 | halo441_output_512_dT1e8 | 10^8 | done | 〃 |
-| halo441_output_1024_dT3e7 | 10^7.5 | done to z=1.8; **resumed to z=0** (tmux dT1024, 11-21 09:40, ~12 h) | Colibri c100_r100 (grid baseline) |
+| halo441_output_1024_dT3e7 | 10^7.5 | done to z=1.8; **resumed to z=0** (tmux dT1024, 11-21 09:40; at z=0.76 at 17:00, done ~Sun morning) | Colibri c100_r100 (grid baseline) |
 | halo441_output_1024_dT1e8 | 10^8 | done | 〃 |
 
 512 results, mean SFR in M☉/yr (box total):
@@ -120,7 +125,7 @@ resolution trend**, and 10^8 adds little beyond it. Candidate: ΔT = 10^7.5 → 
 **2048 test RUNNING (11-21 09:40):** Colibri job 786 `cg2048dT`, 2 nodes (n10–11), ΔT 10^7.5 (env verified on
 the ranks), params/param_halo441_2048_dT3e7.txt (= 2048 vsig physics, fresh start), binary 2429f28 code.
 Output ~/CosmicGrain-br06/halo441_output_2048_dT3e7. cygnus tmux `stop2048` writes the stop file after
-groups_014 (z=1.8); restart files allow continuing to z=0. Judge: zoom SFR at z=1.8–3 vs 1024 dT3e7 (26/25).
+groups_014 (z=1.8); restart files allow continuing to z=0. Pace: a=0.198 (z=4.1) after 7.3 h, ~0.008/h → z=1.8 around Sun 22 Nov afternoon or evening. Judge: zoom SFR at z=1.8–3 vs 1024 dT3e7 (26/25).
 
 Next if a ΔT converges 512→1024: 2048 to z=2 on Colibri (~12–17 h, 3 nodes), then a full 2048.
 Note: a feedback change will shift the 1024 GSD/R_V too → re-check the grid winner afterwards.
@@ -173,6 +178,7 @@ Before merging: choose final ΔT / SF law and C–S calibration, update param de
 - [x] Commits: fine to keep committing on fix/energy-ledger; **end goal = one final, well-tested merge to main** (see §5).
 
 ## Log
+- 11-21 17:00 c100_r050 is the best grid point so far (S2 +0.06, GSD within noise of baseline). c025_r141 S2 +0.28, GSD 0.47.
 - 11-21 09:50 Grid re-queued as 4 lanes (A–D); old 615–625 chain cancelled (backup ~/cs_grid_jobs.chain-backup.txt on Colibri).
 - 11-21 09:40 Started 2048 ΔT=10^7.5 (job 786, 2 nodes) and resumed 1024 dT3e7 to z=0 on cygnus. Grid c-axis scored: c025 S2 +0.10 but GSD drifts.
 - 11-21 09:35 Watcher fix of 11-20 broke rsync (ssh -n); runs 611/612/613/626 were marked scored without data. Fixed (rsync </dev/null; scoring now fails if nothing was scored) and refetching. ΔT 1024 tests done: 10^7.5 converges SFR 512→1024.
