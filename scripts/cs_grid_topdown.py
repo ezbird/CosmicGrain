@@ -87,36 +87,53 @@ def span(v, mid):
     return TwoSlopeNorm(mid, mid - h, mid + h)
 
 
+
+# Overall miss: mean of the three |log10(run / observed)| values (dex), equal weights
+miss = np.column_stack([np.abs(V[:, 0] - zg), np.abs(np.log10(V[:, 1] / RV_MW)), np.abs(V[:, 2] - hd)])
+total = miss.mean(axis=1)
+rank = np.argsort(np.argsort(total)) + 1
+best = np.argmin(total)
+
 panels = [
-    (V[:, 0], span(V[:, 0], zg), rf"$\log_{{10}} S_2(R_V)$ at {a.sep:g} kpc",
-     f"$R_V$ structure function at {a.sep:g} kpc\n(center = Zhang & Green, {10**zg:.3f})",
-     lambda v: f"{10**(v - zg):.1f}×"),
-    (V[:, 1], span(V[:, 1], RV_MW), "median face-on $R_V$",
-     f"median $R_V$ (center = Milky Way {RV_MW})", lambda v: f"{v:.2f}"),
-    (V[:, 2], span(V[:, 2], hd), r"$\log_{10}$ (small / large GSD peak)",
-     f"GSD peak ratio, 5–20 kpc\n(center = Hensley & Draine, {hd_ratio:.2f})",
+    (V[:, 0], span(V[:, 0], zg), "RdBu_r", rf"$\log_{{10}} S_2(R_V)$ at {a.sep:g} kpc",
+     f"$R_V$ structure function at {a.sep:g} kpc\n(white = Zhang & Green, {10**zg:.3f})",
+     lambda v: f"{10**(v - zg):.1f}× ZG"),
+    (V[:, 1], span(V[:, 1], RV_MW), "RdBu_r", "median face-on $R_V$",
+     f"median $R_V$\n(white = Milky Way, {RV_MW})", lambda v: f"$R_V$ = {v:.2f}"),
+    (V[:, 2], span(V[:, 2], hd), "RdBu_r", r"$\log_{10}$ (small / large GSD peak)",
+     f"GSD small/large peak ratio, 5–20 kpc\n(white = Hensley & Draine, {hd_ratio:.2f})",
      lambda v: f"{10**v:.2f}"),
+    (total, plt.Normalize(0, total.max()), "Reds", "mean |log$_{10}$(run / observed)| (dex)",
+     "overall: mean miss of the three panels\n(white = perfect; number = rank)", lambda v: f"{v:.2f} dex"),
 ]
 
-fig, axes = plt.subplots(1, 3, figsize=(16, 5.2), constrained_layout=True)
-for ax, (v, norm, clab, title, fmt) in zip(axes, panels):
-    sc = ax.scatter(C, R, c=v, cmap="RdBu_r", norm=norm, s=900, edgecolors="0.3", linewidths=0.8)
-    for x, y, val in zip(C, R, v):
-        ax.annotate(fmt(val), (x, y), xytext=(0, -30), textcoords="offset points",
-                    ha="center", va="top", fontsize=9, color="0.15")
-    ax.set(xscale="log", yscale="log", xlabel="coagulation rate $c$ (× baseline)",
-           ylabel="coagulation / shattering $C/S$ (× baseline)", title=title)
-    ax.set_xticks([0.25, 0.5, 1, 2], ["0.25", "0.5", "1", "2"])
-    ax.set_yticks([0.5, 0.71, 1, 1.41], ["0.5", "0.71", "1", "1.41"])
+fig, axes = plt.subplots(2, 2, figsize=(13, 10.5), constrained_layout=True)
+for k, (ax, (v, norm, cmap, clab, title, fmt)) in enumerate(zip(axes.flat, panels)):
+    sc = ax.scatter(R, C, c=v, cmap=cmap, norm=norm, s=900, edgecolors="0.3", linewidths=0.8, zorder=2)
+    ax.scatter(R[best], C[best], s=1500, facecolors="none", edgecolors="k", linewidths=2.5, zorder=1)
+    for i, (x, y, val) in enumerate(zip(R, C, v)):
+        ax.annotate(fmt(val), (x, y), xytext=(0, -27), textcoords="offset points",
+                    ha="center", va="top", fontsize=8.5, color="0.15",
+                    fontweight="bold" if i == best else "normal")
+        if k == 3:
+            ax.annotate(f"{rank[i]}", (x, y), ha="center", va="center", fontsize=12,
+                        fontweight="bold", color="w" if norm(val) > 0.6 else "0.1", zorder=3)
+    ax.set(xscale="log", yscale="log", ylabel="coagulation rate $c$ (× baseline)",
+           xlabel="coagulation / shattering $C/S$ (× baseline)", title=title)
+    ax.set_yticks([0.25, 0.5, 1, 2], ["0.25", "0.5", "1", "2"])
+    ax.set_xticks([0.5, 0.71, 1, 1.41], ["0.5", "0.71", "1", "1.41"])
     ax.minorticks_off()
-    ax.set_xlim(0.18, 2.8)
-    ax.set_ylim(0.38, 1.75)
-    ax.plot(1, 1, marker="s", ms=36, mfc="none", mec="0.2", lw=0, zorder=0)
+    ax.set_ylim(0.16, 2.8)
+    ax.set_xlim(0.4, 1.75)
+    ax.plot(1, 1, marker="s", ms=36, mfc="none", mec="0.45", ls="none", zorder=0)
     fig.colorbar(sc, ax=ax, label=clab, shrink=0.9)
-fig.suptitle(f"1024 C–S grid, z ≈ 0 (snapshots 27–29), mock Suns at {rsun} kpc   "
-             "(square = baseline; labels: × ZG, R_V, peak ratio)", fontsize=11)
+fig.suptitle(f"1024 C–S grid, z ≈ 0 (snapshots 27–29), mock Suns at {rsun} kpc\n"
+             f"black ring = best overall (c = {C[best]:g}, C/S = {R[best]:g});  gray square = baseline",
+             fontsize=12)
 fig.savefig(out, dpi=150)
 print("saved", out)
-for k, v in zip(keys, V):
-    print(f"c={k[0]:<5} r={k[1]:<5} S2/ZG={10**(v[0]-zg):5.2f}  R_V={v[1]:.2f}  peak_ratio={10**v[2]:.2f}  (n={len(pts[k])})")
+for i in np.argsort(total):
+    k = keys[i]
+    print(f"#{rank[i]:<2} c={k[0]:<5} r={k[1]:<5} S2/ZG={10**(V[i,0]-zg):5.2f}  R_V={V[i,1]:.2f}  "
+          f"peak_ratio={10**V[i,2]:.2f}  miss={total[i]:.3f} [{miss[i,0]:.2f} {miss[i,1]:.2f} {miss[i,2]:.2f}]")
 print(f"ZG S2 at {a.sep:g} kpc = {10**zg:.4f};  HD23 peak ratio = {hd_ratio:.3f}")
