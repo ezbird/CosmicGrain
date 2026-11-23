@@ -226,3 +226,7 @@ Galaxy (snap 29, <30 kpc): velfix / c100_r100 / c100_r050 / dT3e7 — M* 6.7/7.5
   1024: 10^7 K 42 (c100_r100); 10^7.5 K 32
   2048: 10^7 K 46 (br06, older code); 10^7.5 K 48
   → 10^7.5 K suppresses SFR at 1024 but NOT at 2048; the 2048 excess (+50% over 1024) persists.
+
+### 23 Nov 12:40 status check
+- cygnus dTr050 (dT3e7 + c100_r050): z = 0.43, snapdir_022; ~10 h to z = 0 at the current rate (ETA ~23:00 tonight). Watcher bqqipzhb7 still armed.
+- Colibri 786 (2048 dT3e7): z = 2.51, 21 h wall left; snapshot 012 (z = 2.5) due within ~1 h; restart files written 11:54. Pace ~0.019 in ln a per hour, so z ~ 2.0 by the 08:30 stop file (snap 013 at z = 2 borderline). Grid jobs 787-807 all COMPLETED and scored.
