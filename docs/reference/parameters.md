@@ -56,8 +56,8 @@ The source assigns representative birth radii of 10 nm (SNII), 100 nm (AGB), and
 | Parameter | Meaning |
 | --- | --- |
 | `DustGrowthCalibration` | Multiplicative calibration of the grain-growth timescales |
-| `DustCoagulationCalibration` | Multiplicative calibration of the coagulation timescale |
-| `DustShatteringCalibration` | Multiplicative calibration of the shattering timescale |
+| `DustCoagulationCalibration` | Dimensionless multiplier on the coagulation timescale (1 = Trayford et al. 2025 Eq. 10; larger = slower). Coagulation acts on the dense-phase fraction at n_H ≥ 100 cm⁻³, so τ_coag ≈ 1.36 Myr × value for a = 0.1 µm and D/G = 0.01 |
+| `DustShatteringCalibration` | Dimensionless multiplier on the shattering timescale (1 = Trayford et al. 2025 Eq. 9; larger = slower). τ_shat ≈ 54 Myr × value for a = 0.1 µm, D/G = 0.01, n_H = 1 cm⁻³ |
 | `DustShatteringFragmentSlope` | Power-law slope \(q\) of the shattering fragment number distribution, \(dN/da \propto a^{-q}\); must be finite and positive |
 | `DustShatteringMaxFragmentFraction` | Maximum fragment radius as a fraction of the parent radius; must be finite and strictly between 0 and 1 |
 | `DustAstrationCalibration` | Multiplicative astration calibration |

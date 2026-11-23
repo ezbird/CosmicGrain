@@ -116,8 +116,8 @@ DustRadiationPressureEfficiency                   1
 DustParticlesPerSNII                              25
 DustParticlesPerAGB                               25
 DustParticlesPerLRN                               1
-DustCoagulationCalibration                        22.3
-DustShatteringCalibration                         2.97
+DustCoagulationCalibration                        22.3     % timescale multiplier (1 = Trayford+25 Eq.10; larger = slower): tau_coag = 30 Myr for a=0.1 um, D/G=0.01, dense-phase n_H=100 cm^-3
+DustShatteringCalibration                         2.97     % timescale multiplier (1 = Trayford+25 Eq.9; larger = slower): tau_shat = 161 Myr for a=0.1 um, D/G=0.01, n_H=1 cm^-3
 DustShatteringFragmentSlope                       3.3
 DustShatteringMaxFragmentFraction                 0.8
 DustGrowthCalibration                             1.12
