@@ -211,3 +211,9 @@ Final-recipe check: ΔT = 10^7.5 K (CG_FEEDBACK_DELTA_T=3.16e7) + ShatCal 1.485 
 params/param_halo441_1024_dT3e7_c100_r050.txt, run_dT1024_r050.sh; log in dT_tests.status. Expected ~16 h → done ~10:00 on 23 Nov.
 Colibri still refusing ssh at 18:12 (connection reset); watchers csgrid/stop2048 remain paused.
 Galaxy (snap 29, <30 kpc): velfix / c100_r100 / c100_r050 / dT3e7 — M* 6.7/7.5/7.6/4.5e10; Mdust 1.19/0.93/0.92/1.61e7; D/G .0014/.0011/.0012/.0025; D/Z .10/.13/.12/.18; dust r_half 3.3/3.6/2.4/4.8 kpc; star r_half ~3 kpc all. (scratchpad galprops.py)
+
+### 2026-11-23 09:xx — morning check
+- cygnus dTr050 at z=0.63 (snap 20) after 15 h; faster than dT3e7 was. ETA z=0 ~late tonight / early 24 Nov (earlier "16 h" estimate was wrong: dT3e7 took ~33 h total).
+- Colibri: still connection reset at 09:08.
+- Why dT3e7 lost small grains (snap 29, dust within 30 kpc, nearest-gas): not sputtering (dust in T>5e5 K gas 1.0% vs 1.3%). Dust sits in more diffuse gas: n_H<1 holds 94% of dust (c100_r100 78%, c100_r050 54%); essentially none >15 cm^-3 in any run. f<20 is low in every density bin (0.03-0.06 vs 0.05-0.19). Shattering rate scales with gas density, so 10^7.5 K likely needs more than r=0.5 boost; r~0.25 candidate.
+- Small-grain deficit is not a shell-placement artifact: f<20 ~0.06 in 1-2 r_half and 2-4 r_half alike (10^7 K runs: 0.1-0.25, highest in outskirts).
