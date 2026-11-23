@@ -210,3 +210,4 @@ Plot: analysis/cs_grid/compare/dT3e7_vs_c100*.png. cygnus is now idle.
 Final-recipe check: ΔT = 10^7.5 K (CG_FEEDBACK_DELTA_T=3.16e7) + ShatCal 1.485 (c100_r050), z=99→0, 24 ranks, CosmicGrain_dT.
 params/param_halo441_1024_dT3e7_c100_r050.txt, run_dT1024_r050.sh; log in dT_tests.status. Expected ~16 h → done ~10:00 on 23 Nov.
 Colibri still refusing ssh at 18:12 (connection reset); watchers csgrid/stop2048 remain paused.
+Galaxy (snap 29, <30 kpc): velfix / c100_r100 / c100_r050 / dT3e7 — M* 6.7/7.5/7.6/4.5e10; Mdust 1.19/0.93/0.92/1.61e7; D/G .0014/.0011/.0012/.0025; D/Z .10/.13/.12/.18; dust r_half 3.3/3.6/2.4/4.8 kpc; star r_half ~3 kpc all. (scratchpad galprops.py)
