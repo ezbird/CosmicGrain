@@ -205,3 +205,8 @@ S2 0.95 (2.57 kpc) / 0.95 (3 kpc) / 0.89 (3.5 kpc); GSD→HD23 0.447; GSD→base
 Galaxy (snap 27/28/29) vs c100_r100: map dust mass +55–75%; dust half-mass radius 2.85/3.26/3.69 vs 1.90/1.77/2.76 kpc; SFR at z=0 1.0 vs 1.8 M☉/yr.
 Reading: the disk is more extended and dustier, as hoped, but the small-grain peak is mostly gone, so the C–S calibration must be re-tuned for 10^7.5 K.
 Plot: analysis/cs_grid/compare/dT3e7_vs_c100*.png. cygnus is now idle.
+
+### 2026-11-22 18:16 — cygnus: 1024 dT3e7 + c100_r050 started (tmux dTr050)
+Final-recipe check: ΔT = 10^7.5 K (CG_FEEDBACK_DELTA_T=3.16e7) + ShatCal 1.485 (c100_r050), z=99→0, 24 ranks, CosmicGrain_dT.
+params/param_halo441_1024_dT3e7_c100_r050.txt, run_dT1024_r050.sh; log in dT_tests.status. Expected ~16 h → done ~10:00 on 23 Nov.
+Colibri still refusing ssh at 18:12 (connection reset); watchers csgrid/stop2048 remain paused.
