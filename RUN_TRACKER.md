@@ -217,3 +217,12 @@ Galaxy (snap 29, <30 kpc): velfix / c100_r100 / c100_r050 / dT3e7 — M* 6.7/7.5
 - Colibri: still connection reset at 09:08.
 - Why dT3e7 lost small grains (snap 29, dust within 30 kpc, nearest-gas): not sputtering (dust in T>5e5 K gas 1.0% vs 1.3%). Dust sits in more diffuse gas: n_H<1 holds 94% of dust (c100_r100 78%, c100_r050 54%); essentially none >15 cm^-3 in any run. f<20 is low in every density bin (0.03-0.06 vs 0.05-0.19). Shattering rate scales with gas density, so 10^7.5 K likely needs more than r=0.5 boost; r~0.25 candidate.
 - Small-grain deficit is not a shell-placement artifact: f<20 ~0.06 in 1-2 r_half and 2-4 r_half alike (10^7 K runs: 0.1-0.25, highest in outskirts).
+
+### 2026-11-23 09:57 — Colibri back
+- All grid jobs COMPLETED during outage: 800 c200_r050, 803 c050_r050, 807 c025_r050 (+ earlier ones). Watcher csgrid restarted (reniced) to fetch/score them.
+- 2048 job 786 (10^7.5 K): only at z=2.58 after 48 h (snap 11 = z=3 at 22 Nov 13:14; ~13–20 h per snapshot now). Wall time ends 24 Nov 09:40, far short of z=1.8. Periodic restart files every 2 h. New tmux stop2048 writes the stop file at 24 Nov 08:30 (scripts/colibri/stop_2048dT_before_walltime.sh). Old z=1.8 stop script retired.
+- Mean SFR over z=3–2.6 (a 0.25–0.279), M☉/yr:
+  512: 10^7 K 29 (br06) / 33 (lim_vsig); 10^7.5 K 29
+  1024: 10^7 K 42 (c100_r100); 10^7.5 K 32
+  2048: 10^7 K 46 (br06, older code); 10^7.5 K 48
+  → 10^7.5 K suppresses SFR at 1024 but NOT at 2048; the 2048 excess (+50% over 1024) persists.
