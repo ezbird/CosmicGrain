@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Top-down view of the 1024 C-S grid: one point per run in (c, C/S) space, colored three ways.
+"""Top-down view of the 1024 C-S grid: one point per run at its (DustShatteringCalibration,
+DustCoagulationCalibration) values, read from its parameter file, colored three ways.
 
   1. S2(R_V) at a chosen separation (default 1 kpc), median over the 8 mock Suns, on a diverging
      log color scale centered on the Zhang & Green value at the same separation.
@@ -7,8 +8,10 @@
   3. Ratio of the small-grain (<30 nm) to large-grain (>30 nm) peak heights of the 5-20 kpc
      mass-weighted GSD, diverging (log) around the Hensley & Draine (2023) ratio.
 
-Everything is averaged over snapshots 27-29 from the cs_grid_score outputs.  c100_r100 and its
-duplicate are averaged into one point.
+A fourth panel ranks runs by the mean |log10(run / observed)| of the three.  Everything is averaged
+over snapshots 27-29 from the cs_grid_score outputs; runs with identical parameters (c100_r100 and
+its duplicate) are averaged into one point.  Calibrations multiply process timescales, so larger
+values mean slower coagulation or shattering.
 
   python3 scripts/cs_grid_topdown.py [--grid-dir analysis/cs_grid] [--sep 1.0] [--out ...]
 """
@@ -52,8 +55,9 @@ def s2_at(sep, s2, x):
 pts = {}
 zg_vals, hd_ratio = [], None
 for d in sorted(grid.glob("halo441_output_1024_cs_c*_r*")):
-    m = re.search(r"_c(\d+)_r(\d+)", d.name)
-    c, r = int(m.group(1)) / 100, int(m.group(2)) / 100
+    par = (ROOT / "params" / (d.name.replace("_output", "").replace("halo441", "param_halo441", 1) + ".txt")).read_text()
+    c = float(re.search(r"^DustCoagulationCalibration\s+([\d.eE+-]+)", par, re.M).group(1))
+    r = float(re.search(r"^DustShatteringCalibration\s+([\d.eE+-]+)", par, re.M).group(1))
     s2, rv, pr = [], [], []
     for s in SNAPS:
         od = d / f"snap{s:03d}"
@@ -72,7 +76,7 @@ for d in sorted(grid.glob("halo441_output_1024_cs_c*_r*")):
             hr, hp = g["hd_radius_nm"], g["hd_density"]
             hd_ratio = hp[hr < SPLIT_NM].max() / hp[hr >= SPLIT_NM].max()
     if s2:
-        pts.setdefault((c, r), []).append((np.mean(np.log10(s2)), np.mean(rv), np.mean(np.log10(pr))))
+        pts.setdefault((round(c, 4), round(r, 4)), []).append((np.mean(np.log10(s2)), np.mean(rv), np.mean(np.log10(pr))))
 
 keys = sorted(pts)
 C = np.array([k[0] for k in keys])
@@ -91,49 +95,54 @@ def span(v, mid):
 # Overall miss: mean of the three |log10(run / observed)| values (dex), equal weights
 miss = np.column_stack([np.abs(V[:, 0] - zg), np.abs(np.log10(V[:, 1] / RV_MW)), np.abs(V[:, 2] - hd)])
 total = miss.mean(axis=1)
-rank = np.argsort(np.argsort(total)) + 1
-best = np.argmin(total)
+order = np.argsort(total)
+rank = np.argsort(order) + 1
+best = order[0]
 
 panels = [
     (V[:, 0], span(V[:, 0], zg), "RdBu_r", rf"$\log_{{10}} S_2(R_V)$ at {a.sep:g} kpc",
-     f"$R_V$ structure function at {a.sep:g} kpc\n(white = Zhang & Green, {10**zg:.3f})",
-     lambda v: f"{10**(v - zg):.1f}× ZG"),
+     f"$R_V$ structure function at {a.sep:g} kpc, × Zhang & Green\n(white = Zhang & Green, {10**zg:.3f})",
+     lambda v: f"{10**(v - zg):.1f}×"),
     (V[:, 1], span(V[:, 1], RV_MW), "RdBu_r", "median face-on $R_V$",
-     f"median $R_V$\n(white = Milky Way, {RV_MW})", lambda v: f"$R_V$ = {v:.2f}"),
+     f"median face-on $R_V$\n(white = Milky Way, {RV_MW})", lambda v: f"{v:.2f}"),
     (V[:, 2], span(V[:, 2], hd), "RdBu_r", r"$\log_{10}$ (small / large GSD peak)",
-     f"GSD small/large peak ratio, 5–20 kpc\n(white = Hensley & Draine, {hd_ratio:.2f})",
+     f"GSD small/large peak ratio, 5–20 kpc\n(white = Hensley & Draine 2023, {hd_ratio:.2f})",
      lambda v: f"{10**v:.2f}"),
     (total, plt.Normalize(0, total.max()), "Reds", "mean |log$_{10}$(run / observed)| (dex)",
-     "overall: mean miss of the three panels\n(white = perfect; number = rank)", lambda v: f"{v:.2f} dex"),
+     "overall: mean miss of the three panels, dex\n(white = perfect match; number = rank)", lambda v: f"{v:.2f}"),
 ]
 
-fig, axes = plt.subplots(2, 2, figsize=(13, 10.5), constrained_layout=True)
+ycal = sorted(set(C))
+fig, axes = plt.subplots(2, 2, figsize=(14, 10.5), constrained_layout=True)
 for k, (ax, (v, norm, cmap, clab, title, fmt)) in enumerate(zip(axes.flat, panels)):
-    sc = ax.scatter(R, C, c=v, cmap=cmap, norm=norm, s=900, edgecolors="0.3", linewidths=0.8, zorder=2)
-    ax.scatter(R[best], C[best], s=1500, facecolors="none", edgecolors="k", linewidths=2.5, zorder=1)
+    sc = ax.scatter(R, C, c=v, cmap=cmap, norm=norm, s=650, edgecolors="0.3", linewidths=0.8, zorder=2)
+    ax.scatter(R[best], C[best], s=1150, facecolors="none", edgecolors="k", linewidths=2.5, zorder=1)
     for i, (x, y, val) in enumerate(zip(R, C, v)):
-        ax.annotate(fmt(val), (x, y), xytext=(0, -27), textcoords="offset points",
-                    ha="center", va="top", fontsize=8.5, color="0.15",
+        ax.annotate(fmt(val), (x, y), xytext=(0, -22), textcoords="offset points",
+                    ha="center", va="top", fontsize=8, color="0.15",
                     fontweight="bold" if i == best else "normal")
+        ax.annotate(f"{x:g}", (x, y), xytext=(0, 18), textcoords="offset points", ha="center",
+                    va="bottom", fontsize=7, color="0.45", style="italic")
         if k == 3:
-            ax.annotate(f"{rank[i]}", (x, y), ha="center", va="center", fontsize=12,
+            ax.annotate(f"{rank[i]}", (x, y), ha="center", va="center", fontsize=11,
                         fontweight="bold", color="w" if norm(val) > 0.6 else "0.1", zorder=3)
-    ax.set(xscale="log", yscale="log", ylabel="coagulation rate $c$ (× baseline)",
-           xlabel="coagulation / shattering $C/S$ (× baseline)", title=title)
-    ax.set_yticks([0.25, 0.5, 1, 2], ["0.25", "0.5", "1", "2"])
-    ax.set_xticks([0.5, 0.71, 1, 1.41], ["0.5", "0.71", "1", "1.41"])
+    ax.set(xscale="log", yscale="log", ylabel="DustCoagulationCalibration",
+           xlabel="DustShatteringCalibration", title=title)
+    ax.set_yticks(ycal, [f"{y:g}" for y in ycal])
+    xt = [0.75, 1, 1.5, 2, 3, 5, 8, 12, 17]
+    ax.set_xticks(xt, [f"{x:g}" for x in xt])
     ax.minorticks_off()
-    ax.set_ylim(0.16, 2.8)
-    ax.set_xlim(0.4, 1.75)
-    ax.plot(1, 1, marker="s", ms=36, mfc="none", mec="0.45", ls="none", zorder=0)
+    ax.set_ylim(min(ycal) / 1.45, max(ycal) * 1.45)
+    ax.set_xlim(min(R) / 1.25, max(R) * 1.25)
     fig.colorbar(sc, ax=ax, label=clab, shrink=0.9)
-fig.suptitle(f"1024 C–S grid, z ≈ 0 (snapshots 27–29), mock Suns at {rsun} kpc\n"
-             f"black ring = best overall (c = {C[best]:g}, C/S = {R[best]:g});  gray square = baseline",
-             fontsize=12)
+top = "\n".join(f"#{rank[i]}  Coag {C[i]:g}, Shat {R[i]:g}  ({total[i]:.2f} dex)" for i in order[:3])
+axes.flat[3].text(0.02, 0.98, top, transform=axes.flat[3].transAxes, ha="left", va="top", fontsize=9,
+                  bbox=dict(boxstyle="round", fc="w", ec="0.6"))
+fig.suptitle(f"1024 C–S grid, z ≈ 0 (snapshots 27–29), mock Suns at {rsun} kpc;  black ring = best overall\n"
+             "(gray italic = exact DustShatteringCalibration;  calibrations multiply timescales: larger = slower)", fontsize=12)
 fig.savefig(out, dpi=150)
 print("saved", out)
-for i in np.argsort(total):
-    k = keys[i]
-    print(f"#{rank[i]:<2} c={k[0]:<5} r={k[1]:<5} S2/ZG={10**(V[i,0]-zg):5.2f}  R_V={V[i,1]:.2f}  "
-          f"peak_ratio={10**V[i,2]:.2f}  miss={total[i]:.3f} [{miss[i,0]:.2f} {miss[i,1]:.2f} {miss[i,2]:.2f}]")
+for i in order:
+    print(f"#{rank[i]:<2} Coag={C[i]:<6g} Shat={R[i]:<7g} S2/ZG={10**(V[i,0]-zg):5.2f}  R_V={V[i,1]:.2f}  "
+          f"peak_ratio={10**V[i,2]:.2f}  miss={total[i]:.3f}")
 print(f"ZG S2 at {a.sep:g} kpc = {10**zg:.4f};  HD23 peak ratio = {hd_ratio:.3f}")
