@@ -113,33 +113,32 @@ panels = [
 ]
 
 ycal = sorted(set(C))
+X = C / R   # DustCoagulationCalibration / DustShatteringCalibration
+xcal = sorted(set(np.round(X, 1)))
 fig, axes = plt.subplots(2, 2, figsize=(14, 10.5), constrained_layout=True)
 for k, (ax, (v, norm, cmap, clab, title, fmt)) in enumerate(zip(axes.flat, panels)):
-    sc = ax.scatter(R, C, c=v, cmap=cmap, norm=norm, s=650, edgecolors="0.3", linewidths=0.8, zorder=2)
-    ax.scatter(R[best], C[best], s=1150, facecolors="none", edgecolors="k", linewidths=2.5, zorder=1)
-    for i, (x, y, val) in enumerate(zip(R, C, v)):
+    sc = ax.scatter(X, C, c=v, cmap=cmap, norm=norm, s=650, edgecolors="0.3", linewidths=0.8, zorder=2)
+    ax.scatter(X[best], C[best], s=1150, facecolors="none", edgecolors="k", linewidths=2.5, zorder=1)
+    for i, (x, y, val) in enumerate(zip(X, C, v)):
         ax.annotate(fmt(val), (x, y), xytext=(0, -22), textcoords="offset points",
                     ha="center", va="top", fontsize=8, color="0.15",
                     fontweight="bold" if i == best else "normal")
-        ax.annotate(f"{x:g}", (x, y), xytext=(0, 18), textcoords="offset points", ha="center",
-                    va="bottom", fontsize=7, color="0.45", style="italic")
         if k == 3:
             ax.annotate(f"{rank[i]}", (x, y), ha="center", va="center", fontsize=11,
                         fontweight="bold", color="w" if norm(val) > 0.6 else "0.1", zorder=3)
     ax.set(xscale="log", yscale="log", ylabel="DustCoagulationCalibration",
-           xlabel="DustShatteringCalibration", title=title)
+           xlabel="DustCoagulationCalibration / DustShatteringCalibration", title=title)
     ax.set_yticks(ycal, [f"{y:g}" for y in ycal])
-    xt = [0.75, 1, 1.5, 2, 3, 5, 8, 12, 17]
-    ax.set_xticks(xt, [f"{x:g}" for x in xt])
+    ax.set_xticks(xcal, [f"{x:.1f}" for x in xcal])
     ax.minorticks_off()
-    ax.set_ylim(min(ycal) / 1.45, max(ycal) * 1.45)
-    ax.set_xlim(min(R) / 1.25, max(R) * 1.25)
+    ax.set_ylim(min(ycal) / 1.45, max(ycal) * (2.3 if k == 3 else 1.3))
+    ax.set_xlim(min(X) / 1.2, max(X) * 1.2)
     fig.colorbar(sc, ax=ax, label=clab, shrink=0.9)
 top = "\n".join(f"#{rank[i]}  Coag {C[i]:g}, Shat {R[i]:g}  ({total[i]:.2f} dex)" for i in order[:3])
 axes.flat[3].text(0.02, 0.98, top, transform=axes.flat[3].transAxes, ha="left", va="top", fontsize=9,
                   bbox=dict(boxstyle="round", fc="w", ec="0.6"))
 fig.suptitle(f"1024 C–S grid, z ≈ 0 (snapshots 27–29), mock Suns at {rsun} kpc;  black ring = best overall\n"
-             "(gray italic = exact DustShatteringCalibration;  calibrations multiply timescales: larger = slower)", fontsize=12)
+             "(calibrations multiply timescales: larger = slower;  larger x = coagulation slower relative to shattering)", fontsize=12)
 fig.savefig(out, dpi=150)
 print("saved", out)
 for i in order:
