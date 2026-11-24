@@ -260,3 +260,11 @@ Runs: 512/1024/2048 at 10^7 K (512_lim_vsig, 1024 cs_c100_r100, 2048_br06 = olde
 - On finish: score (f<20 nm, GSD L1 vs HD23, S2 vs ZG, R_V, galaxy props) vs dT3e7 and c100_r050. User decides if it is THE Paper II run. If small grains short -> ShatCal ~0.74 rerun (~30 h) before tagging.
 - If accepted: v1.2.0 = 2429f28 + result-neutral changes only (dust self-check cap verified bit-identical on 512, param defaults = final recipe, UCX Colibri script, RC1 guard -> warning, user's docs edits). Push fix/energy-ledger, PR to main, tag v1.2.0, release notes; delete merged side branches (all verified contained, incl. cherry-picked hotfixes).
 - 2048 feedback issue in 1e10-1e11 halos -> v1.2.1 if code changes; does not block v1.2.0.
+
+### 2026-11-24 01:30 — dTr050 (10^7.5 K + c100_r050) finished and scored
+z=0 at 00:59, rc=0. Scores, snaps 27-29 (S2 dex at 2.57 / 3 / 3.5 kpc):
+| run | S2 dex | L1 HD23 | f<20 | a_med | R_V | M* | Mdust | D/Z | SFR |
+| c100_r050 (10^7) | 0.06/0.07/0.10 | 0.413 | 0.212 | 89 | 3.11 | 7.6e10 | 0.92e7 | .12 | 2.9 |
+| dT3e7 (10^7.5, r100) | 0.95/0.95/0.89 | 0.447 | 0.056 | 104 | 3.65 | 4.5e10 | 1.61e7 | .18 | 1.0 |
+| dTr050 (10^7.5, r050) | 0.27/0.30/0.35 | 0.485 | 0.063 | 94 | 3.32 | 4.1e10 | 1.20e7 | .17 | 2.1 |
+Reading: halving the shattering timescale fixed most of the S2 excess (9x -> 1.9x ZG) and R_V, but the small-grain peak is still missing (f<20 0.063 vs HD23 0.23); shattering lever on f<20 is weak at 10^7.5 K (0.056 -> 0.063), so r=0.25 alone is unlikely to restore it. Plot analysis/cs_grid/compare/final_dTr050.png. Awaiting user decision on the Paper II run. cygnus idle.
