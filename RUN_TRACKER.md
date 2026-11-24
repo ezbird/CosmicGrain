@@ -268,3 +268,11 @@ z=0 at 00:59, rc=0. Scores, snaps 27-29 (S2 dex at 2.57 / 3 / 3.5 kpc):
 | dT3e7 (10^7.5, r100) | 0.95/0.95/0.89 | 0.447 | 0.056 | 104 | 3.65 | 4.5e10 | 1.61e7 | .18 | 1.0 |
 | dTr050 (10^7.5, r050) | 0.27/0.30/0.35 | 0.485 | 0.063 | 94 | 3.32 | 4.1e10 | 1.20e7 | .17 | 2.1 |
 Reading: halving the shattering timescale fixed most of the S2 excess (9x -> 1.9x ZG) and R_V, but the small-grain peak is still missing (f<20 0.063 vs HD23 0.23); shattering lever on f<20 is weak at 10^7.5 K (0.056 -> 0.063), so r=0.25 alone is unlikely to restore it. Plot analysis/cs_grid/compare/final_dTr050.png. Awaiting user decision on the Paper II run. cygnus idle.
+
+### 2026-11-24 11:10 — Colibri: three 10^7.5 K runs to recover the small-grain peak
+User chose a 3-run bracket (2 nodes each, UCX, ~3 h each). Binary ~/jobexe/CosmicGrain.786 (2429f28 code), CG_FEEDBACK_DELTA_T=3.16e7, script scripts/colibri/runDTcs.slurm (~/runDTcs.slurm), jobs in ~/dT_cs_jobs.txt.
+| run | Coag | Shat | tau_coag | tau_shat | job |
+| dT3e7_cs_c025_r071 | 5.575 | 2.1 | 7.6 Myr | 114 Myr | 1423 (n8-9) |
+| dT3e7_cs_c050_r050 | 11.15 | 1.485 | 15 Myr | 80 Myr | 1424 (n10-11) |
+| dT3e7_cs_c100_r025 | 22.3 | 0.7425 | 30 Myr | 40 Myr | 1425 (pending, Resources) |
+Why: halving tau_shat at 10^7.5 moved f<20 only 0.056 -> 0.063, with the same number of shattering events (1.87M vs 2.00M at 10^7); 44-62% of shattering calls fail the size-dependent velocity gate (only large grains shatter), and in the 10^7 grid faster coagulation gave the most small grains (c025_r071 f<20 0.37). Watcher: tmux dTcs (scripts/dT_cs_watch.sh) fetches + scores at 2.57/3/3.5 kpc; log analysis/cs_grid/watch_dT.log. Note summary.png heatmaps place these on the same (c, r) points as the 10^7 grid; use summary.txt rows by name.
