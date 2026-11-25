@@ -4645,7 +4645,7 @@ double dust_clumping_factor(double n_H, int is_star_forming)
 // DUST COAGULATION: continuous-radius, local-DTG Trayford-inspired model
 // ============================================================================
 // Literature basis:
-//   Trayford et al. (2025), MNRAS, doi:10.1093/mnras/staf2040,
+//   Trayford et al. (2026), MNRAS, doi:10.1093/mnras/staf2040,
 //   Section 3.5.2, Equation (10), adapting Aoyama et al. (2017).
 //
 //   tau_co = 27.1 Myr * (a / 0.1 micron) * (DTG / 0.01)^(-1)
@@ -4713,7 +4713,7 @@ void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double 
     return;
   }
 
-  // Trayford et al. (2025), Eq. 10; DTG is the MPI-combined mass ratio
+  // Trayford et al. (2026), Eq. 10; DTG is the MPI-combined mass ratio
   // inside the resolved dust-gas association sphere.
   const double v_co_kms = 0.2;
   const double tau0_yr = 27.1e6;
