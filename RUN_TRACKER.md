@@ -312,3 +312,16 @@ User's choice (best GSD incl. the 13 nm bump, S2 1.15x ZG, R_V 3.11; caveat M* 7
 Code 11d2b48 = release 2429f28 minus the inactive CG_FEEDBACK_DELTA_T override. Log clean. Full output (30 snaps, 9.1 GB) being copied to cygnus (tmux fetchfull).
 - Repeats with the release binary (~/jobexe/CosmicGrain.786, no dT env, scripts/colibri/runRel.slurm): rep380 job 1586 (2 nodes), rep570 job 1587 (3 nodes, waiting for nodes). Watcher tmux rep (scripts/rep_watch.sh), log analysis/cs_grid/watch_rep.log.
 - Release prep: params/param_base.txt dust/SF defaults = this run; params/param_halo441_1024_paperII.txt = this run's params (relative IC path). run.cc: TimeMax/TimeBegin RC1 checks are now warnings (comoving + AGB mode 2 still required). dust.cc self-check cap. 512 identity test (CosmicGrain_rel vs halo441_output_512_dT3e7, to a=0.2) running in tmux reltest.
+
+## 2026-11-25 — Paper II run repeats and release test
+
+- **512 release identity test passed:** CosmicGrain_rel (run.cc warnings + dust self-check cap) to a=0.21 is bit-identical to the 2429f28 reference (sfr.txt 2309 rows, all Sync-Points). Committed 6c28fda.
+- **Repeats of cs_c100_r050 with the release binary (Colibri jobs 1586 rep380, 1587 rep570), snapshots 27-29:**
+
+| run | S2/ZG 2.57 kpc | 3.0 | 3.5 | R_V | <10 nm | 5-15 nm | small peak | M* | SFR | Mdust |
+|---|---|---|---|---|---|---|---|---|---|---|
+| original | 1.15x | 1.17x | 1.26x | 3.11 | 0.095 | 0.147 | 12-16 nm | 7.57e10 | 2.88 | 9.2e6 |
+| rep380 | 3.1x | 3.2x | 3.4x | 3.32 | 0.063 | 0.097 | 11-12 nm | 7.52e10 | 2.35 | 1.1e7 |
+| rep570 | 2.0x | 2.3x | 2.3x | 3.56 | 0.067 | 0.114 | 13-16 nm | 7.65e10 | 2.64 | 9.7e6 |
+
+- Galaxy and small-grain peak reproduce. S2 scatters ~0.2 dex; the original is the low (best) end. Ensemble mean S2 ~1.9x ZG, R_V ~3.33. Still the best grid point (neighbours c100_r071 3.2x, c050_r050 2.7x are single runs, so their scatter is unknown).
