@@ -665,7 +665,7 @@ def plot_mocksun_example(store, native_results, native_pairs, sep, sf_args, a, s
              label="Zhang & Green")
     axc.hist(cg_vals, bins=bins, density=True, histtype="step", color="#397da1", lw=2.2,
              label=rf"CG10, $\phi={ex['phi']:.0f}^\circ$")
-    axc.plot([], [], color="#397da1", alpha=0.3, lw=0.8, label="other CG10 observers")
+    axc.plot([], [], color="#397da1", alpha=0.3, lw=0.8, label="other CG10 cutouts")
     for vals, col in ((zg_vals, "#222222"), (cg_vals, "#397da1")):
         if vals.size:
             axc.axvline(np.median(vals), color=col, ls="--", lw=1.2)
@@ -687,7 +687,7 @@ def plot_mocksun_example(store, native_results, native_pairs, sep, sf_args, a, s
         ax.plot(sep[vis], zmed[vis], "o-", color="#222222", ms=3, lw=1.8, label="Zhang & Green")
         vis = np.isfinite(cmed)
         ax.fill_between(sep[vis], clo[vis], chi[vis], color="#397da1", alpha=0.2, lw=0,
-                        label="CG10 16–84% over observers")
+                        label="CG10 16–84% over cutouts")
         ax.plot(sep[vis], cmed[vis], "o-", color="#397da1", ms=3, lw=1.6, label="CG10 median")
         vb = np.isfinite(cc[best])
         ax.plot(sep[vb], cc[best][vb], "--", color="#1d4e6b", lw=1.6,
@@ -1298,10 +1298,10 @@ def main():
                         lo = curve_percentile(qualified, 16)
                         hi = curve_percentile(qualified, 84)
                         ax.loglog(sf_sep[visible], median[visible], "o-", color=color,
-                                  ms=3.5, lw=1.8, label=f"{name} median (valid mock Suns)")
+                                  ms=3.5, lw=1.8, label=f"{name} median over cutouts")
                         band = shown & np.isfinite(lo) & np.isfinite(hi)
                         ax.fill_between(sf_sep[band], lo[band], hi[band], color=color,
-                                        alpha=.18, label="CG10 16–84% across valid azimuths")
+                                        alpha=.18, label="CG10 16–84% over cutouts")
                 ax.set_ylabel(ylab)
                 ax.set_title(title)
                 ax.grid(alpha=.2, which="both")
