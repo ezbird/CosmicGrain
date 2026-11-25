@@ -30,6 +30,10 @@ from scipy.ndimage import convolve, gaussian_filter
 from scipy.special import ndtr
 
 
+
+# Radius of each mock Sun's circular cutout, matching the Zhang & Green map footprint (kpc).
+MOCK_SUN_CUTOUT_RADIUS_KPC = 2.5
+
 def get_perceptual_colormaps():
     """Prefer Cmasher, then Colorcet, with perceptual Matplotlib fallbacks."""
     try:
@@ -88,21 +92,21 @@ def args_parser():
                    default=Path("data/dust_observations/astrodust+PAH_MW_RV3.1.fits"),
                    help="Hensley & Draine (2023) MW R(V)=3.1 size-distribution FITS")
     p.add_argument("--dust-map-zoom", type=float, default=15.0,
-                   help="Half-width (pkpc) shown in the Figure 1 dust map")
-    p.add_argument("--map-zoom", type=float, default=10.0,
-                   help="Half-width (pkpc) shown in the Figure 2 A_V/R_V maps")
+                   help="Half-width (kpc, physical) shown in the Figure 1 dust map")
+    p.add_argument("--map-zoom", type=float, default=7.5,
+                   help="Half-width (kpc, physical) shown in the Figure 2 A_V/R_V maps")
     p.add_argument("--gsd-shells", type=float, nargs="+", default=[5.0, 10.0, 15.0, 20.0],
-                   help="Shell edges (pkpc) for figure 8b: consecutive pairs form the shells")
+                   help="Shell edges (kpc, physical) for figure 8b: consecutive pairs form the shells")
     p.add_argument("--gsd-radial-shells", type=float, nargs="+", default=[0.0, 5.0, 10.0, 20.0],
-                   help="Edges (pkpc) of consecutive shells for the radial-evolution GSD figure")
+                   help="Edges (kpc, physical) of consecutive shells for the radial-evolution GSD figure")
     p.add_argument("--gsd-outer-shells", type=float, nargs="+", default=[5.0, 10.0, 20.0, 30.0],
-                   help="Figure 8c: first value is the inner radius excluded (pkpc); "
+                   help="Figure 8c: first value is the inner radius excluded (kpc, physical); "
                         "panels show inner <= r < each later value")
     p.add_argument("--gsd-apertures", type=float, nargs="+", default=[20.0, 30.0, 40.0],
-                   help="Spherical apertures (pkpc) for the central-galaxy GSD panels")
+                   help="Spherical apertures (kpc, physical) for the central-galaxy GSD panels")
     p.add_argument("--outdir", type=Path, default=Path("paper_II_figures"))
     p.add_argument("--plot-radius", type=float, default=20.0,
-                   help="Face-on half-width in pkpc")
+                   help="Face-on half-width in physical kpc")
     p.add_argument("--observer-radius", type=float, default=None,
                    help="Galactocentric radius of the eight mock observers in kpc; "
                         "overrides --observer-radius-factor")
@@ -112,11 +116,11 @@ def args_parser():
     p.add_argument("--radial-bin-size", type=float, default=1.0,
                    help="Annular bin width for the radial A_V/R_V profiles in kpc")
     p.add_argument("--zmax", type=float, default=5.0,
-                   help="Line-of-sight half-depth in pkpc")
+                   help="Line-of-sight half-depth in physical kpc")
     p.add_argument("--pixel", type=float, default=0.5,
-                   help="Face-on pixel size in pkpc; default 500 pc")
+                   help="Face-on pixel size in physical kpc; default 500 pc")
     p.add_argument("--smooth", type=float, default=0.0,
-                   help="Gaussian map smoothing sigma in pkpc")
+                   help="Gaussian map smoothing sigma in physical kpc")
     p.add_argument("--map-min-ebv", type=float, default=0.01,
                    help="E(B-V) floor (mag) for the Figure 2 maps only")
     p.add_argument("--map-min-count", type=int, default=4,
@@ -577,11 +581,11 @@ def plot_gsd_comparison(radius_nm, mass_weight, xyz, hd23_fits, outdir,
         ax.plot(hd_radius, hd_density, color="tab:blue", lw=2.5,
                 label="Hensley & Draine (2023), astrodust")
         for target in (10.0, 100.0):
-            ax.axvline(target, color="0.3", ls="--", lw=1.1, alpha=.8,
+            ax.axvline(target, color="0.3", ls=(":" if target == 10.0 else "--"), lw=1.3, alpha=.8,
                        label=(("Initial SNII grains: 10 nm" if target == 10.0
                                else "Initial AGB grains: 100 nm") if k == 0 else None))
-        tag = (rf"${lo_cut:g} \leq r < {rcut:g}$ pkpc" if shells and lo_cut > 0
-               else rf"$r < {rcut:g}$ pkpc")
+        tag = (rf"${lo_cut:g} \leq r < {rcut:g}$ kpc" if shells and lo_cut > 0
+               else rf"$r < {rcut:g}$ kpc")
         ax.text(0.04, 0.96, tag, transform=ax.transAxes,
                 ha="left", va="top")
         ax.set_xscale("log")
@@ -817,7 +821,7 @@ def main():
     logmass = np.where(dustmass_msun > 0, np.log10(np.maximum(dustmass_msun, 1e-300)), np.nan)
     fig, ax = plt.subplots(figsize=(6.6, 5.8), constrained_layout=True)
     im = axis_map(ax, logmass, radius, cmaps["dust"], Normalize(-1, 5))
-    ax.set(xlabel="Face-on x (pkpc)", ylabel="Face-on y (pkpc)",
+    ax.set(xlabel="Face-on x (kpc)", ylabel="Face-on y (kpc)",
            xlim=(-a.dust_map_zoom, a.dust_map_zoom), ylim=(-a.dust_map_zoom, a.dust_map_zoom))
     pixel_edges = np.arange(-radius, radius + 0.5 * pixel, pixel)
     ax.set_xticks(pixel_edges, minor=True)
@@ -849,10 +853,11 @@ def main():
     ima = axis_map(axes[0], av_show, radius, cmaps["av"], Normalize(0, av_top))
     imr = axis_map(axes[1], rv_show, radius, cmaps["rv"], Normalize(2, 6))
     for ax, tag in zip(axes, (r"$A_V$", r"$R_V$")):
-        ax.set(xlabel="Face-on x (pkpc)",
+        ax.set(xlabel="Face-on x (kpc)",
                xlim=(-a.map_zoom, a.map_zoom), ylim=(-a.map_zoom, a.map_zoom))
-        ax.text(0.04, 0.96, tag, transform=ax.transAxes, ha="left", va="top", fontsize=14)
-    axes[0].set_ylabel("Face-on y (pkpc)")
+        ax.text(0.04, 0.96, tag, transform=ax.transAxes, ha="left", va="top", fontsize=14, zorder=6,
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=.85))
+    axes[0].set_ylabel("Face-on y (kpc)")
     axes[1].tick_params(axis="y", labelleft=False)
     # Mark the eight mock-Sun observer positions used in Figure 5. The ring
     # indicates their galactocentric radius; these marks are locations, not
@@ -863,6 +868,9 @@ def main():
     for ax in axes:
         ax.add_patch(Circle((0, 0), a.observer_radius, fill=False, linestyle="--",
                             linewidth=1.0, edgecolor="white", alpha=.8))
+        for ox, oy in zip(observer_x, observer_y):  # each mock Sun's Zhang & Green-sized cutout
+            ax.add_patch(Circle((ox, oy), MOCK_SUN_CUTOUT_RADIUS_KPC, fill=False, linestyle="-",
+                                linewidth=0.7, edgecolor="white", alpha=.6))
         ax.scatter(observer_x, observer_y, marker="+", s=45, linewidths=1.2,
                    color="white", zorder=5)
     # Horizontal colorbars on top; their labels serve as the panel titles.
@@ -885,7 +893,7 @@ def main():
         rv_cut = np.where(count_mask, rv_map, np.nan)
         im = axis_map(ax, rv_cut, radius, cmaps["rv"], Normalize(2, 10))
         ax.set(title=rf"$N_{{dust}}\geq{ncut}$ ({map_count_pixels[ncut]:,} pixels)",
-               xlabel="Face-on x (pkpc)", ylabel="Face-on y (pkpc)")
+               xlabel="Face-on x (kpc)", ylabel="Face-on y (kpc)")
         ax.add_patch(Circle((0, 0), a.observer_radius, fill=False, linestyle="--",
                             linewidth=1.0, edgecolor="white", alpha=.8))
         ax.scatter(observer_x, observer_y, marker="+", s=45, linewidths=1.2,
@@ -1057,7 +1065,7 @@ def main():
     sf_args = argparse.Namespace(
         zg_h5=zg_map, root=Path("."), output_dir=a.run, snapshot=a.snapshot,
         group=a.group, carbon_table=a.carbon_table, silicate_table=a.silicate_table,
-        nside="combined", half_size=2.5, radius=2.5, zmax=0.4, pixel=0.25,
+        nside="combined", half_size=MOCK_SUN_CUTOUT_RADIUS_KPC, radius=MOCK_SUN_CUTOUT_RADIUS_KPC, zmax=0.4, pixel=0.25,
         dz=0.2, sim_sigma=a.mock_sun_smoothing, match_smoothing=True,
         native_no_smoothing=False, zg_min_support=a.zg_min_support,
         zg_smoothing=a.zg_smoothing, cut_quantile=0.10, completeness_bins=18,
@@ -1367,9 +1375,9 @@ def main():
     axes[1].fill_between(radial_centers, rv_p16, rv_p84, color="#5e35b1",
                          alpha=.18, label="16–84% of selected pixels")
     axes[1].set_ylabel(r"$R_V$")
-    axes[1].set_xlabel("Galactocentric radius (pkpc)")
+    axes[1].set_xlabel("Galactocentric radius (kpc)")
     for ax in axes:
-        ax.set_xlim(0, a.plot_radius)
+        ax.set_xlim(0, min(10.0, a.plot_radius))  # bins beyond 10 kpc hold isolated pixels
         ax.grid(alpha=.2)
         ax.legend(frameon=False)
     save_figure(fig, a.outdir / "figure6_radial_av_rv")
