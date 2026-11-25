@@ -137,7 +137,7 @@ def args_parser():
     p.add_argument("--sf-min-pairs", type=int, default=100,
                    help="Minimum pixel pairs per orientation for displaying structure-function bins")
     p.add_argument("--sf-min-orientations", type=int, default=4,
-                   help="Minimum CG mock-Sun orientations supporting a separation bin")
+                   help="Minimum CG cutouts supporting a separation bin")
     p.add_argument("--zg-smoothing", type=float, default=0.5,
                    help="Gaussian smoothing sigma for the ZG 3-D cube (kpc); 0.5 passes support cut")
     p.add_argument("--mock-sun-smoothing", type=float, default=0.5,
@@ -1311,7 +1311,7 @@ def main():
         if "EXPERIMENT" in mask_label:
             fig.suptitle(mask_label)
         support_rule = (f"ZG: ≥{a.sf_min_pairs} pairs; CG: ≥{a.sf_min_pairs} pairs "
-                        f"in ≥{a.sf_min_orientations}/8 orientations")
+                        f"in ≥{a.sf_min_orientations}/8 cutouts")
         fig.text(.5, -.015,
                  f"Shown where {support_rule}; "
                  f"supported range: ZG {support_span(support_set['ZG'][4])}, "
@@ -1439,7 +1439,7 @@ def main():
         ax.set_xlabel(r"Separation $r$ (kpc)")
     fig.suptitle(rf"CG10 $R_V$ reliability comparison: $N_{{\rm eff,V}}\geq2$; "
                  rf"250 pc pixels; $\sigma_{{\rm CG}}={sf_args.sim_sigma:g}$ kpc; "
-                 rf"shown CG bins meet support in {a.sf_min_orientations}/8 orientations; "
+                 rf"shown CG bins meet support in {a.sf_min_orientations}/8 cutouts; "
                  rf"$E(B-V)\geq{a.min_ebv:g}$ mag; dashed line is ZG")
     save_figure(fig, a.outdir / "figure5c_cg_rv_reliability")
 
@@ -1548,7 +1548,7 @@ def main():
         ax.set_xlabel(r"Separation $r$ (kpc)")
     fig.suptitle(rf"$R_V$ structure functions with $E(B-V)\geq{a.min_ebv:g}$ mag"
                  f"\nIndependent native masks; floor applied separately; "
-                 f"pair cut {a.sf_min_pairs}; ratio uses paired orientations "
+                 f"pair cut {a.sf_min_pairs}; ratio uses paired cutouts "
                  f"supported in both datasets (≥{a.sf_min_orientations}/8)")
     save_figure(fig, a.outdir / "figure5e_rv_ebv003_comparison")
     np.savetxt(a.outdir / "figure5e_rv_ebv003_comparison.csv",
@@ -1595,7 +1595,7 @@ def main():
     fig.suptitle(r"CG10 $R_V$ sensitivity to effective dust-particle support "
                  rf"($E(B-V)\geq{a.min_ebv:g}$ mag; 250 pc pixels; "
                  rf"$\sigma_{{\rm CG}}={sf_args.sim_sigma:g}$ kpc)"
-                 f"\nShown bins meet pair support in {a.sf_min_orientations}/8 orientations")
+                 f"\nShown bins meet pair support in {a.sf_min_orientations}/8 cutouts")
     save_figure(fig, a.outdir / "figure5d_cg_rv_neff_sensitivity")
 
     av_sigma_zg = np.asarray(sigma["zg_av"], float)
@@ -1611,7 +1611,7 @@ def main():
     print(f"Native structure-function support: ZG {support_span(native_support['ZG'][4])}; "
           f"CG {support_span(native_support['CG10'][4])}; "
           f"pair cuts: ZG ≥{a.sf_min_pairs}; CG ≥{a.sf_min_pairs} in "
-          f"≥{a.sf_min_orientations}/8 orientations")
+          f"≥{a.sf_min_orientations}/8 cutouts")
 
     # Reproducible numeric products for later manuscript revisions.
     np.savez_compressed(a.outdir / "paper_II_figure_data.npz",
