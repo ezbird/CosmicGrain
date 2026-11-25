@@ -193,7 +193,9 @@ EXPLICIT_VECTORIZATION                       # use AVX at selected places in SPH
 
 #---------------------------------------- MPI related settings
 
-#NUMBER_OF_MPI_LISTENERS_PER_NODE=1           # set such that the number of MPI-ranks per node and listener is maller than MAX_NUMBER_OF_RANKS_WITH_SHARED_MEMORY
+#NUMBER_OF_MPI_LISTENERS_PER_NODE=3           # leave off (default 1) on workstations and nodes with <=64 ranks
+#   Multi-node runs with more than 64 ranks per node need ceil(ranks_per_node/64) listeners
+#   (3 on Colibri at 190 ranks/node), otherwise the run stops at start-up.
 #MAX_NUMBER_OF_RANKS_WITH_SHARED_MEMORY=64    # default is 64, but can also be set to 32
 #NUMPART_PER_TASK_LARGE                       # set this if the number of particles per task is so large that more than 2 GB are comprised just by particle data
 #USE_MPIALLTOALLV_IN_DOMAINDECOMP             # replaces hypercube communication in domain particle exchance with a single MPI_Allgatherv (can be less stable)

@@ -46,5 +46,5 @@ After startup, verify increasingly demanding milestones:
 5. restart continuity across an active feedback interval; and
 6. whole-box mass, element, and dust-composition closure at the final output.
 
-The accepted Halo 295/\(512^3\) benchmark is summarized in
+The current whole-box benchmark (Halo 441 / \(1024^3\), v1.2.0) is summarized in
 [Validation](../validation/index.md).

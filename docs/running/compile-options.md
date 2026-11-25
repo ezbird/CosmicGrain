@@ -8,7 +8,7 @@ The maintained zoom configuration, `configs/Config_zoom.sh`, also uses
 periodic cosmological boundaries, mixed double precision, adaptive hydro
 softening, the cubic-spline kernel, zoom-optimized TreePM
 (`PMGRID=512`, `PM_ZOOM_OPTIMIZED`, `TREEPM_NOTIMESPLIT`), and FOF/SUBFIND.
-Multi-node builds need `NUMBER_OF_MPI_LISTENERS_PER_NODE=3`; see
+Nodes running more than 64 ranks need `NUMBER_OF_MPI_LISTENERS_PER_NODE` > 1 (3 on Colibri); see
 [Compilation](../getting-started/compilation.md).
 
 Some behaviour is switched at run time by environment variables rather than

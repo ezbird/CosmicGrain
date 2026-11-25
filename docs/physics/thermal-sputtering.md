@@ -41,7 +41,7 @@ M_{i,\rm new}=M_{i,\rm old}\exp(-\Delta t/\tau_i),
 
 with carbon assigned the shorter timescale because of its lower adopted binding energy (4 eV versus 6 eV for silicate). The surviving component masses are recombined, `CarbonMassFraction` is updated, and the representative radius follows the surviving total mass through \(a_{\rm new}=a(M_{\rm new}/M_{\rm old})^{1/3}\). Thus repeated sputtering can make a surviving particle progressively more silicate rich.
 
-**Sublimation.** Before sputtering, a grain is destroyed instantaneously if its own dust temperature exceeds its material sublimation point, \(T_{\rm sublimate} = 1500 + 500 \times {\rm CarbonMassFraction}\) K — silicates sublimate near 1500 K, pure carbon grains near 2000 K. In practice this never fires: `update_dust_temperature()` caps `DustTemperature` at the same sublimation temperature, and the check is a strict "greater than".
+**Sublimation.** Before sputtering, a grain is destroyed instantaneously if its own dust temperature exceeds its material sublimation point, \(T_{\rm sublimate} = 1500 + 500 \times {\rm CarbonMassFraction}\) K — silicates sublimate near 1500 K, pure carbon grains near 2000 K. Sublimation is implemented but has not fired in current runs. `update_dust_temperature()` caps `DustTemperature` at the same sublimation temperature and the check is a strict "greater than", so a grain can reach the threshold but not exceed it; hot-gas grain destruction happens through sputtering instead. This is a known limitation to revisit.
 
 ### Assumptions
 

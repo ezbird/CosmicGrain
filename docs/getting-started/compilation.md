@@ -43,8 +43,8 @@ and `EXPLICIT_VECTORIZATION`.
 
 **Multi-node builds.** On more than one node GADGET-4 splits each node into
 shared-memory islands of at most 64 ranks and reserves one listener rank per
-island. With many ranks per node, set `NUMBER_OF_MPI_LISTENERS_PER_NODE=3`
-(or more) in the config, otherwise startup stops with *"We have shared memory
+island. With more than 64 ranks per node, set `NUMBER_OF_MPI_LISTENERS_PER_NODE`
+to ceil(ranks per node / 64) in the config (3 on Colibri at 190 ranks/node), otherwise startup stops with *"We have shared memory
 islands with N MPI ranks, which is larger than
 MAX_NUMBER_OF_RANKS_WITH_SHARED_MEMORY=64"*. Single-node builds leave it
 unset. See [HPC Systems](hpc.md#colibri).
