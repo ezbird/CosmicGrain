@@ -325,3 +325,5 @@ Code 11d2b48 = release 2429f28 minus the inactive CG_FEEDBACK_DELTA_T override. 
 | rep570 | 2.0x | 2.3x | 2.3x | 3.56 | 0.067 | 0.114 | 13-16 nm | 7.65e10 | 2.64 | 9.7e6 |
 
 - Galaxy and small-grain peak reproduce. S2 scatters ~0.2 dex; the original is the low (best) end. Ensemble mean S2 ~1.9x ZG, R_V ~3.33. Still the best grid point (neighbours c100_r071 3.2x, c050_r050 2.7x are single runs, so their scatter is unknown).
+- **Paper II output: three copies.** Colibri, ~/gadget4/halo441_output_1024_cs_c100_r050, and /media/cygnus/SPACETIME/cosmicgrain_paperII/ (USB backup, rsync rc=0, file lists identical, 11 GB).
+- Docs reviewed against the code for v1.2.0 (408fde4); stale comments and the 1024 generator block fixed (71cbb5d).
