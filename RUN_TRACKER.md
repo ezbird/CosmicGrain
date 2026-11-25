@@ -292,3 +292,16 @@ Caveat: all three Colibri dT runs have a very different galaxy from the cygnus d
 - 1490 dT3e7_cs_c100_r025_1n (1 node, 190 ranks, scripts/colibri/runDTcs1n.slurm): repeat of the best candidate, different rank count.
 - 1491 dT3e7_cs_c100_r035_1n (1 node, ShatCal 1.05, tau_shat 57 Myr): midpoint between r050 and r025.
 Watcher tmux dTcs restarted (same jobs file). Also rescoring candidates with mock Suns at 5.5 kpc (analysis/cs_grid_R5.5).
+
+### 2026-11-24 21:10 — control / repeat / midpoint scored
+| run (10^7.5 K unless noted) | ranks | S2 x ZG (2.57/3.5) | R_V | f<20 | a_med | M* | Mgas | Mdust | D/Z | dust rh | SFR |
+| 10^7 c100_r050 | 190 | 1.15/1.26 | 3.11 | 0.212 | 89 | 7.6e10 | 7.9e9 | 0.9e7 | .12 | 2.4 | 2.9 |
+| c100_r050 cygnus | 24 | 1.9/2.2 | 3.32 | 0.063 | 94 | 4.1e10 | 4.7e9 | 1.2e7 | .17 | 2.5 | 2.1 |
+| c100_r050 Colibri (control) | 380 | 4.3/3.9 | 3.26 | 0.080 | 78 | 3.8e10 | 8.9e9 | 2.6e7 | .22 | 7.0 | 1.5 |
+| c100_r035_1n | 190 | 2.6/2.8 | 3.07 | 0.113 | 75 | 4.1e10 | 8.4e9 | 1.9e7 | .20 | 5.7 | 0.9 |
+| c100_r025 | 380 | 6.8/6.9 | 3.43 | 0.176 | 66 | 4.1e10 | 9.5e9 | 2.0e7 | .21 | 7.2 | 0.6 |
+| c100_r025_1n | 190 | 1.2/1.26 | 3.08 | 0.101 | 75 | 3.9e10 | 7.8e9 | 1.9e7 | .21 | 5.0 | 1.1 |
+- Control reproduces the big gas-rich disk on Colibri: the cygnus 24-rank run is the odd one (chance or rank count).
+- Identical physics (r025, 380 vs 190 ranks) gives S2 6.8x vs 1.2x ZG and f<20 0.18 vs 0.10: run-to-run scatter at 10^7.5 is large (~0.75 dex in S2), much bigger than the 0.1 dex seen at 10^7.
+- Faster shattering raises small grains on Colibri (r050 0.080 -> r035 0.113 -> r025 0.10/0.18) without a clear S2 penalty.
+- Best single run: dT3e7_cs_c100_r025_1n (S2 1.2x ZG, R_V 3.08, f<20 0.10, M* 3.9e10, D/Z 0.21). Code = 2429f28 (release code). Plot analysis/cs_grid/compare/dT_r025_final.png.
