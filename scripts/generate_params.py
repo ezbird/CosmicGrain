@@ -252,18 +252,20 @@ RES_OVERRIDES = {
         "SofteningMaxPhysClass0":     "0.375",
         "SofteningComovingClass1":    "1.5",    # HR DM
         "SofteningMaxPhysClass1":     "0.75",
-        "SofteningComovingClass2":    "2.0",    # Intermediate DM
-        "SofteningMaxPhysClass2":     "1.0",
-        "SofteningComovingClass3":    "4.0",    # Coarse DM
-        "SofteningMaxPhysClass3":     "2.0",
+        # PartType2 classes chosen by mass (INDIVIDUAL_GRAVITY_SOFTENING=4): the four coarse
+        # levels shared with 2048 get the same softenings as there (6, 16); the new finest level 3.
+        "SofteningComovingClass2":    "3.0",
+        "SofteningMaxPhysClass2":     "1.5",
+        "SofteningComovingClass3":    "6.0",
+        "SofteningMaxPhysClass3":     "3.0",
         "SofteningComovingClass4":    "0.75",   # Stars
         "SofteningMaxPhysClass4":     "0.375",
-        "SofteningComovingClass5":    "8.0",    # Outermost DM
-        "SofteningMaxPhysClass5":     "4.0",
+        "SofteningComovingClass5":    "16.0",
+        "SofteningMaxPhysClass5":     "8.0",
         "SofteningComovingClass6":    "0.75",   # Dust (match stars)
         "SofteningMaxPhysClass6":     "0.375",
         "MinimumComovingHydroSoftening": "0.5",
-        "MaxSizeTimestep":            "0.025",
+        "MaxSizeTimestep":            "0.00425",
     },
 }
 
