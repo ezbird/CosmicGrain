@@ -33,7 +33,7 @@ ICFormat                  3
 SnapFormat                3
 TimeLimitCPU              84000
 CpuTimeBetRestartFile     14400  % 2h, in seconds
-MaxMemSize                3800  % MB;
+MaxMemSize                3600  % MB;
 ComovingIntegrationOn     1
 
 %---- Cosmological parameters --------------------------------------------------
