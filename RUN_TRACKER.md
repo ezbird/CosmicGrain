@@ -327,3 +327,8 @@ Code 11d2b48 = release 2429f28 minus the inactive CG_FEEDBACK_DELTA_T override. 
 - Galaxy and small-grain peak reproduce. S2 scatters ~0.2 dex; the original is the low (best) end. Ensemble mean S2 ~1.9x ZG, R_V ~3.33. Still the best grid point (neighbours c100_r071 3.2x, c050_r050 2.7x are single runs, so their scatter is unknown).
 - **Paper II output: three copies.** Colibri, ~/gadget4/halo441_output_1024_cs_c100_r050, and /media/cygnus/SPACETIME/cosmicgrain_paperII/ (USB backup, rsync rc=0, file lists identical, 11 GB).
 - Docs reviewed against the code for v1.2.0 (408fde4); stale comments and the 1024 generator block fixed (71cbb5d).
+
+## 2026-11-25 — Colibri cleanup and first 4096 test
+- Copied halo441_output_2048_br06_vsig to cygnus (21 GB, verified). Deleted on Colibri (user OK): all 1024 C-S grid/repeat runs except cs_c100_r050, 1024_br06_velfix, 2048_br06, 2048_br06_lim, 2048_br06_vsig, 2048 bench dirs. Colibri home ~400 GB -> 60 GB. Kept: 1024_cs_c100_r050 (Paper II, 3rd copy), 2048_dT3e7 (+restart files, for v1.2.1).
+- Colibri ~/CosmicGrain-br06 fast-forwarded to 46b4b00 (release code); old local edits stashed; 18 untracked param files that differed moved to ~/untracked_pre_v120. Config_zoom.sh listeners=3 (local). Binary ~/jobexe/CosmicGrain.v120.
+- **Job 1823 cg4096test** (4 nodes n7-n10, 760 ranks, 24 h): params/param_halo441_4096_test.txt (Paper II recipe, 10^7 K, MaxSizeTimestep 0.00425, coarse-DM softenings matched to 2048, MaxMemSize 3600, TimeMax 0.2, restart files every 4 h). Started 11:34; ICs read, domain decomposition OK.
