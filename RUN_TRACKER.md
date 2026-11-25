@@ -276,3 +276,13 @@ User chose a 3-run bracket (2 nodes each, UCX, ~3 h each). Binary ~/jobexe/Cosmi
 | dT3e7_cs_c050_r050 | 11.15 | 1.485 | 15 Myr | 80 Myr | 1424 (n10-11) |
 | dT3e7_cs_c100_r025 | 22.3 | 0.7425 | 30 Myr | 40 Myr | 1425 (pending, Resources) |
 Why: halving tau_shat at 10^7.5 moved f<20 only 0.056 -> 0.063, with the same number of shattering events (1.87M vs 2.00M at 10^7); 44-62% of shattering calls fail the size-dependent velocity gate (only large grains shatter), and in the 10^7 grid faster coagulation gave the most small grains (c025_r071 f<20 0.37). Watcher: tmux dTcs (scripts/dT_cs_watch.sh) fetches + scores at 2.57/3/3.5 kpc; log analysis/cs_grid/watch_dT.log. Note summary.png heatmaps place these on the same (c, r) points as the 10^7 grid; use summary.txt rows by name.
+
+### 2026-11-24 17:15 — 10^7.5 K bracket scored (Colibri 1423-1425, 2 nodes, 380 ranks)
+| run | S2 x ZG | R_V | f<20 | a_med | L1 HD | M* | Mgas | Mdust | gas rh | dust rh | SFR |
+| 10^7 c100_r050 (Colibri 190) | 1.15 | 3.11 | 0.212 | 89 | 0.41 | 7.6e10 | 7.9e9 | 0.9e7 | 7.9 | 2.4 | 2.9 |
+| dT c100_r050 (cygnus 24) | 1.9 | 3.32 | 0.063 | 94 | 0.49 | 4.1e10 | 4.7e9 | 1.2e7 | 6.8 | 2.5 | 2.1 |
+| dT c100_r025 | 6.8 | 3.43 | 0.176 | 66 | 0.49 | 4.1e10 | 9.5e9 | 2.0e7 | 13.0 | 7.2 | 0.6 |
+| dT c050_r050 | 45 | 4.48 | 0.063 | 124 | 0.30 | 4.0e10 | 9.7e9 | 2.0e7 | 11.4 | 8.2 | 1.2 |
+| dT c025_r071 | 95 | 7.75 | 0.024 | 184 | 0.20 | 4.2e10 | 7.8e9 | 1.6e7 | 10.9 | 7.3 | 0.8 |
+Faster coagulation backfires at 10^7.5 (grains grow, R_V and S2 blow up). Faster shattering (r025) restores most of the small grains (0.176) and R_V 3.43, but S2 is 6.8x ZG.
+Caveat: all three Colibri dT runs have a very different galaxy from the cygnus dT run (gas 2x, gas/dust half-mass radius 11-13 / 7-8 vs 6.8 / 2.5 kpc, SFR 0.6-1.2 vs 2.1) at the same M*. Either run-to-run/rank-count stochasticity at 10^7.5 or a platform difference; it is consistent across all three, so the cygnus run may be the outlier. Mock Suns sit at a fixed 2.57 kpc, inside a 7 kpc dust disk on Colibri. Proposed control: dT c100_r050 on Colibri (same as cygnus run). Plot analysis/cs_grid/compare/dT_bracket.png.
