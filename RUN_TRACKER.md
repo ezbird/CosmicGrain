@@ -306,3 +306,9 @@ Watcher tmux dTcs restarted (same jobs file). Also rescoring candidates with moc
 - Faster shattering raises small grains on Colibri (r050 0.080 -> r035 0.113 -> r025 0.10/0.18) without a clear S2 penalty.
 - Best single run: dT3e7_cs_c100_r025_1n (S2 1.2x ZG, R_V 3.08, f<20 0.10, M* 3.9e10, D/Z 0.21). Code = 2429f28 (release code). Plot analysis/cs_grid/compare/dT_r025_final.png.
 - CORRECTION 21:30 (user caught it): no 10^7.5 run has a separate small-grain bump. Mass fraction <10 nm / 5-15 nm, 5-20 kpc, snaps 27-29: 10^7 c100_r050 0.095/0.147 (peak at 13 nm); 10^7.5 runs 0.022-0.058 / 0.034-0.101, no peak below 30 nm. Faster shattering raises f<20 by broadening the large-grain peak toward 15-30 nm (shoulder), not by building the 10 nm bump. "Restores about half the bump" was wrong.
+
+### 2026-11-24 22:15 — Paper II run chosen: halo441_output_1024_cs_c100_r050 (10^7 K, 22.3 / 1.485 / 1.12)
+User's choice (best GSD incl. the 13 nm bump, S2 1.15x ZG, R_V 3.11; caveat M* 7.6e10 ~2x abundance matching, SFR 2.9).
+Code 11d2b48 = release 2429f28 minus the inactive CG_FEEDBACK_DELTA_T override. Log clean. Full output (30 snaps, 9.1 GB) being copied to cygnus (tmux fetchfull).
+- Repeats with the release binary (~/jobexe/CosmicGrain.786, no dT env, scripts/colibri/runRel.slurm): rep380 job 1586 (2 nodes), rep570 job 1587 (3 nodes, waiting for nodes). Watcher tmux rep (scripts/rep_watch.sh), log analysis/cs_grid/watch_rep.log.
+- Release prep: params/param_base.txt dust/SF defaults = this run; params/param_halo441_1024_paperII.txt = this run's params (relative IC path). run.cc: TimeMax/TimeBegin RC1 checks are now warnings (comoving + AGB mode 2 still required). dust.cc self-check cap. 512 identity test (CosmicGrain_rel vs halo441_output_512_dT3e7, to a=0.2) running in tmux reltest.

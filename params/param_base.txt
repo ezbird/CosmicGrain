@@ -135,7 +135,7 @@ FactorEVP             1000
 TempSupernova         1e8
 TempClouds            1000
 CritOverDensity       57.7
-CritPhysDensity       0.1   % cm^-3; see comments — scale with resolution
+CritPhysDensity                0.3  % cm^-3; see comments — scale with resolution
 MinEgySpec            0     % default: 0; 0.1 would be gas floor corresponding to ~10 K: T = (2/3) / (1.38e-16) × (0.1 × 1e10) × (1.67e-24) × μ(1.22)
                             % Recommended to leave at 0 to use the Jeans pressure floor in CosmicGrain (cooling.cc)
 
@@ -146,7 +146,7 @@ AGBFeedbackIntervalMyr   5    % Myr; minimum stellar-age increment between AGB e
 %---- Dust model parameters --------------------------------------------------
 % Safe to edit these, they apply to all runs equally.
 % ----------------------------------------------------------------------------
-DustUpdateCadence              5        % run dust microphysics every N global sync points; exact physical time is accumulated and flushed before snapshots\
+DustUpdateCadence              7        % run dust microphysics every N global sync points; exact physical time is accumulated and flushed before snapshots
                                         % setting to 1 would run all dust processes every sync point and be very slow
 DustThermalSputteringTemp      5.0e5    % K; gas temperature above which thermal sputtering erodes grains
 DustVelocitySNII               30.0     % km/s; radial kick velocity imparted to spawned SNII dust particles
@@ -173,24 +173,24 @@ DustRadiationPressureEfficiency 1.0     % dimensionless; global scaling factor f
 
 % Edit these ONLY in generate_params.py, they change with different resolutions and/or param files.
 % ---------------------------------------
-DustParticlesPerSNII           8        % integer; superparticles spawned per SNII event
-DustParticlesPerAGB            12       % integer; superparticles spawned per AGB event
-DustParticlesPerLRN            4        % integer; superparticles spawned per LRN event
-DustCoagulationCalibration     10.4       % x1/h for the dust time-unit fix (was 7.0); timescale multiplier; larger = slower coagulation
-DustShatteringCalibration      1.78       % x1/h for the dust time-unit fix (was 1.2); timescale multiplier; larger = slower shattering
+DustParticlesPerSNII           25  % integer; superparticles spawned per SNII event
+DustParticlesPerAGB            25  % integer; superparticles spawned per AGB event
+DustParticlesPerLRN            1    % integer; superparticles spawned per LRN event
+DustCoagulationCalibration     22.3     % timescale multiplier (1 = Trayford+25 Eq.10; larger = slower): tau_coag = 30 Myr for a=0.1 um, D/G=0.01, dense-phase n_H=100 cm^-3
+DustShatteringCalibration      1.485     % timescale multiplier (1 = Trayford+25 Eq.9; larger = slower): tau_shat = 80 Myr for a=0.1 um, D/G=0.01, n_H=1 cm^-3
 DustShatteringFragmentSlope    3.3      % power-law slope q for dN/da ∝ a^-q
 DustShatteringMaxFragmentFraction 0.80  % maximum fragment radius as a fraction of parent radius
-DustGrowthCalibration          0.446      % x1/h for the dust time-unit fix (was 0.3); timescale multiplier; larger = slower grain growth
+DustGrowthCalibration          1.12      % timescale multiplier; larger = slower grain growth
 DustAstrationCalibration       1.0      % astration removes m_star x local D/G (dust and gas in the same sphere); 1 = physical
-DustShockAmbientDensity        1.0      % cm^-3; higher = smaller shock radius = less grain destruction
-DustCollisionDensityThresh     30.0     % cm^-3; coagulation fires above this density, shattering below
+DustShockAmbientDensity        0.5  % cm^-3; higher = smaller shock radius = less grain destruction
+DustCollisionDensityThresh     15.0  % cm^-3; coagulation fires above this density, shattering below
 DustEnableCreation             1         % 0=off, 1=on
 DustEnableCooling              1         % 0=off, 1=on
 DustEnableDrag                 1         % 0=off, 1=on
 DustEnableAstration            1         % 0=off, 1=on
 DustEnableSputtering           1         % 0=off, 1=on
 DustEnableGrowth               1         % 0=off, 1=on
-DustEnableClumping             1         % 0=off, 1=on
+DustEnableClumping             2   % 0=off, 1=legacy clumping factor, 2=Blitz & Rosolowsky (2006) dense phase at n_H=100 cm^-3 (v1.2.0 default)
 DustEnableShockDestruction     1         % 0=off, 1=on
 DustEnableCoagulation          1         % 0=off, 1=on
 DustEnableShattering           1         % 0=off, 1=on
