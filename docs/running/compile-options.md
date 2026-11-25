@@ -1,13 +1,19 @@
 # Compile-Time Options
 
-Runtime parameters cannot activate code that was not compiled. A standard
-dust-enabled zoom requires `NTYPES=7`, `DUST`, `IDS_64BIT`, hydrodynamics,
-cooling, star formation, feedback, and metal tracking.
+Runtime parameters cannot activate code that was not compiled. A dust-enabled
+zoom requires `NTYPES=7`, `DUST`, `IDS_64BIT`, `COOLING`, `STARFORMATION`,
+`FEEDBACK`, and `METALS`.
 
-The current production configuration also uses periodic cosmological
-boundaries, double precision, adaptive hydro softening, the Wendland C4
-kernel, and zoom-optimized TreePM options.
+The maintained zoom configuration, `configs/Config_zoom.sh`, also uses
+periodic cosmological boundaries, mixed double precision, adaptive hydro
+softening, the cubic-spline kernel, zoom-optimized TreePM
+(`PMGRID=512`, `PM_ZOOM_OPTIMIZED`, `TREEPM_NOTIMESPLIT`), and FOF/SUBFIND.
+Multi-node builds need `NUMBER_OF_MPI_LISTENERS_PER_NODE=3`; see
+[Compilation](../getting-started/compilation.md).
 
-Archive `Config.sh`, `Makefile.systype`, the compiler identity, and the
+Some behaviour is switched at run time by environment variables rather than
+compile flags; see [Parameter Files](parameter-files.md#environment-overrides).
+
+Archive the config file, `Makefile.systype`, the compiler identity, and the
 executable checksum with every run. See the full [compile-flag
 reference](../reference/compile-flags.md).

@@ -32,11 +32,12 @@ creates PartType6 particles.
 
 ## Evolved dust particles
 
-Every live dust superparticle carries dynamical fields plus `Masses`,
-`GrainRadius`, `CarbonMassFraction`, `DustTemperature`, `DustSource`,
-formation-time information, and birth position. `DustSource` uses 0=SNII,
-1=AGB, and 2=LRN. Carbon and silicate masses must sum to total dust mass
-within floating-point tolerance.
+Every live dust superparticle carries `Coordinates`, `Velocities`,
+`ParticleIDs` and `Masses` plus `GrainRadius` (nm), `CarbonMassFraction`,
+`DustTemperature` (K), `DustSource` (0=SNII, 1=AGB, 2=LRN),
+`DustFormationTime` (scale factor at creation) and `BirthPos` (parent star
+position, comoving kpc/h). Silicate mass is `Masses × (1 − CarbonMassFraction)`.
+See [Dust Particle Fields](../analysis/dust-particle-fields.md).
 
 Particle IDs are globally unique across all types and must use 64-bit storage
 for dust-enabled production runs.

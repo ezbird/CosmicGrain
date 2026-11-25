@@ -10,8 +10,9 @@ infrastructure.
 - Keep host-code hooks in feedback, star formation, integration, or I/O small.
 - Do not move generic GADGET-4 behavior into the dust module merely to reduce
   the number of touched files.
-- Treat the modular `src/dust/{creation,dynamics,processing,...}` tree in the
-  architecture page as a **planned refactor**, not the present source layout.
+- Any search over particles within a radius must give the same answer for any
+  number of MPI ranks; use the collective pattern in
+  `src/cooling_sfr/cg_distributed.h` (see [Code Architecture](architecture.md)).
 
 ## State and units
 

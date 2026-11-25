@@ -17,4 +17,4 @@ This makes it possible to ask how strongly the present-day dust population remem
 
 ## Integrity check
 
-For the implemented two-component composition bookkeeping, carbonaceous plus silicate dust mass should close to total surviving dust mass to numerical precision. A failure of that closure is a code/data-integrity problem rather than an astrophysical result.
+Composition is stored as one `CarbonMassFraction` per particle; silicate mass is `Masses × (1 − CarbonMassFraction)`, so carbon plus silicate closes to total dust mass by construction. A fraction that is non-finite or outside [0,1] is a code/data-integrity problem rather than an astrophysical result.

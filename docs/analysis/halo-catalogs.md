@@ -6,8 +6,9 @@ each snapshot.
 
 `halo_utils.py` provides the shared FOF association, periodic centering,
 shrinking-sphere refinement, and `M200c`/`R200c` calculation. The 12-halo
-suite additionally uses `zoom_halo_utils.py` and the target metadata produced
-during candidate selection.
+suite also relies on the target metadata produced during candidate selection;
+keep that metadata with the catalog products so target matching is
+reproducible.
 
 ## Required catalog quantities
 

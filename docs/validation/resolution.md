@@ -7,13 +7,12 @@ dust-physics parameter.
 
 ## Current implementation
 
-The SPH density solver applies `MinGasHsml` only when its value is greater than
-zero. A value of zero therefore disables the explicit floor; the normal
-neighbor solution and other hydrodynamic/gravitational limits still apply.
-
-The current source also contains an optional diagnostic for particles that hit
-the floor, which is useful when establishing whether the parameter is actually
-active in a run.
+The SPH density solver (`src/sph/density.cc`) applies `MinGasHsml` only when
+its value is greater than zero. A value of zero disables the explicit floor;
+the normal neighbor solution and other hydrodynamic/gravitational limits still
+apply. The v1.2.0 default (`params/param_base.txt`) is `MinGasHsml 0`. The code
+does not report floor hits, so measure them from the snapshot smoothing
+lengths (below).
 
 ## CosmicGrain resolution tests
 

@@ -42,6 +42,16 @@ well behaved when the cadence is changed. Changes to cadence-sensitive physics
 must be tested with more than one `DustUpdateCadence` value and across a restart
 boundary.
 
+## SPH timestep limiter
+
+Gas timesteps are limited separately from the dust cadence. The SPH limiter
+(`src/time_integration/timestep_limiter.h`, on by default) keeps a gas
+particle's hydro step within a factor 4 of its neighbours' (bin difference
+`CG_LIMITER_DELTA`, default 2; inactive neighbours are woken), shortens a neighbour to its Courant step for
+the pair signal velocity, and wakes inactive gas that is heated or kicked by
+feedback. `CG_TIMESTEP_LIMITER=0` disables it and `CG_LIMITER_VSIG=0` disables
+the signal-velocity rule; these are environment variables, not parameters.
+
 ## Restart interaction
 
 The accumulated synchronization-point count and physical interval are persisted

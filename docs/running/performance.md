@@ -19,10 +19,32 @@ causing a collective gravity hang.
 
 ## Dust-physics cadence
 
-The expensive dust update is cadence controlled rather than called on every
-gravity step. Processes using the scaled interval employ exact exponential
-updates where applicable, such as \(1-\exp(-\Delta t/\tau)\), rather than
-unstable linear approximations.
+The expensive dust update runs every `DustUpdateCadence` global sync points
+(7 in v1.2.0) rather than on every step. The physical time is accumulated and
+applied in one update, with exact exponential forms such as
+\(1-\exp(-\Delta t/\tau)\) where applicable, and pending time is flushed
+before snapshots and at z = 0.
+
+## Distributed feedback and dust
+
+Feedback and dust neighbour searches (SNII, AGB, shock erosion, astration,
+dust–gas association, radiation pressure) are exchanged across ranks in
+batches, so results do not depend on the domain decomposition or rank count.
+Local D/G queries are routed through a distributed cell directory: by
+bounding box below 64 ranks, by cell occupancy from 64 ranks up (override
+with `CG_DTG_ROUTING`). The `feedback`/`fbhash` and `dust`/`dustdtg` timers in
+`cpu.txt` show their cost; at \(2048^3\) dust can dominate the run time.
+
+These exchanges are all-rank collectives, so multi-node runs are sensitive to
+the MPI transport: on Colibri, UCX over InfiniBand is about 8× faster than
+TCP for 2-node \(2048^3\) runs (see [HPC Systems](../getting-started/hpc.md#colibri)).
+
+## Typical cost
+
+| Run | Resources | Wall time to z = 0 |
+|---|---|---|
+| \(512^3\) halo 441 | 24 ranks, one workstation | ~1.5–2 h |
+| \(1024^3\) halo 441 | 2 Colibri nodes (380 ranks), UCX | ~3 h |
 
 ## FOF and SUBFIND
 

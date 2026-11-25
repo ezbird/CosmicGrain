@@ -30,5 +30,5 @@ Use periodic coordinate differences. `GrainRadius` is already written in nm.
 Use `dust_snapshot_summary.py` for a compact particle/dust inventory,
 `cosmicgrain_global_conservation_audit.py` for whole-box closure, and
 `check_mass_conservation.py` when comparing the initial and final state.
-Any non-finite mass, negative mass, invalid carbon fraction, or mismatch
-between dust carbon+silicate mass and total dust mass is a blocking error.
+Any non-finite mass, negative mass, or `CarbonMassFraction` outside [0,1] is
+a blocking error.

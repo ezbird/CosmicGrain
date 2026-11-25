@@ -67,7 +67,20 @@ what should be considered a trustworthy production run:
 - dust state and cadence bookkeeping across restarts was repaired and is now
   explicitly serialized/tested; and
 - snapshot continuation includes dust-ID and particle-state safeguards before
-  the initial domain decomposition.
+  the initial domain decomposition, and stellar ages are now correct after a
+  snapshot restart.
+
+v1.2.0 adds further fixes that change results:
+
+- the Hubble parameter \(h\) is included in dust time, mass, and energy unit
+  conversions, and dust velocities are converted between physical and
+  comoving units;
+- feedback and dust neighbour searches are independent of the domain
+  decomposition, so neighbour sets no longer depend on the number of MPI
+  ranks; and
+- an SPH timestep limiter with wake-up, an SN reheating guard, an AGB
+  fast-donor guard, and dust/star velocity-runaway guards remove the
+  high-resolution blow-ups seen at 2048³.
 
 Because enrichment changes can strongly alter the dust budget even when gas and
 stellar masses change modestly, results produced before these fixes should not

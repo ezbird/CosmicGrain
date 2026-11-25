@@ -12,7 +12,7 @@ Astration removes dust from the resolved interstellar medium when gas is convert
 
 <div class="cg-card model" markdown="1">
 
-Astration assumes that dust is well mixed with star-forming gas on unresolved scales. When gas is converted into stars, dust is removed from the local dust population in proportion to the **local dust-to-gas ratio**, sampled from dust particles found within a search radius around the star-forming gas cell.
+Astration assumes that dust is well mixed with star-forming gas on unresolved scales. When gas is converted into stars, dust is removed in proportion to the **local dust-to-gas ratio** measured in a sphere around the star-forming gas particle.
 
 The mass removed is
 
@@ -21,29 +21,28 @@ The mass removed is
 \[
 \Delta M_{\rm dust}
 =
+\min\!\left[
 M_{\star,\rm formed}
-\times
-\left(\frac{M_{\rm dust}}{M_{\rm gas}}\right)_{\rm local}
-\times C_{\rm astr}
+\left(\frac{M_{\rm dust}}{M_{\rm gas}+M_{\star,\rm formed}}\right)_{\rm sphere}
+C_{\rm astr},\;
+M_{\rm dust,sphere}\right]
 \]
 
 </div>
 
 where
 
-- \(M_{\star,\rm formed}\) is the stellar mass formed in the star formation event,
-- \((M_{\rm dust}/M_{\rm gas})_{\rm local}\) is the dust-to-gas ratio measured from dust particles within the local search volume, not a global or galaxy-averaged value,
-- \(C_{\rm astr}\) is `DustAstrationCalibration`, and
-- \(\Delta M_{\rm dust}\) is the total dust mass permanently removed from the resolved ISM.
+- \(M_{\star,\rm formed}\) is the stellar mass formed,
+- \(M_{\rm dust}\) and \(M_{\rm gas}\) are the dust and gas masses inside the same sphere, summed over all MPI ranks; the gas just converted into the star counts as gas,
+- \(C_{\rm astr}\) is `DustAstrationCalibration` (1 is physical; the v1.2.0 default).
 
-This is mathematically equivalent to removing a fraction \(f_{\rm sf} \approx M_{\star,\rm formed}/M_{\rm gas}\) of the locally sampled dust mass, but the local D/G is recomputed at each star formation event from the dust actually found nearby, rather than assumed from a single associated reservoir.
+Before v1.2.0 the ratio divided all dust in the sphere by the single star-forming gas particle's mass, which overestimated D/G by roughly the neighbour number; the old default calibration of 0.15 compensated for that.
 
 ### Assumptions
 
-- Dust is well mixed with star-forming gas on unresolved (subgrid) scales.
-- The locally sampled D/G ratio is representative of the dust available for astration in that star formation event.
+- Dust is well mixed with star-forming gas on unresolved scales.
 - Dust locked into stars no longer participates in ISM dust evolution.
-- Astration is a sink process rather than a grain destruction mechanism.
+- Astration is a sink, not a grain-destruction mechanism: no metals return to the gas.
 
 </div>
 
@@ -51,33 +50,21 @@ This is mathematically equivalent to removing a fraction \(f_{\rm sf} \approx M_
 
 <div class="cg-card implementation" markdown="1">
 
-Whenever a star formation event occurs, CosmicGrain identifies nearby dust particles via a spatial hash search, computes the local dust-to-gas ratio from them, and removes dust mass proportionally.
+Star formation only queues an astration event (`consume_dust_by_astration()`).
+After the star-formation loop, `apply_queued_dust_astration()` gathers the
+events from all tasks, finds dust and gas in each sphere on every task, sums
+the masses over tasks, and applies the events in star-ID order, so the result
+does not depend on the domain decomposition.
 
-Unlike sputtering or shock destruction, astration does **not** return metals to the gas phase. Instead, consumed dust mass is transferred directly to the newly formed star particle's mass and metallicity, and permanently removed from the resolved ISM.
-
-### Neighbor search and distributed consumption
-
-The search radius is set from the gas cell's physical size (derived from its density and mass), capped at the SPH smoothing length. All dust particles found within this radius are treated as locally available for consumption:
-
-- The **local D/G ratio** is computed from the total dust mass found in the search volume divided by the gas particle mass.
-- The total dust mass to consume is `stellar_mass_formed × local D/G × DustAstrationCalibration`, capped at the total dust mass found.
-- Consumption is **distributed across all dust particles in the search volume, weighted by inverse distance** to the star-forming gas cell — closer particles lose proportionally more mass.
-- Dust particles whose masses fall below the minimum surviving dust threshold are deleted outright; the remainder simply lose mass.
-
-If no dust particles are found within the search radius, the function exits with **no astration applied** for that event — this is a silent no-op rather than an error, and is expected in dust-sparse regions.
-
-### Algorithm
-
-1. **A star formation event occurs**, converting a gas particle's mass into a new star particle.
-2. **The search radius is set** from the gas cell's physical radius, capped at its SPH smoothing length.
-3. **Nearby dust particles are located** via a spatial hash neighbor search.
-4. **The local dust-to-gas ratio is computed** from the dust mass found in the search volume.
-5. **Dust mass to consume is calculated** as stellar mass formed × local D/G × `DustAstrationCalibration`, capped at the dust mass found.
-6. **Consumption is distributed** across nearby dust particles, weighted by inverse distance.
-7. **Dust particles below the destruction threshold are deleted**; survivors have their mass reduced.
-8. **Consumed mass and metallicity are transferred to the new star particle.**
-9. **Dust diagnostics and bookkeeping are updated.**
-10. **The simulation continues.**
+- **Sphere radius:** the larger of the gas particle's SPH smoothing length and
+  the radius of a sphere holding its mass at its density.
+- **Distribution:** the consumed mass is split over all grains in the sphere,
+  weighted by inverse distance to the gas particle.
+- **Deletion:** a grain left below `DUST_MASS_TO_DESTROY` (\(10^{-30}\) code
+  units, hardcoded) is removed entirely.
+- **Transfer:** the consumed dust mass is added to the new star's mass and
+  metals.
+- If no grain is in the sphere, nothing is removed.
 
 </div>
 
@@ -86,8 +73,7 @@ If no dust particles are found within the search radius, the function exits with
 | Parameter | Description |
 |-----------|-------------|
 | `DustEnableAstration` | Enables or disables astration. |
-| `DustAstrationCalibration` | Multiplicative calibration applied to the local-D/G astration mass. |
-| `DUST_MASS_TO_DESTROY` | Minimum surviving dust particle mass before deletion. Shared threshold used across all dust destruction channels, not astration-specific. |
+| `DustAstrationCalibration` | Multiplier on the astrated mass; default 1 (physical). |
 
 ## Where in the Code?
 
@@ -95,18 +81,13 @@ If no dust particles are found within the search radius, the function exits with
 
 ### `src/dust/dust.cc`
 
-- **Astration routine**
-  - `consume_dust_by_astration()`
-    - Performs the spatial hash neighbor search, computes the local D/G ratio, distributes proportional mass removal across nearby dust particles, deletes particles below the survival threshold, and transfers consumed mass and metallicity to the new star particle.
-  - Astration bookkeeping
-    - `NDustDestroyedByAstration`
-    - `TotalDustMassAstrated`
+- `consume_dust_by_astration()` queues an event per star-forming gas particle.
+- `apply_queued_dust_astration()` measures the local D/G across tasks, removes the dust, and credits the new stars.
+- Bookkeeping: `NDustDestroyedByAstration`, `TotalDustMassAstrated`.
 
-### `src/cooling_sfr/feedback.cc`
+### `src/cooling_sfr/starformation.cc`
 
-- **Star formation interface**
-  - Invokes `consume_dust_by_astration()` when gas is converted into stars.
-  - Determines the stellar mass formed during each star formation event.
+- Calls `consume_dust_by_astration()` for each conversion and `apply_queued_dust_astration()` once per star-formation step.
 
 </div>
 

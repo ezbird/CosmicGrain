@@ -20,15 +20,18 @@ empty `PartType6`; stellar feedback creates dust during evolution.
 
 <div class="cg-card implementation" markdown="1">
 
-Start from a maintained production parameter file rather than reconstructing
-one from this page. For an inexpensive validation run:
+Generate the file with `scripts/generate_params.py` from
+`params/param_base.txt` rather than writing one by hand (see [Parameter
+Files](../running/parameter-files.md)). For an inexpensive validation run:
 
-1. use a \(512^3\)-equivalent IC;
+1. use a \(512^3\)-equivalent IC (e.g. `params/param_halo441_512.txt`);
 2. shorten the output list while retaining early, first-star, first-dust, and
    late checkpoints;
-3. keep the selected physics configuration unchanged;
-4. enable restart writing; and
-5. archive the parameter file with the output.
+3. keep the physics switches and calibrations unchanged;
+4. keep `CpuTimeBetRestartFile` so restart files are written; and
+5. archive the parameter file (and `parameters-usedvalues`) with the output.
+
+A \(512^3\) halo 441 run to z = 0 takes about 1.5–2 h on 24 ranks.
 
 </div>
 

@@ -41,7 +41,7 @@ Use the existing dust-particle and GADGET-4 coupling infrastructure as a foundat
 - **Analysis** — particle fields, grain populations, composition, extinction, maps, and synthetic observations
 - **Validation** — numerical integrity, resolution sensitivity, and convergence limitations
 - **Developer Guide** — current architecture and guidance for modifying or adding dust physics
-- **Reference** — compile flags, runtime parameters, particle types, and units
+- **Reference** — compile flags, runtime parameters, particle types, units, constants, equations, and citation
 
 ## Current science program
 

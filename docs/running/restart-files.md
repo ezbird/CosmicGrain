@@ -4,63 +4,68 @@ Restart continuity is a required CosmicGrain regression test because live
 `PartType6` particles carry additional state and the dust update can span more
 than one synchronization point.
 
-## Standard GADGET-4 restart modes
+## Binary restarts
 
-For an ordinary binary restart, resume with:
+Resume from `OutputDir/restartfiles/` with start mode 1:
 
 ```bash
-mpirun -np <N> ./Gadget4 param.txt 1
+mpirun -np <N> ./CosmicGrain param.txt 1
 ```
 
-Use the same executable and MPI task count as the run that wrote the restart
-set. GADGET-4 binary restart files encode internal structures and should not be
-assumed portable across MPI layouts, compilers, or machines. When the MPI task
-count or platform must change, use a supported snapshot continuation and
-validate the resumed run. This follows the underlying GADGET-4 restart model.
+Use the same MPI task count, and in practice the same executable, as the run
+that wrote the restart set. CosmicGrain prefixes the restart payload with a
+check of `AGBFeedbackMode` and of the sizes of the global, particle, and SPH
+data structures; a binary whose layout differs stops with *"Incompatible AGB
+restart memory layout"*. To change the task count, binary, or machine, use a
+snapshot restart.
 
-A clean manual stop can be requested by placing a file named `stop` in the
-simulation output directory. The code finishes the current step, writes restart
-files, and exits.
+Restart files are written every `CpuTimeBetRestartFile` seconds and when the
+run stops. Files in `OutputDir` control a running job:
+
+- `stop` — write restart files and exit;
+- `restart` — write restart files and continue;
+- at 85 % of `TimeLimitCPU` the code writes restart files, exits, and leaves a
+  `cont` file.
 
 ## CosmicGrain restart state
 
-Current CosmicGrain restart files append versioned dust state after the normal
-GADGET-4 restart payload. The dust-cadence block preserves:
+After the normal GADGET-4 payload, restart files carry two appended,
+versioned CosmicGrain blocks:
 
-- accumulated dust synchronization points;
-- accumulated physical time since the last dust update;
-- dust-created and dust-destroyed counters for the current interval;
-- accumulated dust mass change; and
-- the pending dust-synchronization flag.
+- **Dust cadence:** accumulated sync points and physical time since the last
+  dust update, created/destroyed counters, accumulated dust mass change, and
+  the pending-update flag. `DustUpdateCadence` itself always comes from the
+  parameter file.
+- **D/G cache:** each grain's cached local dust-to-gas ratio and its age.
 
-An additional DTG-cache block stores each dust particle's cached local dust-to-
-gas ratio and refresh age. The particle records themselves retain their legacy
-layout; the cache is appended separately. Older restarts without either
-CosmicGrain extension remain readable: the cadence window starts fresh, and
-local DTG estimates are rebuilt on the first dust update. A restart containing
-the cadence block but not the cache also remains readable, with the cache
-rebuilt.
+A restart without the cadence block starts a new cadence window; one without
+the cache rebuilds it on the first dust update.
 
-`DustUpdateCadence` itself is intentionally **not** taken from that block. The
-active value comes from the parameter file when the executable starts.
+Per-run text logs behave differently on a restart: `dust_logs/` files are
+appended, `sfr.txt`'s cumulative stellar-mass column restarts from 0, and
+`agb_coupling_diagnostics.csv` is rewritten.
 
-This mechanism fixes an important historical failure mode in which a restarted
-run could lose the pending dust-update state and subsequently evolve dust
-incorrectly.
+## Snapshot restarts
 
-## Snapshot continuation
+```bash
+mpirun -np <N> ./CosmicGrain param.txt 2 <snapnum>
+```
 
-When starting from a snapshot (`RestartFlag=2` in the GADGET-4 interface),
-CosmicGrain performs additional dust safeguards. The current source:
+Start mode 2 needs 0 < `TimeBegin` < `TimeMax` and, unlike a fresh start,
+does not warn about `TimeBegin`. CosmicGrain then:
 
 1. recomputes the global maximum particle ID;
 2. reassigns live dust IDs to a unique range above the maximum non-dust ID;
-3. applies a very small integer-position jitter to dust particles to avoid tree
-   failures from coincident positions; and
-4. checks dust state integrity before and after the initial domain decomposition.
+3. applies a tiny integer-position jitter to dust particles to avoid tree
+   failures from coincident positions;
+4. builds the cosmic-time table from min(`TimeBegin`, 0.01) so stars born
+   before the snapshot keep their true ages, and clamps each star's AGB
+   ledger age to its recomputed age (stopping if any shift exceeds 1 Myr); and
+5. checks dust state integrity before and after the first domain
+   decomposition.
 
-Snapshot continuation is therefore supported, but it is not numerically
-identical to resuming from a complete binary restart set.
+A snapshot restart is supported but is not numerically identical to a binary
+restart.
 
 ## Regression checklist
 
