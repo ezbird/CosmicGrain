@@ -183,8 +183,8 @@ DustRadiationPressureEfficiency 1.0     % dimensionless; global scaling factor f
 DustParticlesPerSNII           25  % integer; superparticles spawned per SNII event
 DustParticlesPerAGB            25  % integer; superparticles spawned per AGB event
 DustParticlesPerLRN            1    % integer; superparticles spawned per LRN event
-DustCoagulationCalibration   22.3     % timescale multiplier (1 = Trayford+25 Eq.10; larger = slower): tau_coag = 30 Myr for a=0.1 um, D/G=0.01, dense-phase n_H=100 cm^-3
-DustShatteringCalibration   4.188     % timescale multiplier (1 = Trayford+25 Eq.9; larger = slower): tau_shat = 227 Myr for a=0.1 um, D/G=0.01, n_H=1 cm^-3
+DustCoagulationCalibration   22.3     % timescale multiplier (1 = Trayford+26 Eq.10; larger = slower): tau_coag = 30 Myr for a=0.1 um, D/G=0.01, dense-phase n_H=100 cm^-3
+DustShatteringCalibration   4.188     % timescale multiplier (1 = Trayford+26 Eq.9; larger = slower): tau_shat = 227 Myr for a=0.1 um, D/G=0.01, n_H=1 cm^-3
 DustShatteringFragmentSlope 3.3 % power-law slope q for dN/da ∝ a^-q
 DustShatteringMaxFragmentFraction 0.80 % maximum fragment radius as a fraction of parent radius
 DustGrowthCalibration   1.12

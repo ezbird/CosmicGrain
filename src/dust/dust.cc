@@ -1463,8 +1463,8 @@ if(shat_passed > 0)
     // Grain-grain collision velocities in turbulence depend on grain size:
     // small grains have short stopping times, stay coupled to the gas, and
     // collide slowly.  We use the turbulence-driven velocity scaling of
-    // Hirashita & Aoyama (2019), based on Yan et al. (2004) and Ormel &
-    // Cuzzi (2007):
+    // Hirashita & Aoyama (2019, MNRAS 482, 2555, Eq. 18), derived following
+    // Ormel et al. (2009, A&A 502, 845) and matched to Yan et al. (2004):
     //
     //   v_gr = 1.1 km/s  M^{3/2} (a / 0.1 um)^{1/2} (T / 1e4 K)^{1/4}
     //          (n_H / 1 cm^-3)^{-1/4} (rho_gr / 3.5 g cm^-3)^{1/2}
@@ -1490,7 +1490,9 @@ if(shat_passed > 0)
     // CarbonMassFraction linearly interpolates between those limits.
     //
     // The critical size scales as M^-3, so shattering_mach is the most
-    // sensitive choice here.  Keep hard-coded for the first controlled run.
+    // sensitive choice here.  Hirashita & Aoyama treat M as an adjusting
+    // parameter and adopt M = 3 for shattering (M = 1 for coagulation); we
+    // keep M = 1, and the shattering rate is calibrated with this gate.
     //
 
     const double shattering_mach = 1.0;

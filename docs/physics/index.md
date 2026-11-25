@@ -47,7 +47,7 @@ connection between element availability and dust creation.
 - **Dust creation:** Todini & Ferrara (2001); Nozawa et al. (2003); Ferrarotti & Gail (2006)
 - **Grain growth:** Hirashita & Kuo (2011); Asano et al. (2013)
 - **Coagulation and shattering timescales:** Trayford et al. (2026), Eqs. 9–10; adapted to continuous representative radii in CosmicGrain
-- **Turbulent shattering velocities:** Hirashita & Aoyama (2019), based on Yan et al. (2004) and Ormel & Cuzzi (2007)
+- **Turbulent shattering velocities:** Hirashita & Aoyama (2019), following Ormel et al. (2009) and Yan et al. (2004)
 - **Thermal sputtering:** Draine & Salpeter (1979); Tsai & Mathews (1995); McKinnon et al. (2017)
 - **Shock destruction:** Jones et al. (1994, 1996); Bocchio et al. (2014)
 - **Drag coupling:** McKinnon et al. (2018)

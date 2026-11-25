@@ -19,9 +19,9 @@ effective-density threshold switches between them.
 
 <div class="cg-card model" markdown="1">
 
-The model estimates a turbulent grain velocity using the scaling attributed
-in the source to Hirashita & Aoyama (2019), based on Yan et al. (2004) and
-Ormel & Cuzzi (2007):
+The model estimates a turbulent grain velocity with Eq. (18) of Hirashita &
+Aoyama (2019), derived following Ormel et al. (2009) and matched to the
+grain velocities of Yan et al. (2004):
 
 <div class="cg-equation" markdown="1">
 
@@ -38,8 +38,11 @@ v_{\rm gr} = 1.1\,{\rm km\,s^{-1}}\,
 
 Here \(a\) is the representative radius, \(T\) is the associated gas
 temperature, and \(n_{\rm H}\) is the unclumped hydrogen density, floored at
-\(10^{-4}\,{\rm cm}^{-3}\). The turbulent Mach number is fixed at
-\(\mathcal{M}=1\). Material density is interpolated by carbon mass fraction,
+\(10^{-4}\,{\rm cm}^{-3}\). The Mach number is fixed at
+\(\mathcal{M}=1\). Hirashita & Aoyama treat \(\mathcal{M}\) as an adjusting
+parameter and use \(\mathcal{M}=3\) for shattering; the critical shattering
+size scales as \(\mathcal{M}^{-3}\), so this choice is degenerate with
+`DustShatteringCalibration`. Material density is interpolated by carbon mass fraction,
 from \(3.5\,{\rm g\,cm}^{-3}\) for silicate to \(2.24\,{\rm g\,cm}^{-3}\)
 for graphite.
 
@@ -264,6 +267,24 @@ Relevant shock-shattering and fragment-size-distribution reference; CosmicGrain 
 <div class="reference-links">
 
 <a href="https://ui.adsabs.harvard.edu/abs/1996ApJ...469..740J" target="_blank" rel="noopener">📚 ADS</a>
+
+</div>
+
+---
+
+### Hirashita & Aoyama (2019)
+
+**Hirashita, H., & Aoyama, S. (2019). *Remodelling the Evolution of Grain Size Distribution in Galaxies.* Monthly Notices of the Royal Astronomical Society, 482, 2555–2572.**
+
+<p class="reference-note">
+Source of the size-dependent turbulent grain velocity (their Eq. 18) used in the shattering velocity gate.
+</p>
+
+<div class="reference-links">
+
+<a href="https://ui.adsabs.harvard.edu/abs/2019MNRAS.482.2555H" target="_blank" rel="noopener">📚 ADS</a>
+<a href="https://arxiv.org/abs/1810.07962" target="_blank" rel="noopener">📄 arXiv</a>
+<a href="https://doi.org/10.1093/mnras/sty2838" target="_blank" rel="noopener">🔗 DOI</a>
 
 </div>
 
