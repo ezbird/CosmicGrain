@@ -44,6 +44,20 @@ The dense phase has hydrogen density
 \(n_{\rm dense}=\max(n_{\rm H},100\,{\rm cm^{-3}})\) in mode 2 and
 \(n_{\rm dense}=\max[n_{\rm H},(P/k)/100\,{\rm K}]\) in mode 3.
 
+!!! note "Why mode 2 is the default"
+
+    Mode 3 is uncalibrated and has not been used in a production run. Two
+    reasons favour the fixed cloud density of mode 2. First, for star-forming
+    gas \(P\) is the Springel & Hernquist effective pressure, which rises with
+    the resolved density; mode 3 therefore makes \(n_{\rm dense}\), and with it
+    coagulation and growth, faster at higher resolution, the dependence the
+    dense-phase model was built to remove. Second, that effective pressure
+    stands for unresolved turbulence and SN heating, not the thermal pressure
+    confining cold clouds. In typical star-forming gas mode 3 gives
+    \(n_{\rm dense}\approx400\)–\(2000\ {\rm cm^{-3}}\), 4–20× mode 2, so it
+    would need its own calibration. It is kept as a robustness test of the
+    single-cloud-density assumption.
+
 - **Coagulation** acts on the dense fraction: its rate is multiplied by
   \(f_{\rm dense}\) and uses \(n_{\rm dense}\).
 - **Grain growth** uses \(f_{\rm dense}\) as its molecular fraction and
