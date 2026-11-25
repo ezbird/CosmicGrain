@@ -6,9 +6,9 @@
  *   - ΔT-target stochastic heating (EAGLE-like)
  *   - Fallback energy reservoir for temporarily unprocessed feedback
  *   - SPH kernel support with 2h neighbor search via spatial binning
- *   - Metal enrichment from Type II SNe (3-40 Myr)
+ *   - Metal enrichment from Type II SNe (9-40 Myr)
  *   - Metal enrichment from AGB stars (>100 Myr)
- *   - Time-distributed SNII/HN feedback across the 3-40 Myr window
+ *   - Time-distributed SNII/HN feedback across the 9-40 Myr window
  *   - SNII dust sampling distributed across temporal tranches without
  *     multiplying DustParticlesPerSNII by SNII_TIME_BINS
  *   - LRN dust retained as one full-SSP injection on the first SNII tranche
@@ -123,7 +123,7 @@ static constexpr std::uint64_t RNG_STREAM_FRACTIONAL_PACKET =
 // SNII/HN temporal-distribution experiment.
 //
 // Instead of depositing the entire IMF-integrated CCSN/HN budget the first
-// time an SSP enters the 3-40 Myr window, divide that budget into equal
+// time an SSP enters the 9-40 Myr window, divide that budget into equal
 // time tranches.  One overdue tranche is allowed to fire per feedback call.
 //
 // Bits 0 and 1 of FeedbackFlag retain their existing meanings:
@@ -2438,7 +2438,7 @@ void apply_stellar_feedback(
         // 2a) Type II SN + hypernova SSP feedback, distributed in time.
         //
         // The old implementation deposited the entire IMF-integrated
-        // 3-40 Myr CCSN/HN budget in one event as soon as the SSP entered
+        // 9-40 Myr CCSN/HN budget in one event as soon as the SSP entered
         // the SNII window.  At coarse mass resolution this makes many
         // physically distinct explosions artificially coherent.
         //

@@ -183,7 +183,7 @@ DustShatteringMaxFragmentFraction 0.80  % maximum fragment radius as a fraction 
 DustGrowthCalibration          1.12      % timescale multiplier; larger = slower grain growth
 DustAstrationCalibration       1.0      % astration removes m_star x local D/G (dust and gas in the same sphere); 1 = physical
 DustShockAmbientDensity        0.5  % cm^-3; higher = smaller shock radius = less grain destruction
-DustCollisionDensityThresh     15.0  % cm^-3; coagulation fires above this density, shattering below
+DustCollisionDensityThresh     15.0  % cm^-3; legacy DustEnableClumping 0/1 only (coagulation above, shattering below); unused in mode 2
 DustEnableCreation             1         % 0=off, 1=on
 DustEnableCooling              1         % 0=off, 1=on
 DustEnableDrag                 1         % 0=off, 1=on

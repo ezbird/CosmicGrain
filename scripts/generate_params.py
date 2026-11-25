@@ -199,13 +199,14 @@ RES_OVERRIDES = {
         "DustShockAmbientDensity":    "0.5",    # cm^-3; R_ST ~ 60 pc
 
         # Calibration
-        "DustGrowthCalibration":      "0.446",
-        "DustShatteringCalibration":  "2.97",
-        "DustCoagulationCalibration": "8.91",
+        # v1.2.0 Paper II calibration (halo441 1024, DustEnableClumping 2)
+        "DustGrowthCalibration":      "1.12",
+        "DustShatteringCalibration":  "1.485",
+        "DustCoagulationCalibration": "22.3",
 
         # Dust sampling
-        "DustParticlesPerSNII":       "20",
-        "DustParticlesPerAGB":        "20",
+        "DustParticlesPerSNII":       "25",
+        "DustParticlesPerAGB":        "25",
         "DustParticlesPerLRN":        "1",
 
         # Softenings halved

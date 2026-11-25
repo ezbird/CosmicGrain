@@ -36,7 +36,7 @@
 // One file per MPI task, placed in a dedicated subdirectory:
 //   <OutputDir>/dust_logs/dust_log_task<N>.txt
 //
-// The subdirectory is created on RST_BEGIN. On RST_RESUME files are opened
+// The subdirectory is created on every start mode. On restarts files are opened
 // in append mode so the complete history across restarts is preserved.
 //
 // After the run, merge all tasks with:
