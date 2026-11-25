@@ -3175,6 +3175,7 @@ void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double
 
 static constexpr double DUST_GAS_SEARCH_RADIUS = 10.0;  // code length units
 static constexpr double DUST_GAS_ROUTE_CELL    = 10.0;  // occupancy cell side
+static constexpr long long DUST_SELFCHECK_MAX_GRAINS = 200000;  // all-task association self-check only below this
 
 struct dust_gas_link
 {
@@ -3379,7 +3380,22 @@ static void associate_dust_with_gas(simparticles *Sp, const cg_dist::LocalTree &
 
   // Self-check on the first calls: asking every task must give the same
   // nearest gas as asking only the tasks the directory names.
+  // Asking every task costs (live grains) x (tasks) queries, which after a late
+  // restart of a 2048^3 run is ~1.5e9 queries per call (~30 s each, and an
+  // over-TCP restart crashed inside one).  Skip it once the global grain count
+  // exceeds DUST_SELFCHECK_MAX_GRAINS; the check runs at every fresh start.
   static int verify_remaining = 3;
+  if(verify_remaining > 0) {
+    long long n_live = 0, n_live_global = 0;
+    for(int i = 0; i < Sp->NumPart; i++)
+      if(live_grain(i)) n_live++;
+    MPI_Allreduce(&n_live, &n_live_global, 1, MPI_LONG_LONG, MPI_SUM, Communicator);
+    if(n_live_global > DUST_SELFCHECK_MAX_GRAINS) {
+      if(this_task == 0)
+        printf("[DUST_ASSOC_VERIFY] skipped: %lld grains > %lld\n", n_live_global, (long long)DUST_SELFCHECK_MAX_GRAINS);
+      verify_remaining = 0;
+    }
+  }
   if(verify_remaining > 0) {
     verify_remaining--;
     std::vector<dust_gas_link> all_links = local_links;

@@ -84,13 +84,17 @@ void sim::run(void)
      std::getenv("CG_AGB_SYNC_TEST_TIMESTEPS") || std::getenv("CG_RC1_NEIGHBOR_MODE") ||
      std::getenv("CG_RC1_PERF_CALL_LIMIT"))
     Terminate("Diagnostic test switches are forbidden in the production build");
-// Preserve the production RC1 requirements while allowing a legitimate
-// snapshot restart to begin at the snapshot's cosmological scale factor.
-if(!All.ComovingIntegrationOn || All.AGBFeedbackMode != 2 || All.TimeMax != 1.0)
-  Terminate("Production RC1 requires cosmological integration, AGB mode 2, and TimeMax=1");
+// The feedback and dust model is validated for cosmological runs with AGB mode 2.
+if(!All.ComovingIntegrationOn || All.AGBFeedbackMode != 2)
+  Terminate("CosmicGrain requires cosmological integration and AGB mode 2");
 
-if(All.RestartFlag != RST_STARTFROMSNAP && All.TimeBegin != 0.01)
-  Terminate("Production RC1 requires TimeBegin=0.01 except for snapshot restarts");
+// The calibrated runs start at z=99 (TimeBegin 0.01) and end at z=0.  Other
+// start or end times are allowed (partial runs, tests) but are not the
+// calibrated setup, so say so instead of stopping.
+if(ThisTask == 0 && All.TimeMax != 1.0)
+  printf("WARNING: TimeMax=%g; the calibrated CosmicGrain runs end at TimeMax=1 (z=0)\n", All.TimeMax);
+if(ThisTask == 0 && All.RestartFlag != RST_STARTFROMSNAP && All.TimeBegin != 0.01)
+  printf("WARNING: TimeBegin=%g; the calibrated CosmicGrain runs start at TimeBegin=0.01 (z=99)\n", All.TimeBegin);
 
 if(All.RestartFlag == RST_STARTFROMSNAP &&
    (!(All.TimeBegin > 0.0) || !(All.TimeBegin < All.TimeMax)))
