@@ -286,3 +286,9 @@ Why: halving tau_shat at 10^7.5 moved f<20 only 0.056 -> 0.063, with the same nu
 | dT c025_r071 | 95 | 7.75 | 0.024 | 184 | 0.20 | 4.2e10 | 7.8e9 | 1.6e7 | 10.9 | 7.3 | 0.8 |
 Faster coagulation backfires at 10^7.5 (grains grow, R_V and S2 blow up). Faster shattering (r025) restores most of the small grains (0.176) and R_V 3.43, but S2 is 6.8x ZG.
 Caveat: all three Colibri dT runs have a very different galaxy from the cygnus dT run (gas 2x, gas/dust half-mass radius 11-13 / 7-8 vs 6.8 / 2.5 kpc, SFR 0.6-1.2 vs 2.1) at the same M*. Either run-to-run/rank-count stochasticity at 10^7.5 or a platform difference; it is consistent across all three, so the cygnus run may be the outlier. Mock Suns sit at a fixed 2.57 kpc, inside a 7 kpc dust disk on Colibri. Proposed control: dT c100_r050 on Colibri (same as cygnus run). Plot analysis/cs_grid/compare/dT_bracket.png.
+
+### 2026-11-24 ~18:00 — Colibri: control + repeat + midpoint (user approved)
+- 1489 dT3e7_cs_c100_r050 (2 nodes, 380 ranks): control = cygnus dTr050 physics on Colibri. Big disk or compact galaxy?
+- 1490 dT3e7_cs_c100_r025_1n (1 node, 190 ranks, scripts/colibri/runDTcs1n.slurm): repeat of the best candidate, different rank count.
+- 1491 dT3e7_cs_c100_r035_1n (1 node, ShatCal 1.05, tau_shat 57 Myr): midpoint between r050 and r025.
+Watcher tmux dTcs restarted (same jobs file). Also rescoring candidates with mock Suns at 5.5 kpc (analysis/cs_grid_R5.5).
