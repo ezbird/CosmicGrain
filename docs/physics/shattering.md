@@ -40,9 +40,11 @@ Here \(a\) is the representative radius, \(T\) is the associated gas
 temperature, and \(n_{\rm H}\) is the unclumped hydrogen density, floored at
 \(10^{-4}\,{\rm cm}^{-3}\). The Mach number is fixed at
 \(\mathcal{M}=1\). Hirashita & Aoyama treat \(\mathcal{M}\) as an adjusting
-parameter and use \(\mathcal{M}=3\) for shattering; the critical shattering
-size scales as \(\mathcal{M}^{-3}\), so this choice is degenerate with
-`DustShatteringCalibration`. Material density is interpolated by carbon mass fraction,
+parameter and use \(\mathcal{M}=3\) for shattering. The smallest radius that
+can shatter scales as \(\mathcal{M}^{-3}\), so \(\mathcal{M}\) decides which
+grains shatter, while `DustShatteringCalibration` sets the rate. At
+\(\mathcal{M}=1\), silicates shatter only above about 50–80 nm in warm
+diffuse gas and carbonaceous grains (2 km/s threshold) rarely shatter. Material density is interpolated by carbon mass fraction,
 from \(3.5\,{\rm g\,cm}^{-3}\) for silicate to \(2.24\,{\rm g\,cm}^{-3}\)
 for graphite.
 
