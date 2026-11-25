@@ -25,6 +25,7 @@
  * serialized restart layout. */
 int DustUpdateCadence = 10;
 double DustShatteringFragmentSlope = 3.3;
+double DustShatteringMach = 1.0; /* optional: Mach number in the grain-velocity gate (HA19 Eq. 18) */
 double DustShatteringMaxFragmentFraction = 0.80;
 double DustSNIIInitialRadius = 10.0;
 double DustSNIISizeSigmaDex = 0.4;
@@ -237,6 +238,7 @@ void global_data_all_processes::register_parameters(void)
   add_param("DustCoagulationCalibration", &DustCoagulationCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustShatteringCalibration", &DustShatteringCalibration, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustShatteringFragmentSlope", &DustShatteringFragmentSlope, PARAM_DOUBLE, PARAM_FIXED);
+  add_param("DustShatteringMach", &DustShatteringMach, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustShatteringMaxFragmentFraction", &DustShatteringMaxFragmentFraction, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustSNIIInitialRadius", &DustSNIIInitialRadius, PARAM_DOUBLE, PARAM_FIXED);
   add_param("DustSNIISizeSigmaDex", &DustSNIISizeSigmaDex, PARAM_DOUBLE, PARAM_FIXED);

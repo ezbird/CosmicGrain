@@ -1495,7 +1495,7 @@ if(shat_passed > 0)
     // keep M = 1, and the shattering rate is calibrated with this gate.
     //
 
-    const double shattering_mach = 1.0;
+    const double shattering_mach = DustShatteringMach;
 
     double CF =
         Sp->DustP[dust_idx].

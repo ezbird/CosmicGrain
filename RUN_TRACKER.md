@@ -334,3 +334,13 @@ Code 11d2b48 = release 2429f28 minus the inactive CG_FEEDBACK_DELTA_T override. 
 - **Job 1823 cg4096test** (4 nodes n7-n10, 760 ranks, 24 h): params/param_halo441_4096_test.txt (Paper II recipe, 10^7 K, MaxSizeTimestep 0.00425, coarse-DM softenings matched to 2048, MaxMemSize 3600, TimeMax 0.2, restart files every 4 h). Started 11:34; ICs read, domain decomposition OK.
 - **Paper II figures:** `paper_II_figures/` (only folder kept; others deleted per user) from halo441_output_1024_cs_c100_r050 snap 29, mock Suns fixed at 2.574 kpc (grid scoring radius; default would be the run's own 1.90 kpc). z=0: S2(R_V)/ZG at 1 kpc 0.82, median face-on R_V 2.85 (snaps 27/28: 1.15/1.50, 3.12/3.34). At 5.5 kpc: S2(R_V) 2.9x ZG, S2(A_V) ~0.1x ZG; at 2.574 kpc S2(A_V) 4x ZG at 1 kpc (radial A_V gradient of the compact dust disk). Script c50d754.
 - **4096 test 1823 at 2.7 h (11-25 14:18):** a=0.077 (z=12), 3018 steps, snapshots 000-003 (6.4-8.1 GB each), largest allocation 2.0 GB/rank. Cost to z=12: 2026 core-h vs 232 (2048 dT3e7) and 259 (2048 br06) -> ~8-9x, as expected for 8x particles. SFR at z=12: 0.62 (1024) / 1.75 (2048 br06, 10^7 K) / 3.17 (4096). 8 HYDRO_WATCH (300-400 km/s next to 1e7 K SN-heated gas), 0 fast particles, ENERGY_JUMP only from feedback/hydro (<3%). Pace slowing (a 0.074->0.077 in 26 min); projected end ~z=4.5-5 at the 24 h limit.
+
+## 2026-11-25 16:22 — DustShatteringMach 512 tests (cygnus, tmux `mach`)
+Question: does a larger Mach number in the HA19 grain-velocity gate (a_crit ~ M^-3; we use M=1, HA19 used 3 for shattering)
+recover the 5-15 nm small-grain bump in the 10^7.5 K galaxy (better M*, extended dust disk, but no bump)?
+Pre-check (snap 29, dust 5-20 kpc): Paper II f(5-15 nm) 0.179, 82% of the bump in grains >200 Myr old (processed, not
+fresh SNII); 1024 10^7.5 r050 0.029; 512 lim_vsig (10^7, ShatCal 2.97) 0.030, so 512 must first show the contrast.
+Branch feature/shattering-mach: optional runtime param DustShatteringMach (default 1; absent = default). Binary CosmicGrain_mach.
+Queue (run_mach_tests.sh, log mach_tests.status), each ~1.7-2 h on 24 ranks, Paper II calibrations 22.3/1.485/1.12:
+machtest (identity vs 512_reltest to sfr row 2310) -> mach_dT1e7_M1 -> mach_dT3e7_M1 -> M2 -> M3 -> M1p5.
+Score: f(5-15 nm), f(<5 nm), small-peak location, f<20, carbon fraction, galaxy props (bump2.py-style; centre by shrinking sphere).

@@ -185,6 +185,12 @@ int parameters::read_parameter_file(const char *fname)
 
       for(int i = 0; i < NParameters; i++)
         {
+          if(param_handled[i] != 1 && strcmp(ParametersTag[i], "DustShatteringMach") == 0)
+            {
+              /* optional; the compiled-in default (1.0) applies */
+              printf("Note: '%s' not in parameter file '%s'; using the default.\n", ParametersTag[i], fname);
+              continue;
+            }
           if(param_handled[i] != 1)
             {
               printf("Error. I miss a value for tag '%s' in parameter file '%s'.\n", ParametersTag[i], fname);

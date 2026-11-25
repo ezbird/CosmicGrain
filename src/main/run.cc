@@ -432,6 +432,7 @@ void sim::configure_dust_update_cadence(void)
    */
   MPI_Bcast(&DustUpdateCadence, 1, MPI_INT, 0, Communicator);
   MPI_Bcast(&DustShatteringFragmentSlope, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustShatteringMach, 1, MPI_DOUBLE, 0, Communicator);
   MPI_Bcast(&DustShatteringMaxFragmentFraction, 1, MPI_DOUBLE, 0, Communicator);
   MPI_Bcast(&DustSNIIInitialRadius, 1, MPI_DOUBLE, 0, Communicator);
   MPI_Bcast(&DustSNIISizeSigmaDex, 1, MPI_DOUBLE, 0, Communicator);
@@ -447,6 +448,11 @@ void sim::configure_dust_update_cadence(void)
     Terminate(
         "Invalid DustShatteringFragmentSlope=%g; expected a finite value > 0",
         DustShatteringFragmentSlope);
+  if(!std::isfinite(DustShatteringMach) || !(DustShatteringMach > 0.0))
+    Terminate("Invalid DustShatteringMach=%g; expected a finite value > 0",
+              DustShatteringMach);
+  if(ThisTask == 0)
+    printf("[DUST_FLAGS] DustShatteringMach = %g\n", DustShatteringMach);
   if(!std::isfinite(DustShatteringMaxFragmentFraction) ||
      !(DustShatteringMaxFragmentFraction > 0.0) ||
      !(DustShatteringMaxFragmentFraction < 1.0))

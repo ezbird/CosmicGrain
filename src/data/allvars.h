@@ -458,6 +458,7 @@ extern global_data_all_processes All;
  * change the size of GADGET's raw-serialized All restart block. */
 extern int DustUpdateCadence;
 extern double DustShatteringFragmentSlope;
+extern double DustShatteringMach;
 extern double DustShatteringMaxFragmentFraction;
 extern double DustSNIIInitialRadius;
 extern double DustSNIISizeSigmaDex;
