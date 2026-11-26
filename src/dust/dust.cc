@@ -12,6 +12,8 @@
 #include "gadgetconfig.h"
 #ifdef DUST
 #include <gsl/gsl_math.h>
+#include <algorithm>
+#include <cstdint>
 #include <math.h>
 #include <mpi.h>
 #include <numeric>
@@ -664,6 +666,333 @@ static void estimate_local_dust_to_gas_ratio(
        std::isfinite(dust_mass[i]) && gas_mass[i] > 0.0 &&
        dust_mass[i] > 0.0)
       local_DTG[i] = std::max(1e-6, std::min(0.1, dust_mass[i] / gas_mass[i]));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Cell-column local D/G (DustLocalDTGMethod = 1)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Gas and dust masses are binned into cubic cells on levels of side
+// c_L = c0 2^L.  The cells of each vertical column (level, ix, iy) are added
+// up on one home task, chosen by hashing the column, so every column is
+// complete there and sorted in z.  For each grain a level is chosen with
+// c_L <= r / Q, and the sphere is covered by the columns its xy disc
+// touches.  In each column the sphere spans a z-interval of half-length
+// sqrt(r^2 - rho^2), evaluated at DTG_COL_SUB^2 points across the column, and
+// the mass in that interval comes from running totals along z, with the end
+// cells taken in proportion to the length inside.  Mass is thus assumed
+// uniform within a cell, which is the only difference from summing particles
+// in the sphere (a few per cent median; [DTG_COL_VERIFY] on the first calls).
+// Each task fetches every column it needs once, only over the z-range its
+// spheres span, so communication scales with the occupied cells near its
+// grains, not with spheres times tasks, and the ratio is refreshed on every
+// dust call.  The zoom region must not straddle a box edge in z.
+static constexpr int DTG_COL_LMAX     = 6;     // levels 0..6
+static constexpr double DTG_COL_CELL0 = 0.25;  // target level-0 side, code length units
+static constexpr double DTG_COL_Q     = 16.0;  // cell side <= r / Q
+static constexpr int DTG_COL_SUB      = 2;     // DTG_COL_SUB^2 chords per column
+
+struct dtg_col_rec
+{
+  long long col;  // column key, includes the level
+  int iz;
+  double gas, dust;
+};
+
+struct dtg_col_ask
+{
+  long long col;
+  int izlo, izhi;
+};
+
+struct dtg_col_data
+{
+  std::vector<int> iz;
+  std::vector<double> gas, dust;      // per occupied cell
+  std::vector<double> cgas, cdust;    // running totals, size n + 1
+};
+
+class dtg_columns
+{
+ public:
+  long long n[DTG_COL_LMAX + 1];
+  double c[DTG_COL_LMAX + 1];
+  double q = DTG_COL_Q;
+  int sub  = DTG_COL_SUB;
+
+  void init(double c0_target)
+  {
+    const long long ntop = std::max(1LL, (long long)std::floor(All.BoxSize / (c0_target * (1LL << DTG_COL_LMAX))));
+    for(int L = 0; L <= DTG_COL_LMAX; L++)
+      {
+        n[L] = ntop << (DTG_COL_LMAX - L);
+        c[L] = All.BoxSize / n[L];
+      }
+    if((double)n[0] * n[0] * (DTG_COL_LMAX + 1) > 4.0e18 || n[0] > 2000000000LL)
+      Terminate("D/G columns: grid too fine for 64-bit keys (BoxSize %g, c0 %g)", All.BoxSize, c0_target);
+  }
+
+  int level(double r) const
+  {
+    int t = 0;
+    while(t < DTG_COL_LMAX && c[t + 1] <= r / q)
+      t++;
+    return t;
+  }
+
+  long long col(int L, long long ix, long long iy) const
+  {
+    const long long m = n[L];
+    ix = ((ix % m) + m) % m;
+    iy = ((iy % m) + m) % m;
+    return L + (long long)(DTG_COL_LMAX + 1) * (ix + m * iy);
+  }
+
+  static int home(long long key, int ntask)
+  {
+    std::uint64_t x = (std::uint64_t)key + 0x9e3779b97f4a7c15ULL;
+    x               = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x               = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return (int)(x % (std::uint64_t)ntask);
+  }
+
+  // Columns whose xy cell comes within r of the centre: visit(col, ix, iy).
+  template <class Visit>
+  void columns(const double *ctr, double r, int L, Visit visit) const
+  {
+    const double side = c[L], r2 = r * r;
+    const long long x0 = (long long)std::floor((ctr[0] - r) / side), x1 = (long long)std::floor((ctr[0] + r) / side);
+    const long long y0 = (long long)std::floor((ctr[1] - r) / side), y1 = (long long)std::floor((ctr[1] + r) / side);
+    for(long long ix = x0; ix <= x1; ix++)
+      {
+        const double bx = ix * side;
+        const double dx = ctr[0] - std::max(bx, std::min(bx + side, ctr[0]));
+        for(long long iy = y0; iy <= y1; iy++)
+          {
+            const double by = iy * side;
+            const double dy = ctr[1] - std::max(by, std::min(by + side, ctr[1]));
+            if(dx * dx + dy * dy <= r2)
+              visit(col(L, ix, iy), ix, iy);
+          }
+      }
+  }
+};
+
+// Mass in [z1, z2] of a column, assuming uniform mass within each cell.
+static inline void dtg_col_interval(const dtg_col_data &d, double side, double z1, double z2, double &gas, double &dust)
+{
+  auto cumulative = [&](double z, double &g, double &m) {
+    const double u    = z / side;
+    const long long k = (long long)std::floor(u);
+    const size_t idx  = std::lower_bound(d.iz.begin(), d.iz.end(), (int)k) - d.iz.begin();
+    g                 = d.cgas[idx];
+    m                 = d.cdust[idx];
+    if(idx < d.iz.size() && d.iz[idx] == k)
+      {
+        const double f = u - k;
+        g += f * d.gas[idx];
+        m += f * d.dust[idx];
+      }
+  };
+  double g1, m1, g2, m2;
+  cumulative(z1, g1, m1);
+  cumulative(z2, g2, m2);
+  gas += g2 - g1;
+  dust += m2 - m1;
+}
+
+// Collective.  radii[i] > 0 marks grains to estimate; local_DTG[i] receives
+// the clamped ratio (0 where the sphere holds no gas or no dust).
+static void estimate_local_dtg_columns(simparticles *Sp, const std::vector<double> &radii, MPI_Comm Communicator,
+                                       std::vector<double> &local_DTG, long long *cells_received)
+{
+  int n_task = 1;
+  MPI_Comm_size(Communicator, &n_task);
+
+  static dtg_columns grid;
+  static bool initialised = false;
+  if(!initialised)
+    {
+      const char *e_c0 = getenv("CG_DTG_CELL0"), *e_q = getenv("CG_DTG_Q"), *e_s = getenv("CG_DTG_SUB");
+      grid.init(e_c0 && atof(e_c0) > 0 ? atof(e_c0) : DTG_COL_CELL0);
+      if(e_q && atof(e_q) > 0)
+        grid.q = atof(e_q);
+      if(e_s && atoi(e_s) > 0)
+        grid.sub = atoi(e_s);
+      initialised = true;
+      if(All.ThisTask == 0)
+        printf("[DTG_COL] cell columns: c0=%g code units, levels to %g, Q=%g, %d x %d chords per column\n", grid.c[0],
+               grid.c[DTG_COL_LMAX], grid.q, grid.sub, grid.sub);
+    }
+
+  // Levels in use anywhere (so tasks only bin what someone will ask for).
+  int lmax_local = 0, lmax = 0;
+  for(size_t i = 0; i < radii.size(); i++)
+    if(radii[i] > 0.0)
+      lmax_local = std::max(lmax_local, grid.level(radii[i]));
+  MPI_Allreduce(&lmax_local, &lmax, 1, MPI_INT, MPI_MAX, Communicator);
+
+  // 1. Local cell sums at every level in use, sent to the column homes.
+  const long long nz0 = grid.n[0];
+  std::unordered_map<long long, std::pair<double, double>> local;  // (col * nz0 + iz) -> (gas, dust)
+  local.reserve(8192);
+  auto bin = [&](const spatial_hash_zoom &hash, int type, bool is_dust) {
+    for(const auto &hash_cell : hash.cells)
+      for(int idx : hash_cell.second)
+        {
+          if(Sp->P[idx].getType() != type)
+            continue;
+          const double mass = Sp->P[idx].getMass();
+          if(!std::isfinite(mass) || !(mass > 0.0))
+            continue;
+          double pos[3];
+          Sp->intpos_to_pos(Sp->P[idx].IntPos, pos);
+          long long ic[3];
+          for(int k = 0; k < 3; k++)
+            ic[k] = std::min(grid.n[0] - 1, std::max(0LL, (long long)std::floor(pos[k] / grid.c[0])));
+          for(int L = 0; L <= lmax; L++)
+            {
+              std::pair<double, double> &m = local[grid.col(L, ic[0] >> L, ic[1] >> L) * nz0 + (ic[2] >> L)];
+              (is_dust ? m.second : m.first) += mass;
+            }
+        }
+  };
+  bin(gas_hash, 0, false);
+  bin(dust_hash, DUST_PARTICLE_TYPE, true);
+
+  std::unordered_map<long long, std::vector<dtg_col_rec>> owned;  // column -> its cells, summed and sorted
+  {
+    std::vector<std::vector<dtg_col_rec>> out((size_t)n_task);
+    for(const auto &kv : local)
+      {
+        const long long cl = kv.first / nz0;
+        out[dtg_columns::home(cl, n_task)].push_back(dtg_col_rec{cl, (int)(kv.first % nz0), kv.second.first, kv.second.second});
+      }
+    local.clear();
+    const std::vector<dtg_col_rec> recv = cg_dist::exchange(out, Communicator);
+    for(const dtg_col_rec &r : recv)
+      owned[r.col].push_back(r);
+    for(auto &kv : owned)
+      {
+        std::vector<dtg_col_rec> &v = kv.second;
+        std::sort(v.begin(), v.end(), [](const dtg_col_rec &a, const dtg_col_rec &b) { return a.iz < b.iz; });
+        size_t w = 0;
+        for(size_t j = 0; j < v.size(); j++)
+          if(w > 0 && v[w - 1].iz == v[j].iz)
+            {
+              v[w - 1].gas += v[j].gas;
+              v[w - 1].dust += v[j].dust;
+            }
+          else
+            v[w++] = v[j];
+        v.resize(w);
+      }
+  }
+
+  // 2. The z-range this task needs from each column.
+  auto centre = [&](size_t i, double *ctr) { Sp->intpos_to_pos(Sp->P[i].IntPos, ctr); };
+  std::unordered_map<long long, std::pair<int, int>> need;
+  for(size_t i = 0; i < radii.size(); i++)
+    if(radii[i] > 0.0)
+      {
+        double ctr[3];
+        centre(i, ctr);
+        const int L     = grid.level(radii[i]);
+        const int izlo = (int)std::floor((ctr[2] - radii[i]) / grid.c[L]);
+        const int izhi = (int)std::floor((ctr[2] + radii[i]) / grid.c[L]);
+        grid.columns(ctr, radii[i], L, [&](long long cl, long long, long long) {
+          auto it = need.find(cl);
+          if(it == need.end())
+            need.emplace(cl, std::make_pair(izlo, izhi));
+          else
+            {
+              it->second.first  = std::min(it->second.first, izlo);
+              it->second.second = std::max(it->second.second, izhi);
+            }
+        });
+      }
+
+  // 3. Fetch those column segments.
+  std::unordered_map<long long, dtg_col_data> have;
+  {
+    std::vector<std::vector<dtg_col_ask>> ask((size_t)n_task);
+    for(const auto &kv : need)
+      ask[dtg_columns::home(kv.first, n_task)].push_back(dtg_col_ask{kv.first, kv.second.first, kv.second.second});
+    std::vector<int> asker;
+    const std::vector<dtg_col_ask> asked = cg_dist::exchange(ask, Communicator, &asker);
+    std::vector<std::vector<dtg_col_rec>> answer((size_t)n_task);
+    for(size_t j = 0; j < asked.size(); j++)
+      {
+        const auto it = owned.find(asked[j].col);
+        if(it == owned.end())
+          continue;
+        const std::vector<dtg_col_rec> &v = it->second;
+        auto lo = std::lower_bound(v.begin(), v.end(), asked[j].izlo, [](const dtg_col_rec &a, int z) { return a.iz < z; });
+        for(; lo != v.end() && lo->iz <= asked[j].izhi; ++lo)
+          answer[asker[j]].push_back(*lo);
+      }
+    owned.clear();
+    const std::vector<dtg_col_rec> back = cg_dist::exchange(answer, Communicator);
+    if(cells_received)
+      *cells_received = (long long)back.size();
+    // Each column has one home, which sends its cells contiguous and sorted.
+    for(const dtg_col_rec &r : back)
+      {
+        dtg_col_data &d = have[r.col];
+        d.iz.push_back(r.iz);
+        d.gas.push_back(r.gas);
+        d.dust.push_back(r.dust);
+      }
+    for(auto &kv : have)
+      {
+        dtg_col_data &d = kv.second;
+        d.cgas.assign(d.iz.size() + 1, 0.0);
+        d.cdust.assign(d.iz.size() + 1, 0.0);
+        for(size_t j = 0; j < d.iz.size(); j++)
+          {
+            d.cgas[j + 1]  = d.cgas[j] + d.gas[j];
+            d.cdust[j + 1] = d.cdust[j] + d.dust[j];
+          }
+      }
+  }
+
+  // 4. Sphere sums from chords through the columns.
+  local_DTG.assign(radii.size(), 0.0);
+  const int S = grid.sub;
+  for(size_t i = 0; i < radii.size(); i++)
+    {
+      if(!(radii[i] > 0.0))
+        continue;
+      double ctr[3], gas = 0.0, dust = 0.0;
+      centre(i, ctr);
+      const double r = radii[i], r2 = r * r;
+      const int L       = grid.level(r);
+      const double side = grid.c[L];
+      grid.columns(ctr, r, L, [&](long long cl, long long ix, long long iy) {
+        const auto it = have.find(cl);
+        if(it == have.end())
+          return;
+        double g = 0.0, m = 0.0;
+        for(int a = 0; a < S; a++)
+          {
+            const double dx = (ix + (a + 0.5) / S) * side - ctr[0];
+            for(int b = 0; b < S; b++)
+              {
+                const double dy   = (iy + (b + 0.5) / S) * side - ctr[1];
+                const double rho2 = dx * dx + dy * dy;
+                if(rho2 >= r2)
+                  continue;
+                const double h = std::sqrt(r2 - rho2);
+                dtg_col_interval(it->second, side, ctr[2] - h, ctr[2] + h, g, m);
+              }
+          }
+        gas += g / (S * S);
+        dust += m / (S * S);
+      });
+      if(std::isfinite(gas) && std::isfinite(dust) && gas > 0.0 && dust > 0.0)
+        local_DTG[i] = std::max(1e-6, std::min(0.1, dust / gas));
+    }
 }
 
 // ── Module-level statistics ───────────────────────────────────────────────────
@@ -3565,7 +3894,68 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   std::vector<double> local_DTG((size_t)Sp->NumPart, 0.0);
   long long n_dtg_refreshed = 0, n_dtg_cached = 0, dtg_queries_sent = 0;
   double t_dtg_start = MPI_Wtime();
-  if(All.DustEnableCoagulation || All.DustEnableShattering) {
+  if((All.DustEnableCoagulation || All.DustEnableShattering) && DustLocalDTGMethod == 1) {
+    // Cell columns: every associated grain is estimated on every dust call,
+    // so the DTGAge cache is not used.
+    std::vector<double> radius((size_t)Sp->NumPart, 0.0);
+    for(int i = 0; i < Sp->NumPart; i++) {
+      if(Sp->P[i].getType() != DUST_PARTICLE_TYPE) continue;
+      if(coagulation_radius_by_particle[i] > 0.0) {
+        radius[i] = coagulation_radius_by_particle[i];
+        n_dtg_refreshed++;
+      }
+    }
+    std::vector<double> fresh_DTG;
+    TIMER_START(CPU_DUST_DTG);
+    estimate_local_dtg_columns(Sp, radius, Communicator, fresh_DTG, &dtg_queries_sent);
+    TIMER_STOP(CPU_DUST_DTG);
+
+    // Self-check on the first calls against the particle sphere.
+    static int col_verify_remaining = 3;
+    if(col_verify_remaining > 0) {
+      col_verify_remaining--;
+      int n_task = 1;
+      MPI_Comm_size(Communicator, &n_task);
+      std::vector<double> sphere_DTG;
+      estimate_local_dust_to_gas_ratio(Sp, radius, Communicator, sphere_DTG,
+                                       n_task >= DTG_OCCUPANCY_MIN_TASKS, nullptr);
+      // Bins of |columns/sphere - 1|: <1%, 1-3%, 3-10%, 10-30%, >30%, one side zero.
+      double hist[7] = {0, 0, 0, 0, 0, 0, 0}, sum_rel = 0.0, max_rel = 0.0;
+      for(int i = 0; i < Sp->NumPart; i++) {
+        if(!(radius[i] > 0.0)) continue;
+        const double a = fresh_DTG[i], b = sphere_DTG[i];
+        if(!(a > 0.0) || !(b > 0.0)) { hist[(a > 0.0) != (b > 0.0) ? 5 : 6] += 1; continue; }
+        const double rel = std::fabs(a / b - 1.0);
+        hist[rel < 0.01 ? 0 : rel < 0.03 ? 1 : rel < 0.1 ? 2 : rel < 0.3 ? 3 : 4] += 1;
+        sum_rel += rel;
+        max_rel = std::max(max_rel, rel);
+      }
+      double hist_sum[7], sum_rel_sum = 0.0, max_rel_max = 0.0;
+      MPI_Reduce(hist, hist_sum, 7, MPI_DOUBLE, MPI_SUM, 0, Communicator);
+      MPI_Reduce(&sum_rel, &sum_rel_sum, 1, MPI_DOUBLE, MPI_SUM, 0, Communicator);
+      MPI_Reduce(&max_rel, &max_rel_max, 1, MPI_DOUBLE, MPI_MAX, 0, Communicator);
+      if(All.ThisTask == 0) {
+        const double nboth = hist_sum[0] + hist_sum[1] + hist_sum[2] + hist_sum[3] + hist_sum[4];
+        const double n = std::max(1.0, nboth);
+        printf("[DTG_COL_VERIFY] columns vs particle sphere, %.0f grains: mean |ratio-1|=%.4f max=%.3f  "
+               "<1%%=%.1f%% 1-3%%=%.1f%% 3-10%%=%.1f%% 10-30%%=%.1f%% >30%%=%.2f%%  one-side-zero=%.0f both-zero=%.0f\n",
+               nboth, sum_rel_sum / n, max_rel_max, 100 * hist_sum[0] / n, 100 * hist_sum[1] / n,
+               100 * hist_sum[2] / n, 100 * hist_sum[3] / n, 100 * hist_sum[4] / n, hist_sum[5], hist_sum[6]);
+      }
+    }
+
+    for(int i = 0; i < Sp->NumPart; i++) {
+      if(Sp->P[i].getType() != DUST_PARTICLE_TYPE) continue;
+      dust_data &dp = Sp->DustP[i];
+      if(radius[i] > 0.0) {
+        local_DTG[i] = fresh_DTG[i];
+        dp.LocalDTG = (isfinite(fresh_DTG[i]) && fresh_DTG[i] > 0.0) ? (float)fresh_DTG[i] : 0.0f;
+      } else {
+        dp.LocalDTG = 0.0f;
+      }
+      dp.DTGAge = 0;
+    }
+  } else if(All.DustEnableCoagulation || All.DustEnableShattering) {
     std::vector<double> refresh_radius((size_t)Sp->NumPart, 0.0);
     std::vector<char> had_valid_cache((size_t)Sp->NumPart, 0);
     for(int i = 0; i < Sp->NumPart; i++) {
@@ -3667,12 +4057,13 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
   if(All.ThisTask == 0 && dust_call_count % 10 == 0)
     printf("[DTG_TIMING|Step=%d] estimate_local_DTG: "
            "max=%.3f s  mean=%.3f s  n_dust=%lld  refreshed=%lld cached=%lld  "
-           "queries_sent=%lld (%.2f per refreshed)\n",
+           "%s=%lld (%.2f per refreshed)\n",
            All.NumCurrentTiStep,
            t_dtg_max,
            t_dtg_sum / n_tasks_dtg,
            global_count,
-           dtg_counts_sum[0], dtg_counts_sum[1], dtg_counts_sum[2],
+           dtg_counts_sum[0], dtg_counts_sum[1],
+           DustLocalDTGMethod == 1 ? "cells_received" : "queries_sent", dtg_counts_sum[2],
            dtg_counts_sum[0] > 0 ? (double)dtg_counts_sum[2] / dtg_counts_sum[0] : 0.0);
 
   if(dust_call_count % 10 == 0) {

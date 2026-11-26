@@ -185,7 +185,8 @@ int parameters::read_parameter_file(const char *fname)
 
       for(int i = 0; i < NParameters; i++)
         {
-          if(param_handled[i] != 1 && strcmp(ParametersTag[i], "DustShatteringMach") == 0)
+          if(param_handled[i] != 1 && (strcmp(ParametersTag[i], "DustShatteringMach") == 0 ||
+                                    strcmp(ParametersTag[i], "DustLocalDTGMethod") == 0))
             {
               /* optional; the compiled-in default (1.0) applies */
               printf("Note: '%s' not in parameter file '%s'; using the default.\n", ParametersTag[i], fname);

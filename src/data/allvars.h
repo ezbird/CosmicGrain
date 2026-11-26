@@ -459,6 +459,7 @@ extern global_data_all_processes All;
 extern int DustUpdateCadence;
 extern double DustShatteringFragmentSlope;
 extern double DustShatteringMach;
+extern int DustLocalDTGMethod;
 extern double DustShatteringMaxFragmentFraction;
 extern double DustSNIIInitialRadius;
 extern double DustSNIISizeSigmaDex;

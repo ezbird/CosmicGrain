@@ -433,6 +433,7 @@ void sim::configure_dust_update_cadence(void)
   MPI_Bcast(&DustUpdateCadence, 1, MPI_INT, 0, Communicator);
   MPI_Bcast(&DustShatteringFragmentSlope, 1, MPI_DOUBLE, 0, Communicator);
   MPI_Bcast(&DustShatteringMach, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustLocalDTGMethod, 1, MPI_INT, 0, Communicator);
   MPI_Bcast(&DustShatteringMaxFragmentFraction, 1, MPI_DOUBLE, 0, Communicator);
   MPI_Bcast(&DustSNIIInitialRadius, 1, MPI_DOUBLE, 0, Communicator);
   MPI_Bcast(&DustSNIISizeSigmaDex, 1, MPI_DOUBLE, 0, Communicator);
@@ -453,6 +454,11 @@ void sim::configure_dust_update_cadence(void)
               DustShatteringMach);
   if(ThisTask == 0)
     printf("[DUST_FLAGS] DustShatteringMach = %g\n", DustShatteringMach);
+  if(DustLocalDTGMethod != 0 && DustLocalDTGMethod != 1)
+    Terminate("Invalid DustLocalDTGMethod=%d; expected 0 (particle sphere) or 1 (cell columns)", DustLocalDTGMethod);
+  if(ThisTask == 0)
+    printf("[DUST_FLAGS] DustLocalDTGMethod = %d (%s)\n", DustLocalDTGMethod,
+           DustLocalDTGMethod == 1 ? "cell columns, every dust call" : "particle sphere, refreshed every 10 calls");
   if(!std::isfinite(DustShatteringMaxFragmentFraction) ||
      !(DustShatteringMaxFragmentFraction > 0.0) ||
      !(DustShatteringMaxFragmentFraction < 1.0))
