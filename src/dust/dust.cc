@@ -804,9 +804,18 @@ static inline void dtg_col_interval(const dtg_col_data &d, double side, double z
 
 // Collective.  radii[i] > 0 marks grains to estimate; local_DTG[i] receives
 // the clamped ratio (0 where the sphere holds no gas or no dust).
+static double dtg_col_stage_time[5];  // mask, bin + send to homes, fetch, sums, total (this task, last call)
+
 static void estimate_local_dtg_columns(simparticles *Sp, const std::vector<double> &radii, MPI_Comm Communicator,
                                        std::vector<double> &local_DTG, long long *cells_received)
 {
+  const double t_start = MPI_Wtime();
+  double t_mark        = t_start;
+  auto stage           = [&](int k) {
+    const double now      = MPI_Wtime();
+    dtg_col_stage_time[k] = now - t_mark;
+    t_mark                = now;
+  };
   int n_task = 1;
   MPI_Comm_size(Communicator, &n_task);
 
@@ -833,6 +842,61 @@ static void estimate_local_dtg_columns(simparticles *Sp, const std::vector<doubl
       lmax_local = std::max(lmax_local, grid.level(radii[i]));
   MPI_Allreduce(&lmax_local, &lmax, 1, MPI_INT, MPI_MAX, Communicator);
 
+  // 0. Top-level cells (side c_LMAX) touched by the bounding box of any sphere.
+  //    Only gas and dust inside them are binned, so the binning and the
+  //    traffic to the column homes follow the volume around grains rather
+  //    than the whole zoom region.  Every cell a sphere can ask for lies in
+  //    these cells (the levels nest), so the sums are unchanged.
+  const long long nt = grid.n[DTG_COL_LMAX];
+  auto top_key       = [&](long long ix, long long iy, long long iz) {
+    ix = ((ix % nt) + nt) % nt;
+    iy = ((iy % nt) + nt) % nt;
+    iz = std::min(nt - 1, std::max(0LL, iz));
+    return ix + nt * (iy + nt * iz);
+  };
+  std::unordered_set<long long> active;
+  {
+    std::vector<long long> mine;
+    const double ct = grid.c[DTG_COL_LMAX];
+    for(size_t i = 0; i < radii.size(); i++)
+      if(radii[i] > 0.0)
+        {
+          double ctr[3];
+          Sp->intpos_to_pos(Sp->P[i].IntPos, ctr);
+          long long lo[3], hi[3];
+          for(int k = 0; k < 3; k++)
+            {
+              lo[k] = (long long)std::floor((ctr[k] - radii[i]) / ct);
+              hi[k] = (long long)std::floor((ctr[k] + radii[i]) / ct);
+            }
+          for(long long ix = lo[0]; ix <= hi[0]; ix++)
+            for(long long iy = lo[1]; iy <= hi[1]; iy++)
+              for(long long iz = lo[2]; iz <= hi[2]; iz++)
+                mine.push_back(top_key(ix, iy, iz));
+        }
+    std::sort(mine.begin(), mine.end());
+    mine.erase(std::unique(mine.begin(), mine.end()), mine.end());
+    int nmine = (int)mine.size();
+    std::vector<int> counts((size_t)n_task), displs((size_t)n_task, 0);
+    MPI_Allgather(&nmine, 1, MPI_INT, counts.data(), 1, MPI_INT, Communicator);
+    long long total = 0;
+    for(int t = 0; t < n_task; t++)
+      {
+        displs[t] = (int)total;
+        total += counts[t];
+      }
+    if(total > 2000000000LL)
+      Terminate("D/G columns: %lld active top-level cells overflow the gather", total);
+    std::vector<long long> all((size_t)std::max(1LL, total));
+    MPI_Allgatherv(mine.data(), nmine, MPI_LONG_LONG, all.data(), counts.data(), displs.data(), MPI_LONG_LONG,
+                   Communicator);
+    active.reserve((size_t)total);
+    for(long long j = 0; j < total; j++)
+      active.insert(all[j]);
+  }
+
+  stage(0);
+
   // 1. Local cell sums at every level in use, sent to the column homes.
   const long long nz0 = grid.n[0];
   std::unordered_map<long long, std::pair<double, double>> local;  // (col * nz0 + iz) -> (gas, dust)
@@ -851,6 +915,8 @@ static void estimate_local_dtg_columns(simparticles *Sp, const std::vector<doubl
           long long ic[3];
           for(int k = 0; k < 3; k++)
             ic[k] = std::min(grid.n[0] - 1, std::max(0LL, (long long)std::floor(pos[k] / grid.c[0])));
+          if(!active.count(top_key(ic[0] >> DTG_COL_LMAX, ic[1] >> DTG_COL_LMAX, ic[2] >> DTG_COL_LMAX)))
+            continue;
           for(int L = 0; L <= lmax; L++)
             {
               std::pair<double, double> &m = local[grid.col(L, ic[0] >> L, ic[1] >> L) * nz0 + (ic[2] >> L)];
@@ -889,6 +955,8 @@ static void estimate_local_dtg_columns(simparticles *Sp, const std::vector<doubl
         v.resize(w);
       }
   }
+
+  stage(1);
 
   // 2. The z-range this task needs from each column.
   auto centre = [&](size_t i, double *ctr) { Sp->intpos_to_pos(Sp->P[i].IntPos, ctr); };
@@ -957,6 +1025,8 @@ static void estimate_local_dtg_columns(simparticles *Sp, const std::vector<doubl
       }
   }
 
+  stage(2);
+
   // 4. Sphere sums from chords through the columns.
   local_DTG.assign(radii.size(), 0.0);
   const int S = grid.sub;
@@ -992,7 +1062,8 @@ static void estimate_local_dtg_columns(simparticles *Sp, const std::vector<doubl
       });
       if(std::isfinite(gas) && std::isfinite(dust) && gas > 0.0 && dust > 0.0)
         local_DTG[i] = std::max(1e-6, std::min(0.1, dust / gas));
-    }
+    }  stage(3);
+  dtg_col_stage_time[4] = MPI_Wtime() - t_start;
 }
 
 // ── Module-level statistics ───────────────────────────────────────────────────
@@ -4065,6 +4136,15 @@ void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator)
            dtg_counts_sum[0], dtg_counts_sum[1],
            DustLocalDTGMethod == 1 ? "cells_received" : "queries_sent", dtg_counts_sum[2],
            dtg_counts_sum[0] > 0 ? (double)dtg_counts_sum[2] / dtg_counts_sum[0] : 0.0);
+
+  if(DustLocalDTGMethod == 1 && dust_call_count % 10 == 0)
+    {
+      double st_max[5];
+      MPI_Reduce(dtg_col_stage_time, st_max, 5, MPI_DOUBLE, MPI_MAX, 0, Communicator);
+      if(All.ThisTask == 0)
+        printf("[DTG_COL_STAGES|Step=%d] max over tasks [s]: mask=%.3f bin+homes=%.3f fetch=%.3f sums=%.3f total=%.3f\n",
+               All.NumCurrentTiStep, st_max[0], st_max[1], st_max[2], st_max[3], st_max[4]);
+    }
 
   if(dust_call_count % 10 == 0) {
     long long stale_sum[DTG_STALE_NBINS];
