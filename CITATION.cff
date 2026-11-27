@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use CosmicGrain, please cite it using the metadata below."
+title: "CosmicGrain"
+abstract: >-
+  A live dust physics extension for GADGET-4. Dust superparticles carry their own
+  masses, grain sizes, compositions, positions and velocities, and follow dust
+  creation, growth, coagulation, shattering, destruction and transport alongside
+  gas, stars and dark matter in cosmological zoom simulations.
+type: software
+version: 1.2.0
+date-released: "2026-11-27"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/ezbird/CosmicGrain"
+url: "https://cosmicgrain.space"
+authors:
+  - given-names: Ezra
+    family-names: Huscher
+    orcid: "https://orcid.org/0009-0004-8503-0483"
+    affiliation: "New Mexico State University, Department of Astronomy; Cosmic Dawn Center (DAWN), Niels Bohr Institute, University of Copenhagen"
+  - given-names: Andrew
+    family-names: Saydjari
+    orcid: "https://orcid.org/0000-0002-6561-9002"
+    affiliation: "New Mexico State University, Department of Astronomy"
+  - given-names: Kristian
+    family-names: Finlator
+    orcid: "https://orcid.org/0000-0002-0496-1656"
+    affiliation: "New Mexico State University, Department of Astronomy; Cosmic Dawn Center (DAWN), Niels Bohr Institute, University of Copenhagen"
+keywords:
+  - cosmological simulations
+  - interstellar dust
+  - galaxy formation
+  - GADGET-4

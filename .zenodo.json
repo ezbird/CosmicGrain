@@ -1,0 +1,14 @@
+{
+  "title": "CosmicGrain",
+  "upload_type": "software",
+  "license": "GPL-3.0-or-later",
+  "creators": [
+    {"name": "Huscher, Ezra", "orcid": "0009-0004-8503-0483",
+     "affiliation": "New Mexico State University, Department of Astronomy; Cosmic Dawn Center (DAWN), Niels Bohr Institute, University of Copenhagen"},
+    {"name": "Saydjari, Andrew", "orcid": "0000-0002-6561-9002",
+     "affiliation": "New Mexico State University, Department of Astronomy"},
+    {"name": "Finlator, Kristian", "orcid": "0000-0002-0496-1656",
+     "affiliation": "New Mexico State University, Department of Astronomy; Cosmic Dawn Center (DAWN), Niels Bohr Institute, University of Copenhagen"}
+  ],
+  "keywords": ["cosmological simulations", "interstellar dust", "galaxy formation", "GADGET-4"]
+}

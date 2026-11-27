@@ -11,19 +11,14 @@ Platform-specific setup and known issues for the clusters CosmicGrain has been r
 <div class="cg-card implementation" markdown="1">
 
 Slurm partition `general-cpu`, 190 MPI ranks per node with
-`--mem-per-cpu=3500M`. Batch scripts are in `scripts/colibri/`:
+`--mem-per-cpu=3500M`. An example batch script is `scripts/colibri/runRel.slurm`:
+a 1024³ run from a fixed binary on 2 nodes, which deletes `restartfiles/` after a
+complete run.
 
-| Script | Use |
-|---|---|
-| `runBR06.slurm` | Build-and-run: copies `./CosmicGrain` to `~/jobexe/CosmicGrain.$SLURM_JOB_ID`, then runs it |
-| `runRel.slurm` | 1024³ run from a fixed binary on 2 nodes; deletes `restartfiles/` after a complete run |
-| `runCSgrid.slurm`, `submit_cs_grid.sh` | Coagulation–shattering grid as an `afterany` job chain from one snapshotted binary |
-| `runDTcs.slurm`, `runDTcs1n.slurm` | As above with `CG_FEEDBACK_DELTA_T=3.16e7` (10^7.5 K SN heating), 2 or 1 nodes |
-
-Each script takes the parameter file as `$1` and starts with
+The script takes the parameter file as `$1` and starts with
 `srun --export=ALL --mpi=pmix_v5 --unbuffered <exe> "$1" 0`. Put the restart
-mode on that line when resuming. Set your own `--mail-user` on the cluster
-copy.
+mode on that line when resuming. Set your own account, paths and `--mail-user`
+on the cluster copy.
 
 **Environment.**
 
