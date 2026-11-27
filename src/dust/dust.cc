@@ -2011,9 +2011,11 @@ static int destroy_dust_particle_to_gas(simparticles *Sp, int dust_idx,
 double calculate_sedov_velocity_from_radius(double radius_kpc, double rho_cgs, double energy_erg)
 {
   // Known issue (kept for v1.2.0): 1.033 is the Sedov constant for gamma = 1.4 (air).
-  // For monatomic gas (gamma = 5/3) it is about 1.15, which would make blast speeds
-  // about 1.3x higher at a given radius.  Shock destruction was calibrated with
-  // 1.033, so changing it needs a recalibration.  Planned for the next version.
+  // For monatomic gas (gamma = 5/3) it is about 1.15.  The shock model evaluates R and v
+  // at a fixed time (0.3 Myr), where both scale with xi: about 12% larger and faster,
+  // so about 1.4x the swept volume and about 1.4x (carbon) to 2x (silicate) the dust
+  // destroyed per SN.  Shock destruction was calibrated with 1.033, so changing it
+  // needs a recalibration.  Planned for the next version.
   const double xi = 1.033;
   double R_cm      = radius_kpc * 1000.0 * PARSEC;
   double xi_factor = pow(xi, 2.5);
@@ -4299,9 +4301,11 @@ double calculate_sn_shock_radius(double sn_energy_erg, double gas_density_cgs,
                                   double time_myr)
 {
   // Known issue (kept for v1.2.0): 1.033 is the Sedov constant for gamma = 1.4 (air).
-  // For monatomic gas (gamma = 5/3) it is about 1.15, which would make blast speeds
-  // about 1.3x higher at a given radius.  Shock destruction was calibrated with
-  // 1.033, so changing it needs a recalibration.  Planned for the next version.
+  // For monatomic gas (gamma = 5/3) it is about 1.15.  The shock model evaluates R and v
+  // at a fixed time (0.3 Myr), where both scale with xi: about 12% larger and faster,
+  // so about 1.4x the swept volume and about 1.4x (carbon) to 2x (silicate) the dust
+  // destroyed per SN.  Shock destruction was calibrated with 1.033, so changing it
+  // needs a recalibration.  Planned for the next version.
   const double xi     = 1.033;
   double time_sec     = time_myr * 1e6 * SEC_PER_YEAR;
   double radius_cm    = xi * pow(sn_energy_erg * time_sec * time_sec / gas_density_cgs, 0.2);
