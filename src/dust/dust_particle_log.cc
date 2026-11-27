@@ -1,45 +1,43 @@
 // ============================================================================
 // dust_particle_log.cc
 //
-// Per-particle event logging for CosmicGrain dust physics analysis.
+// Per-particle event log for CosmicGrain dust, used for analysis after the run.
 //
-// Records one line per destruction event, capturing enough information
-// to reconstruct:
-//   - Physical transport (displacement from birth to death)
-//   - Grain growth history (radius at death vs. birth size implied by type)
-//   - Destruction channel statistics (thermal vs. shock vs. astration)
-//   - Radiation pressure diagnostics (grain size, carbon fraction)
-//   - ISM phase at death (gas density, scale factor)
+// Each time a dust particle is destroyed we write one line. From these lines
+// you can reconstruct:
+//   - how far dust travels (displacement from birth to death)
+//   - grain growth (radius at death vs. the birth size set by its source)
+//   - which process destroys dust (thermal vs. shock vs. astration, ...)
+//   - grain size and carbon fraction, for radiation pressure studies
+//   - the gas it died in (gas density, scale factor)
 //
 // ── COAGULATION HISTOGRAM ────────────────────────────────────────────────────
 //
-// Per-event rows for coagulation would be enormous at 2048³. Instead, a
-// lightweight n_H histogram is accumulated locally per task and printed to
-// stdout (merged across all tasks) whenever print_coag_histogram() is called.
-// This records the gas density distribution at coagulation events without
-// writing millions of rows.
-//
-// Call print_coag_histogram() from print_dust_statistics() or any other
-// periodic diagnostic hook. The histogram accumulates across the entire run
-// and is cumulative (not reset between calls) so each print shows totals.
+// Coagulation (grains sticking together) happens far too often for one row
+// per event at 2048³. Instead each task counts events in a small histogram of
+// gas density n_H (hydrogen number density, cm^-3). print_coag_histogram()
+// sums the tasks and prints the result to stdout. It is called from
+// print_dust_statistics(). Counts are never reset, so each print shows totals
+// since the start of the run.
 //
 // ── SPUTTERING THROTTLE ──────────────────────────────────────────────────────
 //
-// AGB-carbon grains (DustSource==1) below AGB_SPUTTER_MASS_THRESH code units
-// are not logged. These grains are created at ~1e-15 code units and
-// immediately sputtered in hot CGM gas, contributing <0.01% of sputtered
-// mass but ~45% of log rows at 1024³ (and higher fractions at 2048³).
-// SNII-silicate and mixed grains are always logged regardless of mass.
+// Sputtering = grains worn away by hot gas. We do not log sputtering deaths of
+// AGB-carbon grains (DustSource==1) lighter than AGB_SPUTTER_MASS_THRESH (code
+// units). They are born at ~1e-15 code units and sputter at once in hot CGM
+// (circumgalactic) gas. At 1024³ they made ~45% of log rows (more at 2048³)
+// but <0.01% of the sputtered mass. Other grain types are always logged.
 //
 // ── FILE LAYOUT ──────────────────────────────────────────────────────────────
 //
-// One file per MPI task, placed in a dedicated subdirectory:
+// One file per MPI task:
 //   <OutputDir>/dust_logs/dust_log_task<N>.txt
 //
-// The subdirectory is created on every start mode. On restarts files are opened
-// in append mode so the complete history across restarts is preserved.
+// The directory is created on every start mode. A fresh run (RestartFlag 0)
+// starts new files with a header; any restart appends, so the files keep the
+// full history across restarts.
 //
-// After the run, merge all tasks with:
+// To merge all tasks after the run:
 //   cat <OutputDir>/dust_logs/dust_log_task*.txt | grep -v "^#" > all_events.txt
 //
 // Or in Python:
@@ -63,32 +61,35 @@
 //  12   grain_radius    grain radius at event (nm)
 //  13   carbon_fraction carbonaceous mass fraction [0,1]
 //  14   gas_density     local gas density (code units), 0 if unavailable
-//  15   grain_type      0=SNII-silicate  1=AGB-carbon  2=mixed
+//  15   grain_type      DustSource: 0=SNII-silicate  1=AGB-carbon  2=LRN
+//                       (the file header calls type 2 "mixed")
 //  16   event_type      see DUST_EVENT_* constants in dust.h
 //
-// ── BUFFERING STRATEGY ────────────────────────────────────────────────────────
+// The birth position is the parent star's position, without the small random
+// offset the grain is placed at.
 //
-// Each task opens its log with a 4MB userspace buffer (setvbuf _IOFBF).
-// This batches writes into large chunks, avoiding per-event syscalls which
-// become expensive at high dust counts (~16M particles at z~3).
+// ── BUFFERING ─────────────────────────────────────────────────────────────────
 //
-// Explicit fflush is called:
-//   - Once after the header is written on fresh runs
-//   - Every FLUSH_INTERVAL events as a crash-safety checkpoint
-//   - Once at shutdown in close_dust_particle_log()
+// Each task writes through a 4 MB buffer (setvbuf _IOFBF), so many events go
+// out in one large write. One system call per event gets slow at high dust
+// counts (~16M particles at z~3).
+//
+// We flush explicitly:
+//   - once after the header on a fresh run
+//   - every FLUSH_INTERVAL events, so a crash loses little
+//   - once at shutdown in close_dust_particle_log()
 //
 // ── BIRTH POSITION GUARD ──────────────────────────────────────────────────────
 //
-// BirthPos is zero-initialized by memset in the dust_data struct and set
-// explicitly in spawn_dust_particle(). If it is still (0,0,0) the particle
-// was either created before BirthPos tracking was added (early-run restarts)
-// or suffered domain-exchange corruption that zeroed DustP[].
+// BirthPos starts at zero (DustP[] is memset when a grain is spawned) and is
+// then set in spawn_dust_particle(). If it is still (0,0,0), the particle
+// either predates BirthPos tracking (restarts of early runs) or had its
+// DustP[] zeroed by domain-exchange corruption. Such particles are skipped.
 //
-// NOTE: This guard will incorrectly skip grains born near the box origin.
-// This is acceptable for Halo569 which sits far from (0,0,0). If the halo
-// ever drifts near the origin, replace this with a dedicated bool flag in
-// dust_data (e.g. birth_pos_set) initialized to false and set to true in
-// spawn_dust_particle().
+// NOTE: this guard also skips real grains born exactly at the box origin.
+// That is fine for Halo569, which sits far from (0,0,0). If a target halo
+// ever sits near the origin, replace the guard with a bool in dust_data
+// (e.g. birth_pos_set), false by default and set in spawn_dust_particle().
 //
 // ============================================================================
 
@@ -108,24 +109,24 @@
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-// Number of events between explicit fflush calls (crash-safety checkpoint).
+// Events between explicit fflush calls, so a crash loses at most this many.
 static constexpr int FLUSH_INTERVAL = 10000;
 
-// AGB-carbon grains (GraiDustSourcenType==1) below this mass threshold are not logged
-// when sputtered. They are created at ~1e-15 code units and immediately
-// destroyed in hot CGM gas — no transport information is lost by skipping them.
-// SNII-silicate (type 0) and mixed (type 2) grains are always logged.
-// Set to 0.0 to restore full logging of all sputtering events.
+// Mass threshold (code units) of the sputtering throttle (see top of file).
+// AGB-carbon grains (DustSource==1) lighter than this are not logged when
+// sputtered. They die where they were born, so no transport information is
+// lost. Types 0 and 2 are always logged. Set to 0.0 to log every sputtering event.
 static constexpr double AGB_SPUTTER_MASS_THRESH = 1.0e-13;
 
 // ── Coagulation histograms ────────────────────────────────────────────────────
 //
-// Two 12-bin log-spaced histograms covering n_H = 0.01 – 10^4 cm^-3:
-//   coag_hist_counts : raw n_H at coagulation event site
-//   coag_neff_counts : n_eff = n_H * clumping_factor at same event
+// Two histograms with 12 bins, evenly spaced in log10(n), over 0.01 to 10^4 cm^-3:
+//   coag_hist_counts : n_H of the gas at each coagulation event
+//   coag_neff_counts : n_eff, the effective density that sets the coagulation
+//                      rate (n_H times a clumping factor, or the dense-phase
+//                      density in the dense-phase model)
 //
-// Both declared before record_coagulation_event() which references them.
-// Accumulated per-task; MPI-reduced in print_coag_histogram().
+// Each task fills its own copy; print_coag_histogram() sums them.
 
 static constexpr int    COAG_HIST_NBINS = 12;
 static constexpr double COAG_HIST_LO    = 0.01;   // cm^-3
@@ -135,15 +136,15 @@ static long long coag_hist_counts[COAG_HIST_NBINS] = {};  // raw n_H
 static long long coag_neff_counts[COAG_HIST_NBINS] = {};  // n_eff
 static long long coag_hist_total                   = 0;
 
-// Module-level file handle — one per task.
+// This task's log file; NULL if it is not open.
 static FILE *dust_particle_log = NULL;
 
 
 // ============================================================================
 // _coag_hist_bin()
 //
-// Return the bin index [0, COAG_HIST_NBINS-1] for a given n_H [cm^-3].
-// Values outside the range are clamped to the first/last bin.
+// Histogram bin [0, COAG_HIST_NBINS-1] for a density in cm^-3.
+// Densities outside the range go into the first or last bin.
 // ============================================================================
 static inline int _coag_hist_bin(double n_H_cgs)
 {
@@ -162,15 +163,8 @@ static inline int _coag_hist_bin(double n_H_cgs)
 // ============================================================================
 // record_coagulation_event()
 //
-// Call from dust_grain_coagulation() immediately after a coagulation event
-// fires. Accumulates into the per-task histogram; no file I/O occurs here.
-//
-// Example call site in dust_grain_coagulation():
-//
-//   double n_H_cgs = gas_density_cgs * HYDROGEN_MASSFRAC / PROTONMASS;
-//   double n_eff   = n_H_cgs * DustClumpingFactor;
-//   record_coagulation_event(n_H_cgs, n_eff);
-//
+// Called at the end of dust_grain_coagulation() each time a grain grows.
+// Adds one count to this task's histograms; no file I/O. Both densities in cm^-3.
 // ============================================================================
 void record_coagulation_event(double n_H_cgs, double n_eff_cgs)
 {
@@ -183,11 +177,9 @@ void record_coagulation_event(double n_H_cgs, double n_eff_cgs)
 // ============================================================================
 // print_coag_histogram()
 //
-// MPI-reduce the per-task histograms to task 0 and print a formatted
-// summary to stdout. Safe to call at any time; no file I/O on non-zero tasks.
-// Histogram is cumulative — each call shows totals since simulation start.
-//
-// Add a call to print_dust_statistics() so it fires at every sync point.
+// Sum the per-task histograms onto task 0, which prints them to stdout.
+// Collective (MPI_Reduce): every task must call it. Called from
+// print_dust_statistics(). Counts are totals since the start of the run.
 //
 // Example output:
 //   [COAG_HIST|a=0.4500] Cumulative coagulation events: 4,821,093
@@ -256,6 +248,10 @@ void print_coag_histogram(MPI_Comm Communicator)
 
 // ============================================================================
 // open_dust_particle_log()
+//
+// Collective (MPI_Barrier): every task must call it. Task 0 creates the
+// directory; then each task opens its own file. If a file cannot be opened
+// the task prints an error and runs on without a log.
 // ============================================================================
 void open_dust_particle_log(MPI_Comm Communicator)
 {
@@ -264,8 +260,9 @@ void open_dust_particle_log(MPI_Comm Communicator)
         char logdir[MAXLEN_PATH];
         snprintf(logdir, MAXLEN_PATH, "%sdust_logs", All.OutputDir);
 
-        // Create the directory on every start mode (fresh, restart-file, or
-        // snapshot restart) so a new OutputDir never needs a manual mkdir.
+        // Create the directory on every start mode (fresh, restart file, or
+        // snapshot restart). It used to be made only on fresh starts, so
+        // restarts into a new OutputDir could not open their logs.
         if(mkdir(logdir, 02755) != 0 && errno != EEXIST)
             printf("[DUST_LOG|T=0] WARNING: could not create %s: %s\n",
                    logdir, strerror(errno));
@@ -355,27 +352,27 @@ void close_dust_particle_log(void)
 
 // ============================================================================
 // log_dust_particle_event()
+//
+// Write one row for a dust particle that is about to be destroyed. Call it
+// before the particle's data is removed. nearest_gas is a local gas index,
+// or -1 if none (then gas_density is written as 0).
 // ============================================================================
 void log_dust_particle_event(simparticles *Sp, int dust_idx,
                               int nearest_gas, int event_type)
 {
     if(dust_particle_log == NULL) return;
 
-    // Cleanup events skipped — particle state is unreliable at that point.
+    // Cleanup removes corrupted particles, whose data cannot be trusted.
     if(event_type == DUST_EVENT_CLEANUP) return;
 
-    // ── AGB sputtering throttle ───────────────────────────────────────────
-    // Skip AGB-carbon grains (type 1) below birth mass. These are created
-    // at ~1e-15 code units and immediately sputtered in hot CGM gas with
-    // zero displacement — they contribute ~45% of log rows but <0.01% of
-    // sputtered mass. SNII and mixed grains are always logged.
+    // ── AGB sputtering throttle (see top of file) ─────────────────────────
     if(event_type == DUST_EVENT_THERMAL              &&
        AGB_SPUTTER_MASS_THRESH > 0.0                 &&
        Sp->DustP[dust_idx].DustSource == 1            &&
        Sp->P[dust_idx].getMass() < AGB_SPUTTER_MASS_THRESH)
         return;
 
-    // ── Birth position guard ──────────────────────────────────────────────
+    // ── Birth position guard: (0,0,0) means unknown (see top of file) ─────
     if(Sp->DustP[dust_idx].BirthPos[0] == 0.0 &&
        Sp->DustP[dust_idx].BirthPos[1] == 0.0 &&
        Sp->DustP[dust_idx].BirthPos[2] == 0.0) return;
@@ -391,7 +388,7 @@ void log_dust_particle_event(simparticles *Sp, int dust_idx,
         (double)Sp->DustP[dust_idx].BirthPos[2]
     };
 
-    // ── Displacement with periodic boundary wrapping ──────────────────────
+    // ── Displacement, using the nearest periodic image ────────────────────
     double dx = event_pos[0] - birth_pos[0];
     double dy = event_pos[1] - birth_pos[1];
     double dz = event_pos[2] - birth_pos[2];
@@ -406,13 +403,13 @@ void log_dust_particle_event(simparticles *Sp, int dust_idx,
 
     double displacement = sqrt(dx*dx + dy*dy + dz*dz);
 
-    // ── Local gas density ─────────────────────────────────────────────────
+    // ── Local gas density, only if nearest_gas is a valid local gas index ─
     double gas_density = 0.0;
     if(nearest_gas >= 0 && nearest_gas < Sp->NumGas &&
        Sp->P[nearest_gas].getType() == 0)
         gas_density = Sp->SphP[nearest_gas].Density;
 
-    // ── Write event row ───────────────────────────────────────────────────
+    // ── Write event row (StellarAge holds the dust's birth scale factor) ──
     fprintf(dust_particle_log,
         "%lld "
         "%.6f %.6f "

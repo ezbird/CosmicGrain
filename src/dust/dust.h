@@ -1,8 +1,9 @@
 /*! \file dust.h
  *  \brief On-the-fly dust evolution model
  *
- *  This module implements dust particle creation, evolution, and destruction
- *  in response to stellar feedback and environmental conditions.
+ *  Public interface of the dust module. Dust lives in its own particles
+ *  (PartType 6). Stars create them through feedback; the surrounding gas then
+ *  grows, erodes, and destroys them as the simulation runs.
  */
 
 #ifndef DUST_H
@@ -19,9 +20,10 @@
 #define DUST_PARTICLE_TYPE       6
 #define DUST_MIN_TIMEBIN         15
 
-// Queue astration for a star formed from gas_idx; the dust is consumed by
-// apply_queued_dust_astration(), which every task must call once all stars of
-// the step exist.
+// Astration = dust locked into a newly formed star. consume_dust_by_astration()
+// only queues the request for the star formed from gas_idx. The dust is removed
+// later by apply_queued_dust_astration(), which every task must call once all
+// stars of the step exist (it is collective).
 void consume_dust_by_astration(simparticles *Sp, int gas_idx, double stellar_mass_formed, int star_idx, double hsml);
 void apply_queued_dust_astration(simparticles *Sp, MPI_Comm comm);
 void dust_grain_coagulation(simparticles *Sp, int dust_idx, int gas_idx, double dt,
@@ -30,7 +32,7 @@ void dust_grain_shattering(simparticles *Sp, int dust_idx, int gas_idx, double d
                            double local_DTG, double T_gas);
 
 // ========== GLOBAL DUST STATISTICS ==========
-// Accessible from all dust modules
+// Run-wide counters shared by all dust source files.
 extern long long NDustCreated;
 extern long long NDustDestroyed;
 extern double    TotalDustMass;
@@ -41,20 +43,21 @@ extern double    LocalDustMassChange;
 extern int       DustNeedsSynchronization;
 extern long long GlobalDustCount;  // Current number of dust particles
 
-// Destruction mechanism tracking
+// Particles destroyed, by mechanism
 extern long long NDustDestroyedByThermal;
 extern long long NDustDestroyedByShock;
 
-// Growth/erosion tracking
+// Growth and erosion: event counts and mass (code units)
 extern long long NGrainGrowthEvents;
 extern long long NGrainErosionEvents;
 extern double    TotalMassGrown;
-extern double TotalMassDestroyedByThermal; // full thermal destructions
-extern double TotalMassDestroyedByShock;   // full shock destructions
-extern double TotalMassErodedByThermal;    // partial sputtering events
-extern double TotalMassErodedByShock;      // partial shock erosion events
+extern double TotalMassDestroyedByThermal; // whole particles destroyed by sputtering
+extern double TotalMassDestroyedByShock;   // whole particles destroyed by SN shocks
+extern double TotalMassErodedByThermal;    // mass lost to partial sputtering
+extern double TotalMassErodedByShock;      // mass lost to partial shock erosion
 
 // ========== DUST LOG (dust_particle_log.cc) ==========
+// Event codes written in the last column of the per-particle event log.
 
 #define DUST_EVENT_THERMAL     0
 #define DUST_EVENT_SHOCK       1
@@ -72,7 +75,7 @@ void print_coag_histogram(MPI_Comm Communicator);
 
 // ========== CORE DUST FUNCTIONS (dust.cc) ==========
 
-// Dust particle creation and destruction
+// Creating and removing dust particles
 double create_dust_particles_from_feedback(
     simparticles *Sp,
     int star_idx,
@@ -86,10 +89,10 @@ void spawn_dust_particle(simparticles *Sp, double offset_kpc[3], double dust_mas
 void destroy_dust_particles(simparticles *Sp);
 void cleanup_invalid_dust_particles(simparticles *Sp);
 
-// Dust dynamics and interaction
+// Dust motion and dust-gas processes
 void update_dust_dynamics(simparticles *Sp, double dt, MPI_Comm Communicator);
-// T_gas is the nearest gas particle's temperature, computed once per dust
-// particle in update_dust_dynamics() and shared by all processes below.
+// T_gas is the nearest gas particle's temperature. update_dust_dynamics()
+// computes it once per dust particle and passes it to every process below.
 void update_dust_temperature(simparticles *Sp, int dust_idx, int gas_idx, double dt,
                              double T_gas);
 int dust_gas_interaction(simparticles *Sp, int dust_idx, int nearest_gas, double dt,
@@ -101,17 +104,19 @@ void dust_global_synchronization(simparticles *Sp, MPI_Comm Communicator,
 
 // ========== GRAIN GROWTH AND EROSION ==========
 
-// Dust grain growth (subgrid model)
+// Grain growth by accretion of gas-phase metals (subgrid model)
 void dust_grain_growth_subgrid(simparticles *Sp, int dust_idx, int gas_idx, double dt,
                                double T_gas);
 
-// Gradual erosion functions
+// Thermal sputtering (gradual erosion; also handles sublimation).
+// Returns 1 if the particle was destroyed, 0 otherwise.
 int erode_dust_grain_thermal(simparticles *Sp, int dust_idx, int nearest_gas_input,
                               double T_gas, double dt);
 
 // ========== SHOCK DESTRUCTION ==========
 
-// One SN tranche whose shock erodes the surrounding dust.
+// One SN tranche (one time slice of a star particle's supernovae) whose shock
+// erodes the surrounding dust.
 struct DustShockEvent
 {
   MyIntPosType pos[3];
@@ -122,8 +127,9 @@ struct DustShockEvent
   int gas_task, gas_index;  // gas_task < 0 if no gas within 50 kpc
 };
 
-// Collective: erode dust around every task's SN events.  Dust at indices
-// >= first_new_dust was created in this feedback call and is left alone.
+// Collective (all tasks must call): erode dust around the SN events of every
+// task. Dust at indices >= first_new_dust was just created in this feedback
+// call and is left alone.
 void erode_dust_from_sn_shocks_batch(simparticles *Sp, const std::vector<DustShockEvent> &events,
                                      int first_new_dust, MPI_Comm comm);
 double calculate_sn_shock_radius(double sn_energy_erg, double gas_density_cgs, double time_myr);
@@ -146,55 +152,26 @@ void analyze_dust_gas_coupling_local(simparticles *Sp);
 void analyze_grain_size_distribution(simparticles *Sp);
 
 /**
- * Integrity check of all dust particles (PartType6). This became necessary
- * as restarting from snapshots and restart files both can encounter frequent
- * problems regarding the new DustP structure, which is stored separately
- * from the base particle data in P[].
+ * Sanity check of every dust particle (PartType 6), for debugging.
  *
- * It is for debugging corruption or loss of
- * dust particle data during snapshot restart, domain decomposition,
- * particle exchange, reordering, cleanup, or timestep evolution.
+ * Why: dust properties live in DustP[], a separate array from the base
+ * particle data in P[]. Restarts from snapshots and from restart files often
+ * broke the link between the two. This check catches dust data that was
+ * lost or scrambled by a restart, domain decomposition, particle exchange,
+ * reordering, cleanup, or the time integration itself.
  *
- * The function scans all local particles and identifies those with
- * particle type 6 (dust). For each dust particle, it validates both
- * the base particle data stored in P[] and the corresponding auxiliary
- * dust properties stored in DustP[].
+ * A local dust particle is "invalid" if any of these fail:
+ *   - grain radius finite and > 0
+ *   - dust temperature finite and >= 0
+ *   - carbon mass fraction finite and in [0,1]
+ *   - particle mass (in P[]) finite and > 0
  *
- * Specifically, the following conditions are checked:
+ * Each task prints its first few invalid particles ([BAD_DUST] lines: index,
+ * ID, mass, radius, temperature, carbon fraction, DustSource). The global
+ * totals are summed with MPI_Allreduce, so every task must call this; the
+ * line that prints them is commented out below.
  *
- *   - Dust grain radius must be finite and > 0
- *   - Dust temperature must be finite and >= 0
- *   - Carbon fraction must be finite and within [0,1]
- *   - Particle mass must be finite and > 0
- *
- * Particles failing any of these checks are classified as "invalid".
- *
- * The routine prints:
- *
- *   - Global counts of total dust particles
- *   - Number of valid dust particles
- *   - Number of invalid dust particles
- *
- * Additionally, a small sample of invalid particles is printed with:
- *
- *   - Particle index
- *   - Particle ID
- *   - Mass
- *   - Grain radius
- *   - Dust temperature
- *   - Carbon fraction
- *   - Grain type
- *
- * The diagnostic output is especially useful for determining whether:
- *
- *   - DustP[] became desynchronized from P[]
- *   - Snapshot restart failed to restore dust fields
- *   - Domain exchange/reordering corrupted dust alignment
- *   - Cleanup routines are removing particles unexpectedly
- *   - Numerical evolution generated invalid dust states
- *
- * MPI_Allreduce() is used so the reported totals reflect the entire
- * simulation across all MPI tasks.
+ * Does nothing when DustDebugLevel <= 0.
  * */
 inline void dust_integrity_check(simparticles *Sp, const char *label,
                                   MPI_Comm Communicator)
@@ -262,7 +239,7 @@ inline void dust_integrity_check(simparticles *Sp, const char *label,
 
     MPI_Allreduce(send, recv, 3, MPI_LONG_LONG, MPI_SUM, Communicator);
 
-    // If dust corruption is occurring, print to see status
+    // Uncomment to print the global totals on task 0 when hunting corruption.
     // int ThisTask;
     // MPI_Comm_rank(Communicator, &ThisTask);
     // if(ThisTask == 0)
