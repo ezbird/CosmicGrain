@@ -6,32 +6,48 @@ This page covers configuring and building CosmicGrain itself — the steps you r
 
 </div>
 
-## Configuring `Config.sh`
+## Choosing a configuration
 
 <div class="cg-card implementation" markdown="1">
 
-CosmicGrain's physics modules are enabled at compile time via `Config.sh`. The following flags are required for a standard dust-enabled run:
+Compile-time options live in a `Config.sh`-style file. The top-level
+`Makefile` selects one of the maintained files in `configs/`:
+
+| File | Use |
+|---|---|
+| `configs/Config_zoom.sh` | Dust-enabled zoom runs (the Makefile default) |
+| `configs/Config_parent.sh` | Dark-matter-only parent volume |
+| `configs/Config_uniform.sh` | Uniform-resolution boxes |
+
+Edit the `CONFIG =` line in the `Makefile`, or override it on the command
+line (`make CONFIG=configs/Config_parent.sh EXEC=CosmicGrain_parent`).
+`make DIR=<dir>` instead builds `<dir>/CosmicGrain` from `<dir>/Config.sh`.
+
+The flags required for a dust-enabled run are:
 
 | Flag | Purpose |
 |---|---|
-| `DUST` | Enables the CosmicGrain dust physics module (creation, transport, growth, destruction, radiation pressure). |
-| `FEEDBACK` | Enables stellar feedback (Type II SNe and AGB winds). |
-| `STARFORMATION` | Required for metallicity- and SFR-dependent dust gating (e.g. molecular fraction, clumping). |
-| `IDS_64BIT` | **Required.** 32-bit particle IDs silently overflow once dust superparticle counts grow large — this does not raise a compile or runtime error, it just corrupts particle bookkeeping. Always enable this for dust-enabled runs. |
+| `DUST` | CosmicGrain dust module (creation, transport, growth, collisions, destruction, radiation pressure). |
+| `FEEDBACK` | Stellar feedback: SNII, AGB, and LRN enrichment and dust creation. |
+| `STARFORMATION` | Springel & Hernquist (2003) star formation. |
+| `COOLING` | Radiative H/He cooling. |
+| `METALS` | Element-resolved metals and metal cooling. |
+| `IDS_64BIT` | **Required.** Dust spawning overflows 32-bit IDs without any error. |
 | `NTYPES=7` | **Required.** Reserves PartType6 for live dust. |
-| `METALS` | Enables metallicity and element-resolved enrichment. |
-| `COOLING` | Enables the adopted gas-cooling model. |
 
-Optional flags, useful for debugging stellar feedback energy deposition:
+`configs/Config_zoom.sh` also sets `PERIODIC`, `DOUBLEPRECISION=2`,
+`POSITIONS_IN_64BIT`, `ADAPTIVE_HYDRO_SOFTENING`, `CUBIC_SPLINE_KERNEL`,
+`PMGRID=512`, `PM_ZOOM_OPTIMIZED`, `TREEPM_NOTIMESPLIT`,
+`HIERARCHICAL_GRAVITY`, `INDIVIDUAL_GRAVITY_SOFTENING=4`, `FOF`, `SUBFIND`,
+and `EXPLICIT_VECTORIZATION`.
 
-| Flag | Purpose |
-|---|---|
-| `FEEDBACK_LIMIT_DULOG` | Clamps \|Δlog₁₀ u\| per heating event — useful when diagnosing runaway temperatures from feedback. |
-| `FEEDBACK_T_CAP` | Applies a soft temperature cap for debugging; not intended for production runs. |
-
-The `Config.sh` supplied for the current source audit uses `PERIODIC`, `DOUBLEPRECISION=2`,
-`ADAPTIVE_HYDRO_SOFTENING`, `CUBIC_SPLINE_KERNEL`, `PM_ZOOM_OPTIMIZED`,
-`TREEPM_NOTIMESPLIT`, and resolution-appropriate `PMGRID`/`HRPMGRID`.
+**Multi-node builds.** On more than one node GADGET-4 splits each node into
+shared-memory islands of at most 64 ranks and reserves one listener rank per
+island. With more than 64 ranks per node, set `NUMBER_OF_MPI_LISTENERS_PER_NODE`
+to ceil(ranks per node / 64) in the config (3 on Colibri at 190 ranks/node), otherwise startup stops with *"We have shared memory
+islands with N MPI ranks, which is larger than
+MAX_NUMBER_OF_RANKS_WITH_SHARED_MEMORY=64"*. Single-node builds leave it
+unset. See [HPC Systems](hpc.md#colibri).
 
 </div>
 
@@ -39,30 +55,23 @@ The `Config.sh` supplied for the current source audit uses `PERIODIC`, `DOUBLEPR
 
 <div class="cg-card implementation" markdown="1">
 
-CosmicGrain compiles with `mpicxx`, requiring C++11 and the libraries set up in [Installation](installation.md). A representative per-file compile invocation:
-
-```bash
-mpicxx -std=c++11 -O3 -march=native -mtune=native \
-    -ffast-math -fno-math-errno -fno-trapping-math \
-    -funroll-loops -Wall -Wno-format-security -Wno-unused-result -flto \
-    -I/usr/include/hdf5/serial \
-    -I/path/to/gsl/build/include \
-    -I/path/to/fftw3/build/include \
-    -Ibuild -Isrc \
-    -c src/<file>.cc -o build/<file>.o
-```
-
-In practice you won't invoke this directly — the top-level `make` handles it for every source file:
+`Makefile.systype` names the system (`SYSTYPE="Cygnus"` on the development
+workstation); its compiler settings come from `buildsystem/Makefile.comp.*`.
+Then:
 
 ```bash
 make -j8
 ```
 
-The executable name and location follow the target configured by the current
-top-level Makefile. Record `sha256sum` of the production executable with the
-run metadata rather than assuming its name proves which source was compiled.
+This produces `./CosmicGrain`. The Cygnus and `Generic-gcc` settings compile
+with `mpicxx -std=c++11 -O3 -march=native -ffast-math -fno-finite-math-only
+... -flto`. Keep `-fno-finite-math-only`: plain `-ffast-math` lets GCC remove
+the `std::isfinite()` guards the code relies on. Pass `OPT=` to drop `-flto`
+where the link-time optimizer runs out of memory.
 
-**Optimization flag note:** `-ffast-math`, `-fno-math-errno`, and `-fno-trapping-math` relax IEEE floating-point compliance for speed. This is standard practice for production N-body/hydro codes and shouldn't affect the dust physics (which relies on exact exponential/analytical forms rather than delicate floating-point edge cases), but keep it in mind if you're ever debugging a numerical discrepancy that seems to depend on compiler flags.
+Record `sha256sum CosmicGrain`, the git commit, and the config file with
+every run. For long job chains, copy the binary to a per-job name so a
+rebuild cannot change a queued run (the Colibri scripts do this).
 
 </div>
 
@@ -70,15 +79,15 @@ run metadata rather than assuming its name proves which source was compiled.
 
 <div class="cg-card implementation" markdown="1">
 
-On startup, a successful build with dust physics enabled prints a one-time
-flag summary confirming the parameter file was read correctly:
+On the first dust update, task 0 prints the parsed dust switches once:
 
 ```text
-[DUST_FLAGS|Step=0] Creation=1 Drag=1 Growth=1 Coagulation=1
-Sputtering=1 ShockDestruction=1 Astration=1 RadPressure=1
-Clumping=1 Cooling=1
+[DUST_FLAGS|Step=0] Creation=1 Drag=1 Growth=1 Coagulation=1 Sputtering=1 ShockDestruction=1 Astration=1 RadPressure=1 Clumping=2 Cooling=1
 ```
 
-Check that these flags match what you set in your `.param` file — a `0` where you expected `1` usually means a parameter name mismatch (e.g. a typo in `DustEnableGrowth`) rather than a compilation problem.
+`Clumping` is the `DustEnableClumping` mode (0 off, 1 legacy factor,
+2 Blitz & Rosolowsky dense phase, the v1.2.0 default). `DustEnableShattering`
+is not in this line; check it in `parameters-usedvalues`. A value that differs
+from the parameter file usually means a misspelled parameter name.
 
 </div>

@@ -242,8 +242,8 @@ void snap_io::init_basic(simparticles *Sp_ptr)
              0, 0, 0, 0, 0, 0, 0);
 
   init_field("GRAD", "GrainRadius", MEM_MY_FLOAT, FILE_MY_IO_FLOAT, READ_IF_PRESENT, 1, A_DUST, &Sp->DustP[0].GrainRadius, NULL,
-             DUST_ONLY, /* grain radius in cm */
-             1, 0., 0., 1., 0., 0., 1.0);  // Already in cm, no unit conversion needed
+             DUST_ONLY, /* grain radius in nm */
+             1, 0., 0., 1., 0., 0., 1.0);  // stored in nm, no unit conversion
 
   init_field("DSRC", "DustSource", MEM_INT, FILE_INT, READ_IF_PRESENT, 1, A_DUST, &Sp->DustP[0].DustSource, NULL,
             DUST_ONLY, /* 0=SNII, 1=AGB, 2=LRN */

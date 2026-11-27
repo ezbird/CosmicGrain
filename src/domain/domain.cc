@@ -89,19 +89,20 @@ void domain<partset>::domain_decomposition(domain_options mode)
   Mem.myfree(domain_leaf_cost);
 
   /* move stars out of gas block if present */
-  #ifdef DUST
-  dust_integrity_check(Tp, "before rearrange", Communicator);
-  #endif
-
+  /* DustP integrity is only meaningful in STANDARD mode: SUBFIND's collective
+   * decompositions move particles without their DustP sidecar, which run.cc
+   * backs up by ID beforehand and restores afterwards. */
 #ifdef DUST
-  dust_integrity_check(Tp, "after rearrange", Communicator);
+  if(Mode == STANDARD)
+    dust_integrity_check(Tp, "before rearrange", Communicator);
 #endif
 
   domain_rearrange_particle_sequence();
 
-  #ifdef DUST
-  dust_integrity_check(Tp, "after rearrange", Communicator);
-  #endif
+#ifdef DUST
+  if(Mode == STANDARD)
+    dust_integrity_check(Tp, "after rearrange", Communicator);
+#endif
 
   /* finally, carry out the actual particle exchange */
   if(Mode == STANDARD)
@@ -276,7 +277,11 @@ void domain<simparticles>::domain_find_total_cost(void)
 
   MPI_Allreduce(MPI_IN_PLACE, sum, 2, MPI_LONG_LONG, MPI_SUM, Communicator);
 
-  NormFactorLoad    = 1.0 / sum[0];
+  /* A communicator can hold no particles (e.g. a SUBFIND sub-group); the
+   * normalisation is then irrelevant.  Guard it explicitly: with -ffast-math
+   * the compiler folds "1.0 / 0 > 0.0" to false, which left MultipleDomains
+   * at 0 and made domain_combine_multipledomains() allocate a negative size. */
+  NormFactorLoad    = sum[0] > 0 ? 1.0 / sum[0] : 1.0;
   NormFactorLoadSph = sum[1] > 0.0 ? 1.0 / sum[1] : 0.0;
 
   MultipleDomains = 0;
@@ -331,7 +336,11 @@ void domain<lcparticles>::domain_find_total_cost(void)
 
   MPI_Allreduce(MPI_IN_PLACE, sum, 2, MPI_LONG_LONG, MPI_SUM, Communicator);
 
-  NormFactorLoad    = 1.0 / sum[0];
+  /* A communicator can hold no particles (e.g. a SUBFIND sub-group); the
+   * normalisation is then irrelevant.  Guard it explicitly: with -ffast-math
+   * the compiler folds "1.0 / 0 > 0.0" to false, which left MultipleDomains
+   * at 0 and made domain_combine_multipledomains() allocate a negative size. */
+  NormFactorLoad    = sum[0] > 0 ? 1.0 / sum[0] : 1.0;
   NormFactorLoadSph = sum[1] > 0.0 ? 1.0 / sum[1] : 0.0;
 
   MultipleDomains = 0;

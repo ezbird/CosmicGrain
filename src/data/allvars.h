@@ -71,7 +71,7 @@ int CheckpointDebugLevel;   // 0=off, 1=detailed output
   int DustEnableCreation;        // Dust creation from stellar feedback
   int DustEnableCoagulation;
   int DustEnableCooling;         // Dust cooling via thermal emission
-  int DustEnableClumping;        // Clumping factor in growth
+  int DustEnableClumping;        // 0 off, 1 legacy clumping tiers + n_eff switch, 2/3 Blitz & Rosolowsky dense phase (fixed / pressure n_dense)
   int DustEnableAstration;        // Astration of dust particles
   int DustEnableRadiationPressure; // Radiation pressure on dust grains
 
@@ -459,6 +459,10 @@ extern global_data_all_processes All;
 extern int DustUpdateCadence;
 extern double DustShatteringFragmentSlope;
 extern double DustShatteringMaxFragmentFraction;
+extern double DustSNIIInitialRadius;
+extern double DustSNIISizeSigmaDex;
+extern double DustAGBInitialRadius;
+extern double DustAGBSizeSigmaDex;
 #endif
 
 #endif

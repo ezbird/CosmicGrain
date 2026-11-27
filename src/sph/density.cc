@@ -447,6 +447,11 @@ void sph::density(int *list, int ntarget)
   int *targetList = (int *)Mem.mymalloc("TargetList", Tp->NumGas * sizeof(int));
   MyFloat *Left   = (MyFloat *)Mem.mymalloc("Left", Tp->NumGas * sizeof(MyFloat));
   MyFloat *Right  = (MyFloat *)Mem.mymalloc("Right", Tp->NumGas * sizeof(MyFloat));
+  /* predicted (drifted) density, Hsml and the stale DivVel used for the prediction, kept to flag particles whose
+   * surroundings changed far more than the prediction allowed while they were inactive (2048^3 runaway debug) */
+  MyFloat *RhoPred  = (MyFloat *)Mem.mymalloc("RhoPred", Tp->NumGas * sizeof(MyFloat));
+  MyFloat *HsmlPred = (MyFloat *)Mem.mymalloc("HsmlPred", Tp->NumGas * sizeof(MyFloat));
+  MyFloat *DivPred  = (MyFloat *)Mem.mymalloc("DivPred", Tp->NumGas * sizeof(MyFloat));
 
   /* Bounds are applied before a density evaluation. A clamped trial must
    * be evaluated before acceptance; density and its gradients belong to h. */
@@ -463,6 +468,9 @@ void sph::density(int *list, int ntarget)
       int target    = list[i];
       targetList[i] = target;
       Left[target] = Right[target] = 0.0;
+      RhoPred[target]  = Tp->SphP[target].Density;
+      HsmlPred[target] = Tp->SphP[target].Hsml;
+      DivPred[target]  = Tp->SphP[target].DivVel;
       double h = Tp->SphP[target].Hsml;
       if(!std::isfinite(h) || h <= 0)
         Terminate("Invalid initial density Hsml: task=%d ID=%llu Hsml=%g",
@@ -721,6 +729,33 @@ void sph::density(int *list, int ntarget)
     }
   while(ndensities > 0);
 
+  /* [DENSITY_JUMP]: the converged density exceeds the drift prediction by more than a factor 10. */
+  {
+    static int jump_events = 0;
+    for(int i = 0; i < ntarget && jump_events < 200; i++)
+      {
+        const int t = list[i];
+        if(RhoPred[t] <= 0 || Tp->SphP[t].Density < 10 * RhoPred[t])
+          continue;
+        jump_events++;
+        double pos[3];
+        Tp->intpos_to_pos(Tp->P[t].IntPos, pos);
+        const double nH = HYDROGEN_MASSFRAC * Tp->SphP[t].Density * All.cf_a3inv * All.UnitDensity_in_cgs * All.HubbleParam *
+                          All.HubbleParam / PROTONMASS;
+        double v2 = 0;
+        for(int k = 0; k < 3; k++)
+          v2 += (double)Tp->SphP[t].VelPred[k] * Tp->SphP[t].VelPred[k];
+        printf("[DENSITY_JUMP|task=%d|step=%d|a=%.7f] ID %lld rho %.4g -> %.4g (x%.4g) Hsml %.4g -> %.4g DivVel(stale) %.4g -> %.4g "
+               "bin=%d nH=%.4g Csnd=%.4g NumNgb=%.4g mass=%.4g SFR=%.4g |v|=%.4g km/s pos=(%.3f|%.3f|%.3f)\n",
+               D->ThisTask, All.NumCurrentTiStep, (double)All.Time, (long long)Tp->P[t].ID.get(), (double)RhoPred[t],
+               (double)Tp->SphP[t].Density, Tp->SphP[t].Density / RhoPred[t], (double)HsmlPred[t], (double)Tp->SphP[t].Hsml,
+               (double)DivPred[t], (double)Tp->SphP[t].DivVel, (int)Tp->P[t].getTimeBinHydro(), nH, (double)Tp->SphP[t].Csnd,
+               (double)Tp->SphP[t].NumNgb, Tp->P[t].getMass(), (double)Tp->SphP[t].Sfr, sqrt(v2) * All.cf_ainv, pos[0], pos[1],
+               pos[2]);
+        fflush(stdout);
+      }
+  }
+
 #ifdef TIMEDEP_ART_VISC
   for(int i = 0; i < ntarget; i++)
     {
@@ -745,6 +780,9 @@ void sph::density(int *list, int ntarget)
   Mem.myfree(Foreign_Points);
   Mem.myfree(Foreign_Nodes);
 
+  Mem.myfree(DivPred);
+  Mem.myfree(HsmlPred);
+  Mem.myfree(RhoPred);
   Mem.myfree(Right);
   Mem.myfree(Left);
   Mem.myfree(targetList);

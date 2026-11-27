@@ -32,11 +32,22 @@ where
 - \(M_{\rm dust}\) is the newly created dust mass.
 
 Separate source prescriptions are used for SNII, AGB stars, and luminous red
-novae (LRNe). In the audited source, SNII/hypernova feedback is delayed over four tranches rather
-than injected in a single instantaneous event. LRN dust is created once with
-the first SNII tranche; SNII dust sampling is divided across the tranche
-sequence so the requested total particle sampling is not multiplied by four. The
-absolute LRN normalization remains under active calibration.
+novae (LRNe):
+
+- **SNII/hypernovae** release ejecta in four delayed tranches;
+  `DustParticlesPerSNII` is the total number of superparticles for the whole
+  SSP episode, divided over the tranches.
+- **LRNe** inject their full dust budget,
+  `DustLRNRatePerCCSN` \(\times\) 0.011 CCSNe/M\(_\odot\) \(\times\)
+  \(M_{\star,\rm birth}\) \(\times\) `DustLRNDustMassMsun`, once with the
+  first SNII tranche. The absolute LRN normalization remains under active
+  calibration.
+- **AGB stars** (`AGBFeedbackMode 2`, required) return mass every
+  `AGBFeedbackIntervalMyr`. Their condensed dust accumulates on the star and is
+  released in equal packets of (lifetime AGB dust)/`DustParticlesPerAGB`, so
+  each star makes at most `DustParticlesPerAGB` AGB grains over its life, the
+  last one carrying the remainder. The dust mass is taken from the star, and
+  the star recoils so momentum is conserved.
 
 ### Assumptions
 
@@ -66,8 +77,8 @@ Rather than storing dust as an abundance field, the code creates entirely new **
 
 Two floors, hardcoded in `dust.cc` rather than exposed as parameters, prevent creation of negligible or numerically fragile particles:
 
-- If the total dust mass produced by an event falls below `MIN_DUST_PARTICLE_MASS` (10⁻¹⁰ M☉), no dust particles are created at all.
-- If the requested sampling would produce representatives below a local `1e-15` code-mass floor, the routine **reduces the number of superparticles** rather than discarding the dust mass. At least one representative is retained for an event that already passed the total-mass floor.
+- If the total dust mass produced by an event falls below `MIN_DUST_PARTICLE_MASS` (\(10^{-10}\) code mass units, i.e. 1 \(h^{-1}\,M_\odot\)), no dust particles are created at all.
+- If the requested sampling would produce representatives below \(10^{-15}\) code mass units (\(10^{-5}\,h^{-1}\,M_\odot\)), the routine **reduces the number of superparticles** rather than discarding the dust mass. At least one representative is retained for an event that already passed the total-mass floor.
 
 Thus the total-mass floor can suppress a negligible creation event, while the per-representative floor changes numerical sampling rather than the physical dust mass.
 
@@ -84,11 +95,11 @@ Thus the total-mass floor can suppress a negligible creation event, while the pe
 
 ### Initial Particle Properties
 
-Representative birth radius and source tag are hardcoded per feedback channel. The **target** birth composition is source-specific, but the actual `CarbonMassFraction` written to each new particle is computed from the element-limited carbonaceous and silicate dust masses delivered by the feedback calculation. Initial velocity is parameter-driven and is applied as an isotropic random **kick added to the parent star's velocity**, not an absolute velocity.
+SNII and AGB representative birth radii are sampled independently for each dust superparticle from source-specific log-normal distributions. The configured radius is the median and the dispersion is the standard deviation of \(\log_{10}(a)\), in dex. The current base parameter file uses a 0.2 dex dispersion for both sources; each run's parameter file is authoritative. LRN particles retain a fixed 10 nm representative birth radius. The **target** birth composition is source-specific, but the actual `CarbonMassFraction` written to each new particle is computed from the element-limited carbonaceous and silicate dust masses delivered by the feedback calculation. Initial velocity is an isotropic random **kick added to the parent star's velocity**, in physical km/s at all redshifts. Grains are placed at a random isotropic offset between the source's minimum and maximum offset, in code length units (comoving \(h^{-1}\) kpc). A new grain starts from a copy of its parent star's particle record, so it carries no stale fields from the slot it reuses.
 
 | Quantity | SNII | AGB | LRN | Configurable? |
 |-----------|------:|------:|------:|:------:|
-| Grain radius | 10 nm | 100 nm | 10 nm | No (hardcoded) |
+| Grain radius | Log-normal, median 10 nm, sigma 0.2 dex | Log-normal, median 100 nm, sigma 0.2 dex | 10 nm | SNII and AGB |
 | Carbon fraction | 0.10 target, element-limited | 0.60 target, element-limited | 0.10 | Target hardcoded |
 | `DustSource` | 0 | 1 | 2 | No |
 | Initial velocity kick | `DustVelocitySNII` | `DustVelocityAGB` | `DustVelocityLRN` | Yes |
@@ -108,12 +119,16 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
 |-----------|-------------|
 | `DustYieldSNII` | SNII condensation efficiency |
 | `DustYieldAGB` | AGB condensation efficiency |
-| `DustVelocitySNII` | Initial SNII velocity kick |
-| `DustVelocityAGB` | Initial AGB velocity kick |
-| `DustVelocityLRN` | Initial LRN velocity kick |
-| `DustParticlesPerSNII` | Number of particles created per SNII event |
-| `DustParticlesPerAGB` | Number of particles created per AGB event |
-| `DustParticlesPerLRN` | Number of particles created per LRN event |
+| `DustVelocitySNII` | Initial SNII velocity kick, km/s |
+| `DustVelocityAGB` | Initial AGB velocity kick, km/s |
+| `DustVelocityLRN` | Initial LRN velocity kick, km/s |
+| `DustParticlesPerSNII` | Superparticles per star for the whole SNII/HN episode (default 25) |
+| `DustParticlesPerAGB` | Maximum superparticles per star over its AGB lifetime (default 25) |
+| `DustParticlesPerLRN` | Superparticles per star for its LRN dust (default 1) |
+| `DustSNIIInitialRadius` | Median SNII injection radius, nm |
+| `DustSNIISizeSigmaDex` | Standard deviation of log10 SNII injection radius, dex; zero gives a fixed radius |
+| `DustAGBInitialRadius` | Median AGB injection radius, nm |
+| `DustAGBSizeSigmaDex` | Standard deviation of log10 AGB injection radius, dex; zero gives a fixed radius |
 | `DustLRNRatePerCCSN` | LRN event-rate normalization relative to CCSNe |
 | `DustLRNDustMassMsun` | Adopted dust mass per LRN event |
 | `DustOffsetMinSNII` | Minimum SNII birth offset |
@@ -122,6 +137,12 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
 | `DustOffsetMaxAGB` | Maximum AGB birth offset |
 | `DustOffsetMinLRN` | Minimum LRN birth offset |
 | `DustOffsetMaxLRN` | Maximum LRN birth offset |
+
+SNII and AGB samples are clipped to the configured `DustMinGrainSize` and
+`DustMaxGrainSize` limits. These are representative radii assigned to
+fixed-mass superparticles; they broaden the injected superparticle size
+distribution without changing the dust mass yield. They should not be read as
+a direct sampling of individual microscopic grains.
 
 ## Where in the Code?
 
@@ -143,7 +164,7 @@ Newly spawned particles also receive an initial dust temperature at the CMB floo
 
 - **Stellar feedback interface**
   - Computes stellar ejecta.
-  - Invokes the dust creation routines following SNII or AGB feedback events.
+  - Partitions ejecta into gas and dust and invokes the dust creation routines for SNII tranches, LRNe, and AGB packets.
 
 </div>
 

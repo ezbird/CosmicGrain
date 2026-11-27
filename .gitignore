@@ -123,3 +123,14 @@ WARNINGS
 scripts/lagrangian_particle_sets/
 scripts/lagrangian_regions_initial/
 scripts/lagrangian_regions_minimal/
+
+# Personal working files (kept locally, not part of releases)
+RUN_TRACKER.md
+run_dT*.sh
+runCompleteGrid.sh
+eos.txt
+analysis/
+scripts/*.png
+scripts/*.pdf
+scripts/*.npz
+scripts/halo441_*maps_for_FT/

@@ -41,13 +41,13 @@ M_{i,\rm new}=M_{i,\rm old}\exp(-\Delta t/\tau_i),
 
 with carbon assigned the shorter timescale because of its lower adopted binding energy (4 eV versus 6 eV for silicate). The surviving component masses are recombined, `CarbonMassFraction` is updated, and the representative radius follows the surviving total mass through \(a_{\rm new}=a(M_{\rm new}/M_{\rm old})^{1/3}\). Thus repeated sputtering can make a surviving particle progressively more silicate rich.
 
-**Sublimation.** Independently of gas-driven sputtering, a grain is destroyed instantaneously if its own equilibrium dust temperature exceeds its material sublimation point, \(T_{\rm sublimate} = 1500 + 500 \times {\rm CarbonMassFraction}\) K — silicates sublimate near 1500 K, pure carbon grains near 2000 K.
+**Sublimation.** Before sputtering, a grain is destroyed instantaneously if its own dust temperature exceeds its material sublimation point, \(T_{\rm sublimate} = 1500 + 500 \times {\rm CarbonMassFraction}\) K — silicates sublimate near 1500 K, pure carbon grains near 2000 K. Sublimation is implemented but has not fired in current runs. `update_dust_temperature()` caps `DustTemperature` at the same sublimation temperature and the check is a strict "greater than", so a grain can reach the threshold but not exceed it; hot-gas grain destruction happens through sputtering instead. This is a known limitation to revisit.
 
 ### Assumptions
 
 - The Tsai & Mathews (1995) approximation is valid across the full range of gas temperatures and densities a grain may encounter; no separate regime is used for very hot or very dense gas beyond the built-in clamps.
 - Carbonaceous and silicate mass components are sputtered separately using fixed 4 eV and 6 eV binding-energy factors; the surviving composition is recomputed after erosion.
-- Sputtering is only evaluated once a grain's nearest gas neighbor exceeds a minimum temperature threshold; below that threshold the routine takes no action.
+- Sputtering and sublimation are only evaluated once a grain's nearest gas neighbor is hotter than `DustThermalSputteringTemp`.
 - Sublimation and gas-driven sputtering are distinct physical triggers but are treated by the same routine and are not distinguished in destruction bookkeeping — both are recorded under the same "thermal" destruction counters.
 - Eroded and fully sputtered mass is returned to the nearest gas particle as metals, consistent with sputtering being a mass-conserving erosion process rather than a sink.
 
@@ -57,7 +57,7 @@ with carbon assigned the shorter timescale because of its lower adopted binding 
 
 <div class="cg-card implementation" markdown="1">
 
-Thermal sputtering is evaluated for every dust particle whose nearest gas neighbor exceeds `DustThermalSputteringTemp`, following the drag update in the same particle pass. The sublimation check runs first and unconditionally, ahead of the gas-temperature gate, since it depends only on the grain's own temperature.
+Thermal sputtering is evaluated for every dust particle whose nearest gas neighbor is hotter than `DustThermalSputteringTemp`, right after the drag update in `dust_gas_interaction()`. That call sits inside the drag routine, so **sputtering and sublimation need both `DustEnableSputtering` and `DustEnableDrag`**. Sublimation is checked first, but only for grains that reach this call, i.e. in gas above the sputtering threshold.
 
 For grains that survive sublimation and clear the gas-temperature gate, the exact exponential erosion form is used rather than a linear approximation — important because dust physics may run on a coarser cadence controlled by `DustUpdateCadence`; the linear form could over-erode grains when the accumulated update interval approaches the sputtering timescale.
 
@@ -71,21 +71,16 @@ gas-phase element reservoirs.
 
 - The sputtering timescale is clamped to [1 Myr, 1 Gyr], preventing runaway erosion in extremely hot, dense gas and vanishing erosion in marginal conditions.
 - If unphysical input (zero or negative gas density) is encountered, a safe fallback density is substituted rather than letting the timescale calculation diverge.
-- A grain is fully destroyed — rather than partially eroded — if the new radius would fall at or below the minimum grain size, or if the erosion fraction reaches or exceeds unity in a single call.
-- A grain is also fully destroyed if the erosion calculation produces a non-finite or non-positive new radius, logged as a numerical bug rather than a physical destruction event.
-
-### Known implementation detail
-
-In the partial-erosion path, the grain radius is updated before the corresponding mass-ratio sanity check is performed. If that check fails (a non-finite, negative, or implausibly large mass ratio), the function returns without updating the particle's mass — leaving the grain radius and mass briefly inconsistent until the next cleanup pass. This is a defensive guard against a rare numerical edge case rather than expected behavior, and does not occur in a well-behaved run.
+- A grain is fully destroyed, and its whole remaining mass returned to the gas, if the new radius would be at or below `DustMinGrainSize`, or if the new radius or mass is non-finite or non-positive.
+- Otherwise radius, mass, and carbon fraction are updated together.
 
 ### Algorithm
 
-1. **The nearest gas particle's temperature is used to check for sputtering eligibility.**
-2. **Sublimation is checked first**, independent of gas temperature: if the grain's own dust temperature exceeds its composition-dependent sublimation point, it is destroyed immediately and its mass returned to the nearest gas particle.
-3. **If the gas temperature is below the sputtering threshold**, no further action is taken.
-4. **The Tsai & Mathews (1995) sputtering timescale is computed**, including the composition correction, and clamped to [1 Myr, 1 Gyr].
-5. **The new grain radius is computed** via the exact exponential erosion form.
-6. **If the grain has eroded below the minimum size** (or the erosion fraction reaches unity), it is fully destroyed and its remaining mass returned to gas.
+1. **After the drag update, gas hotter than `DustThermalSputteringTemp` triggers the call.**
+2. **Sublimation is checked first**: if the grain's dust temperature exceeds its composition-dependent sublimation point, it is destroyed and its mass returned to the nearest gas particle.
+3. **The sputtering timescales are computed** per species and clamped to [1 Myr, 1 Gyr].
+4. **Each species decays exponentially**; the new radius follows the surviving mass.
+5. **If the grain has eroded to or below the minimum size**, it is fully destroyed and its remaining mass returned to gas.
 7. **Otherwise, carbon and silicate survival are applied separately**; grain
    radius, total mass, and carbon fraction are updated, and the eroded
    components are returned to gas.
@@ -97,8 +92,8 @@ In the partial-erosion path, the grain radius is updated before the correspondin
 
 | Parameter | Description |
 |-----------|-------------|
-| `DustEnableSputtering` | Enables or disables thermal sputtering. |
-| `DustThermalSputteringTemp` | Minimum gas temperature above which sputtering is evaluated. |
+| `DustEnableSputtering` | Enables or disables thermal sputtering and sublimation (also needs `DustEnableDrag`). |
+| `DustThermalSputteringTemp` | Gas temperature above which sputtering is evaluated; default \(5\times10^5\) K. Also switches off grain growth. |
 | `DustMinGrainSize` | Minimum grain radius; erosion below this fully destroys the grain (shared across all destruction/erosion modules). |
 
 The 4 eV / 6 eV binding energies used for the composition correction, and the sublimation temperatures (1500 K silicate, 2000 K carbon), are hardcoded and not currently exposed as parameters.
@@ -119,10 +114,8 @@ The 4 eV / 6 eV binding energies used for the composition correction, and the su
     - `TotalMassDestroyedByThermal`
     - `TotalMassErodedByThermal`
 
-### `src/dust/dust_gas_interaction()`
-
 - **Caller**
-  - Invokes `erode_dust_grain_thermal()` once the local gas temperature exceeds `DustThermalSputteringTemp`, immediately after the drag velocity update for the same dust–gas pair.
+  - `dust_gas_interaction()` invokes `erode_dust_grain_thermal()` once the local gas temperature exceeds `DustThermalSputteringTemp`, immediately after the drag velocity update for the same dust–gas pair.
 
 </div>
 

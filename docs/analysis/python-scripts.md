@@ -1,6 +1,6 @@
 # Python Analysis and Validation Scripts
 
-The following scripts are the current entry points. Always consult
+The following scripts in `scripts/` are the current entry points. Always consult
 `python3 SCRIPT --help` because options evolve with the analysis.
 
 ## Shared infrastructure
@@ -15,7 +15,7 @@ The following scripts are the current entry points. Always consult
 | Script | Purpose |
 | --- | --- |
 | `cosmicgrain_halo_census.py` | Per-snapshot halo and baryonic census |
-| `cosmicgrain_zoom_postrun_audit_v2.py` | Evolved zoom/contamination audit |
+| `cosmicgrain_zoom_postrun_audit_v3.py` | Post-run zoom acceptance audit (halo, galaxy, dust, contamination, integrity) |
 | `cosmicgrain_global_conservation_audit.py` | Whole-box mass and element closure |
 | `cosmicgrain_dust_radial_diagnostic.py` | Dust radial inventory |
 | `dust_snapshot_summary.py` | Snapshot-wide dust and source summary |
@@ -49,6 +49,7 @@ The following scripts are the current entry points. Always consult
 | `export_skirt_inputs_sizebins.py` | Particle-size/composition SKIRT export |
 | `generate_ski.py` | SKIRT configuration generation |
 | `plot_skirt_sed.py` | SKIRT SED plotting |
+| `plot_images.py` | SKIRT image plotting |
 
 Scripts labeled `_old` are archival comparisons rather than maintained entry
 points.

@@ -630,6 +630,35 @@ void find_neighbors(simparticles *Sp, int idx, double search_radius,
   double sum_mass_in_sphere(simparticles *Sp, const MyIntPosType *center_intpos,
                             double search_radius, int part_type) const
   {
+    // Self-check: for the first calls on each task, compare against the
+    // unpruned scan.  Pruning only skips cells that cannot hold a particle
+    // inside the sphere, so the two sums must agree exactly.
+    static int verify_remaining = 5000;
+    static long long verify_mismatches = 0;
+    const double pruned = sum_mass_in_sphere_impl(Sp, center_intpos, search_radius,
+                                                  part_type, true);
+    if(verify_remaining > 0)
+      {
+        verify_remaining--;
+        const double full = sum_mass_in_sphere_impl(Sp, center_intpos, search_radius,
+                                                    part_type, false);
+        if(pruned != full)
+          {
+            verify_mismatches++;
+            if(verify_mismatches <= 10)
+              printf("[HASH_PRUNE_MISMATCH|T=%d] pruned=%.17g full=%.17g r=%g type=%d\n",
+                     All.ThisTask, pruned, full, search_radius, part_type);
+          }
+        if(verify_remaining == 0 && All.ThisTask == 0)
+          printf("[HASH_PRUNE_VERIFY|T=0] cell pruning checked on 5000 queries: "
+                 "%lld mismatches\n", verify_mismatches);
+      }
+    return pruned;
+  }
+
+  double sum_mass_in_sphere_impl(simparticles *Sp, const MyIntPosType *center_intpos,
+                                 double search_radius, int part_type, bool prune) const
+  {
     if(!is_built || cell_size <= 0.0 || !std::isfinite(search_radius) ||
        search_radius <= 0.0)
       return 0.0;
@@ -688,6 +717,29 @@ void find_neighbors(simparticles *Sp, int idx, double search_radius,
                        iy < 0 || iy >= n_cells_per_dim ||
                        iz < 0 || iz >= n_cells_per_dim)
                       continue;
+
+                    // Cells are typically several times larger than the search
+                    // radius, so most of the (2 n_search + 1)^3 block cannot
+                    // reach the sphere.  Skip a cell when its box (padded by a
+                    // small tolerance for boundary rounding) lies entirely
+                    // outside the sphere.  Edge cells are unbounded outward.
+                    if(prune)
+                      {
+                        const int ic[3] = {ix, iy, iz};
+                        const double pad = 1e-6 * cell_size;
+                        double cell_dist2 = 0.0;
+                        for(int d = 0; d < 3; d++)
+                          {
+                            const double lo = (ic[d] == 0) ? -1e300
+                                : bbox_min[d] + ic[d] * cell_size - pad;
+                            const double hi = (ic[d] == n_cells_per_dim - 1) ? 1e300
+                                : bbox_min[d] + (ic[d] + 1) * cell_size + pad;
+                            const double delta = image[d] - std::max(lo, std::min(hi, image[d]));
+                            cell_dist2 += delta * delta;
+                          }
+                        if(cell_dist2 > radius2)
+                          continue;
+                      }
 
                     const long long cell_idx = (long long)ix +
                         n_cells_per_dim * (iy + (long long)n_cells_per_dim * iz);

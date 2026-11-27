@@ -88,7 +88,7 @@ void coolsfr::cooling_and_starformation(simparticles *Sp)
           double dens = Sp->SphP[target].Density;
 
           double dt =
-              (Sp->P[target].getTimeBinHydro() ? (((integertime)1) << Sp->P[target].getTimeBinHydro()) : 0) * All.Timebase_interval;
+              ((Sp->P[target].getTimeBinHydro() ? (((integertime)1) << Sp->P[target].getTimeBinHydro()) : 0) + Sp->SphP[target].LimiterExtraTi) * All.Timebase_interval;
           /*  the actual time-step */
 
           double dtime = All.cf_atime * dt / All.cf_atime_hubble_a;
@@ -277,8 +277,8 @@ void coolsfr::cooling_and_starformation(simparticles *Sp)
           diag_m_sfr_positive_msun, diag_sfr_sum};
       double global_m[6] = {0, 0, 0, 0, 0, 0};
 
-      MPI_Reduce(local_n, global_n, 5, MPI_LONG_LONG_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-      MPI_Reduce(local_m, global_m, 6, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+      MPI_Reduce(local_n, global_n, 5, MPI_LONG_LONG_INT, MPI_SUM, 0, Communicator);
+      MPI_Reduce(local_m, global_m, 6, MPI_DOUBLE, MPI_SUM, 0, Communicator);
 
       if(ThisTask == 0)
         {

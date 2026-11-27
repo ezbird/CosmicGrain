@@ -4,7 +4,17 @@
 
 <div class="cg-card summary" markdown="1">
 
-Subgrid clumping is not a dust creation or destruction mechanism in its own right — it is a shared density-enhancement model that feeds into grain growth, coagulation, and shattering, accounting for unresolved sub-grid ISM structure that the simulation's finite resolution cannot directly capture. Dense molecular gas is assumed to be far more centrally concentrated than its resolved (smoothed) density implies, and this module supplies an effective, boosted density — used in place of the raw resolved density — for the rate calculations in those three downstream processes.
+Subgrid clumping is not a dust process in its own right. It decides how much
+of a gas element is unresolved dense (cold, molecular) gas, and at what
+density, for grain growth, coagulation, and shattering. `DustEnableClumping`
+selects the model:
+
+| Mode | Model |
+|------|-------|
+| 0 | Off: resolved density, legacy density switch for coagulation/shattering. |
+| 1 | Legacy clumping-factor tiers and the `DustCollisionDensityThresh` switch. |
+| **2** | **Blitz & Rosolowsky (2006) dense phase at \(n_{\rm H}=100\,{\rm cm^{-3}}\) (v1.2.0 default).** |
+| 3 | As 2, with the dense-phase density from pressure balance (experimental). |
 
 </div>
 
@@ -12,43 +22,89 @@ Subgrid clumping is not a dust creation or destruction mechanism in its own righ
 
 <div class="cg-card model" markdown="1">
 
-CosmicGrain assigns a subgrid clumping factor \(C\) based on a gas particle's star-forming status and resolved hydrogen number density \(n_H\), expressed as a fraction of the star formation density threshold `CritPhysDensity` (\(n_{\rm sf}\)):
+### Dense-phase model (modes 2 and 3)
+
+Each gas element has a dense-phase mass fraction from the Blitz & Rosolowsky
+(2006) pressure law,
+
+<div class="cg-equation" markdown="1">
+
+\[
+f_{\rm dense} = \frac{R}{1+R},\qquad
+R = \left(\frac{P/k}{4.3\times10^{4}\,{\rm K\,cm^{-3}}}\right)^{0.92},
+\]
+
+</div>
+
+where \(P\) is the particle pressure from its entropy (for star-forming gas,
+the Springel & Hernquist effective-EOS pressure). Non-star-forming gas hotter
+than \(3\times10^4\) K gets \(f_{\rm dense}=0\).
+
+The dense phase has hydrogen density
+\(n_{\rm dense}=\max(n_{\rm H},100\,{\rm cm^{-3}})\) in mode 2 and
+\(n_{\rm dense}=\max[n_{\rm H},(P/k)/100\,{\rm K}]\) in mode 3.
+
+!!! note "Why mode 2 is the default"
+
+    Mode 3 is uncalibrated and has not been used in a production run. Two
+    reasons favour the fixed cloud density of mode 2. First, for star-forming
+    gas \(P\) is the Springel & Hernquist effective pressure, which rises with
+    the resolved density; mode 3 therefore makes \(n_{\rm dense}\), and with it
+    coagulation and growth, faster at higher resolution, the dependence the
+    dense-phase model was built to remove. Second, that effective pressure
+    stands for unresolved turbulence and SN heating, not the thermal pressure
+    confining cold clouds. In typical star-forming gas mode 3 gives
+    \(n_{\rm dense}\approx400\)–\(2000\ {\rm cm^{-3}}\), 4–20× mode 2, so it
+    would need its own calibration. It is kept as a robustness test of the
+    single-cloud-density assumption.
+
+- **Coagulation** acts on the dense fraction: its rate is multiplied by
+  \(f_{\rm dense}\) and uses \(n_{\rm dense}\).
+- **Grain growth** uses \(f_{\rm dense}\) as its molecular fraction and
+  \(n_{\rm dense}\) in the HK11 timescale.
+- **Shattering** acts on the diffuse fraction: its rate is multiplied by
+  \(1-f_{\rm dense}\) at the resolved \(n_{\rm H}\).
+
+No process switches on or off at a density threshold, so the rates do not
+grow with the resolved density; `DustCollisionDensityThresh` is not used.
+Coagulation and shattering are skipped only where their phase fraction is
+below \(10^{-4}\).
+
+### Legacy clumping factor (mode 1)
+
+A clumping factor \(C\) is assigned from the star-forming state and the
+resolved density relative to `CritPhysDensity` (\(n_{\rm sf}\)):
 
 <div class="cg-equation" markdown="1">
 
 \[
 C =
 \begin{cases}
-30 & \text{gas is actively star-forming} \\
-10 & n_H > 0.5\,n_{\rm sf} \\
-3 & n_H > 0.2\,n_{\rm sf} \\
-1.5 & n_H > 0.05\,n_{\rm sf} \\
+30 & \text{star-forming gas} \\
+10 & n_{\rm H} > 0.5\,n_{\rm sf} \\
+3 & n_{\rm H} > 0.2\,n_{\rm sf} \\
+1.5 & n_{\rm H} > 0.05\,n_{\rm sf} \\
 1 & \text{otherwise}
 \end{cases}
+\qquad n_{\rm eff}=C\,n_{\rm H}.
 \]
 
 </div>
 
-The effective density used by growth, coagulation, and shattering is then
-
-<div class="cg-equation" markdown="1">
-
-\[
-n_{\rm eff} = n_H \times C
-\]
-
-</div>
-
-Star-forming gas is assigned the maximum clumping factor (30) unconditionally, regardless of its exact resolved density — the presence of active star formation is treated as a stronger indicator of unresolved dense sub-structure than the density field itself.
+Coagulation runs where \(n_{\rm eff}\ge\) `DustCollisionDensityThresh` and
+shattering where \(n_{\rm eff}\le\) it; growth uses \(n_{\rm eff}\) for its
+density gate, molecular-fraction tiers, and timescale. Mode 0 sets \(C=1\)
+with the same switch.
 
 ### Assumptions
 
-- Subgrid clumping is understood as a numerical correction for finite resolution, not a physical process in its own right — CosmicGrain anticipates that the need for this correction diminishes and eventually disappears at sufficiently high resolution (e.g. ≳4096³), once molecular cloud densities are directly resolved rather than inferred.
-- The four clumping values (1.5, 3, 10, 30) are fixed constants and do not vary with simulation resolution.
-- The *thresholds* that select between these values scale with `CritPhysDensity` rather than being fixed physical densities, so the same relative behavior applies whether `CritPhysDensity` is tuned differently across runs.
-- Active star formation is treated as an independent, overriding signal of clumping, evaluated before (and regardless of) the density-based ladder.
-- The clumping factor only rescales the *effective* density used in downstream rate calculations — it does not modify the gas particle's actual resolved density (`SphP.Density`) or any other physical quantity.
-- The same clumping factor is applied identically across growth, coagulation, and shattering; there is no process-specific tuning of the clumping model.
+- Clumping corrects for unresolved structure; it never changes the gas
+  particle's density or any other stored quantity.
+- The Blitz & Rosolowsky law is applied per gas element, and the dense phase
+  is assumed to be at a single density.
+- The constants (\(P_0/k\), exponent 0.92, 100 cm\(^{-3}\), 100 K,
+  \(3\times10^4\) K; legacy factors and `CritPhysDensity` fractions) are
+  hardcoded.
 
 </div>
 
@@ -56,22 +112,14 @@ Star-forming gas is assigned the maximum clumping factor (30) unconditionally, r
 
 <div class="cg-card implementation" markdown="1">
 
-`dust_clumping_factor()` is a small, stateless lookup function called identically from three separate physics routines, each of which multiplies its own resolved `n_H` by the returned factor to obtain `n_eff` before applying its own density gate or timescale calculation:
+Changing `DustEnableClumping` changes growth, coagulation, and shattering
+together. Keep this in mind when comparing physics-ladder rungs.
 
-- **Grain growth** (`dust_grain_growth_subgrid()`) — `n_eff` gates whether growth is attempted at all (density floor) and determines which molecular-fraction bin \(f_{\rm mol}\) applies.
-- **Coagulation** (`dust_grain_coagulation()`) — `n_eff` gates whether coagulation is active and sets the coagulation timescale.
-- **Shattering** (`dust_grain_shattering()`) — `n_eff` gates whether the gas is diffuse enough for shattering to dominate over coagulation.
-
-### A cross-cutting dependency worth knowing about
-
-`dust_clumping_factor()` returns `1.0` unconditionally whenever `DustEnableClumping` is disabled. Because growth, coagulation, and shattering all compute their density gates from `n_eff = n_H × C` rather than from raw `n_H` directly, **disabling clumping doesn't just remove a standalone effect — it silently changes the effective density seen by all three of those other modules simultaneously**, since they fall back to the unboosted resolved density. This is worth keeping in mind both when interpreting resolution-ladder comparisons (e.g. S5 growth vs. S6 clumping vs. S8 coagulation) and when writing up the methods, since toggling this one flag has consequences for three physics rungs at once, not just its own.
-
-### Algorithm
-
-1. **Check whether clumping is enabled** — if not, return a no-op factor of 1.0.
-2. **Check whether the gas particle is actively star-forming** — if so, return the maximum clumping factor (30) immediately.
-3. **Otherwise, compare the resolved density against `CritPhysDensity`-scaled thresholds**, in descending order, returning the corresponding clumping factor.
-4. **The caller multiplies this factor by the resolved density** to obtain `n_eff`, which is then used in that module's own gating and rate calculations.
+Because coagulation and growth calibrations were tuned for one mode, changing
+the mode requires recalibrating `DustCoagulationCalibration` and
+`DustGrowthCalibration`. Moving from mode 1 to mode 2, both were multiplied
+by 2.5 (8.91 to 22.3 and 0.446 to 1.12) to keep the disk-integrated rates of
+the legacy model.
 
 </div>
 
@@ -79,9 +127,9 @@ Star-forming gas is assigned the maximum clumping factor (30) unconditionally, r
 
 | Parameter | Description |
 |-----------|-------------|
-| `DustEnableClumping` | Enables or disables subgrid clumping. When disabled, `n_eff` collapses to the raw resolved density for growth, coagulation, and shattering alike. |
-
-The clumping factor values (1.5, 3, 10, 30) and the threshold fractions of `CritPhysDensity` (0.05, 0.2, 0.5) are hardcoded and not currently exposed as parameters. `CritPhysDensity` itself is a base GADGET star-formation parameter, not a dust-specific one — it sets the scale against which these thresholds are expressed. `DustCollisionDensityThresh`, used downstream by coagulation and shattering to gate on `n_eff`, is a separate parameter not controlled by this module directly.
+| `DustEnableClumping` | 0 off, 1 legacy tiers, 2 Blitz & Rosolowsky dense phase (default), 3 pressure-balance dense phase. |
+| `DustCollisionDensityThresh` | Coagulation/shattering switch on \(n_{\rm eff}\) in modes 0 and 1 only. |
+| `CritPhysDensity` | Star-formation threshold; sets the legacy tier boundaries. |
 
 ## Where in the Code?
 
@@ -89,14 +137,9 @@ The clumping factor values (1.5, 3, 10, 30) and the threshold fractions of `Crit
 
 ### `src/dust/dust.cc`
 
-- **Subgrid clumping routine**
-  - `dust_clumping_factor()`
-    - Returns the clumping factor for a given resolved density and star-forming state; the sole source of `n_eff` used across growth, coagulation, and shattering.
-
-- **Consumers**
-  - `dust_grain_growth_subgrid()` — uses `n_eff` for the density gate and to select the molecular-fraction bin.
-  - `dust_grain_coagulation()` — uses `n_eff` for the density gate and the coagulation timescale.
-  - `dust_grain_shattering()` — uses `n_eff` for the density gate that determines whether shattering (vs. coagulation) is the active regime.
+- `dust_dense_fraction()` returns \(f_{\rm dense}\) and \(n_{\rm dense}\) (modes 2 and 3).
+- `dust_clumping_factor()` returns the legacy factor \(C\) (modes 0 and 1).
+- Consumers: `dust_grain_growth_subgrid()`, `dust_grain_coagulation()`, `dust_grain_shattering()`.
 
 </div>
 
@@ -106,12 +149,29 @@ The clumping factor values (1.5, 3, 10, 30) and the threshold fractions of `Crit
 
 *Foundational papers relevant to subgrid density clumping for unresolved ISM structure.*
 
+### Blitz & Rosolowsky (2006)
+
+**Blitz, L., & Rosolowsky, E. (2006). *The Role of Pressure in GMC Formation II: The H2-Pressure Relation.* The Astrophysical Journal, 650, 933–944.**
+
+<p class="reference-note">
+Source of the pressure law \(R_{\rm mol}=(P/P_0)^{0.92}\), \(P_0/k=4.3\times10^4\) K cm\(^{-3}\), used for the dense-phase fraction in modes 2 and 3.
+</p>
+
+<div class="reference-links">
+
+<a href="https://ui.adsabs.harvard.edu/abs/2006ApJ...650..933B" target="_blank" rel="noopener">📚 ADS</a>
+<a href="https://doi.org/10.1086/505417" target="_blank" rel="noopener">🔗 DOI</a>
+
+</div>
+
+---
+
 ### Trayford et al. (2026)
 
 **Trayford, J. W., Schaye, J., Correa, C., Ploeckinger, S., Richings, A. J., Chaikin, E., Schaller, M., Benítez-Llambay, A., Frenk, C., & Huško, F. (2026). *Modelling the Evolution and Influence of Dust in Cosmological Simulations That Include the Cold Phase of the Interstellar Medium.* Monthly Notices of the Royal Astronomical Society, 545, staf2040.**
 
 <p class="reference-note">
-Introduces a subgrid clumping factor boosting unresolved molecular-cloud density for dust accretion, with fiducial and comparison runs (NoC, ConstC30, MaxC10) spanning a similar maximum clumping range to CosmicGrain's.
+Introduces a subgrid clumping factor for dust accretion (runs NoC, ConstC30, MaxC10) spanning a similar range to CosmicGrain's legacy mode 1.
 </p>
 
 <div class="reference-links">

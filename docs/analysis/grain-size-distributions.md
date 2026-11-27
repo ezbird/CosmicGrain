@@ -25,3 +25,8 @@ The same GSD can be conditioned on
 - redshift/time.
 
 A convenient small-grain diagnostic used in current analysis is the fraction below a stated threshold (for example 50 nm), but the threshold must always be reported rather than treated as a built-in CosmicGrain definition.
+
+Filter destroyed or numerically negligible grains consistently before making
+number-weighted histograms, and report the applied mass/radius threshold.
+Stellar source tags record birth origin rather than current composition, so
+source-conditioned plots should be described as provenance selections.

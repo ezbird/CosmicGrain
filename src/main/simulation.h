@@ -14,6 +14,9 @@
 
 #include "gadgetconfig.h"
 
+#include <vector>
+#include "../time_integration/timestep_limiter.h"
+
 #include <mpi.h>
 
 #include "../cooling_sfr/cooling.h"
@@ -194,6 +197,7 @@ class sim : public pinning, public test_io_bandwidth
   void gravity_set_oldacc(int timebin);
 
   void hydro_force(int step_indicator);
+  void limiter_exchange_and_apply(std::vector<cg_limiter::request> &req);
   void compute_grav_accelerations(int timebin);
 #ifdef FORCETEST_TESTFORCELAW
   void gravity_forcetest_testforcelaw(void);

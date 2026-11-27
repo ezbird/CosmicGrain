@@ -169,6 +169,10 @@ DustOffsetMinLRN               0.01     % kpc; minimum spawn offset from parent 
 DustOffsetMaxLRN               0.05     % kpc; maximum spawn offset from parent star (LRN)
 DustMinGrainSize               1.0      % minimum grain size in nanometers
 DustMaxGrainSize               1000.0    % maximum grain size in nanometers
+DustSNIIInitialRadius           10.0     % nm; median SNII injection radius
+DustSNIISizeSigmaDex            0.2      % dex; log-normal dispersion of SNII injection radii
+DustAGBInitialRadius            100.0    % nm; median AGB injection radius
+DustAGBSizeSigmaDex             0.2      % dex; log-normal dispersion of AGB injection radii
 DustAccommodationCoeff         0.3      % dimensionless; gas-grain thermal coupling efficiency (Hollenbach & McKee 1979)
 DustRadiationPressureEfficiency 1.0     % dimensionless; global scaling factor for radiation pressure force
 
@@ -182,7 +186,7 @@ DustShatteringCalibration      0.7  % timescale multiplier; larger = slower shat
 DustShatteringFragmentSlope 3.3 % power-law slope q for dN/da ∝ a^-q
 DustShatteringMaxFragmentFraction 0.80 % maximum fragment radius as a fraction of parent radius
 DustGrowthCalibration          0.4  % timescale multiplier; larger = slower grain growth
-DustAstrationCalibration       0.15     % larger = stronger local D/G-scaled astration
+DustAstrationCalibration       1.0      % astration removes m_star x local D/G (dust and gas in the same sphere); 1 = physical
 DustShockAmbientDensity        2  % cm^-3; higher = smaller shock radius = less grain destruction
 DustCollisionDensityThresh     150.0  % cm^-3; coagulation fires above this density, shattering below
 DustEnableCreation             1  % 0=off, 1=on

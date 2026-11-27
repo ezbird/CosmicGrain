@@ -16,6 +16,9 @@
 
 #include "../mpi_utils/shared_mem_handler.h"
 #include "../ngbtree/ngbtree.h"
+#include "../time_integration/timestep_limiter.h"
+
+#include <vector>
 
 #define MAX_NGBS 500000
 
@@ -96,9 +99,21 @@ class sph : public ngbtree
 
     MyDouble Mass;
     signed char TimeBinHydro;
+    int OriginTask;
+    int OriginIndex;
   };
 
   ngbdata_hydro *Ngbhydrodat;
+
+ public:
+  /* timestep limiter: when set, the hydro force walk records neighbours whose hydro bin exceeds the target's new bin by
+   * more than cg_limiter::delta() (see timestep_limiter.h) */
+  bool LimiterCollect = false;
+  std::vector<cg_limiter::request> LimiterRequests;
+
+ private:
+  std::vector<int> LimiterShmToTask;
+  void limiter_collect(pinfo &pdat);
 
   inline foreign_sphpoint_data *get_foreignpointsp(int n, unsigned char shmrank)
   {
@@ -113,6 +128,7 @@ class sph : public ngbtree
   inline void clear_density_result(sph_particle_data *SphP);
 
   void hydro_evaluate_kernel(pinfo &pdat);
+  void hydro_watch(pinfo &pdat, const double dacc[3], double dentr);
   inline void sph_hydro_interact(pinfo &pdat, int no, char no_type, unsigned char shmrank, int mintopleafnode, int committed);
   inline void sph_hydro_open_node(pinfo &pdat, ngbnode *nop, int mintopleafnode, int committed);
   inline int sph_hydro_evaluate_particle_node_opening_criterion(pinfo &pdat, ngbnode *nop);

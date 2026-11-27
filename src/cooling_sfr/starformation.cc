@@ -94,7 +94,7 @@ void coolsfr::sfr_create_star_particles(simparticles *Sp)
           if(Sp->P[target].getMass() == 0 && Sp->P[target].ID.get() == 0)
             continue; /* skip cells that have been swallowed or eliminated */
 
-          dt = (Sp->P[target].getTimeBinHydro() ? (((integertime)1) << Sp->P[target].getTimeBinHydro()) : 0) * All.Timebase_interval;
+          dt = ((Sp->P[target].getTimeBinHydro() ? (((integertime)1) << Sp->P[target].getTimeBinHydro()) : 0) + Sp->SphP[target].LimiterExtraTi) * All.Timebase_interval;
           /*  the actual time-step */
 
           dtime = All.cf_atime * dt / All.cf_atime_hubble_a;
@@ -270,6 +270,12 @@ if(tot_stars_spawned > 0 || tot_stars_converted > 0)
         #endif
 
     }
+
+#ifdef DUST
+  // Consume the dust around this step's new stars (collective; star IDs are
+  // final and spawned stars are inside NumPart from here on).
+  apply_queued_dust_astration(Sp, Communicator);
+#endif
 
   double sfrrate = 0;
   for(int bin = 0; bin < TIMEBINS; bin++)

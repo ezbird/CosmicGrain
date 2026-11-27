@@ -6,16 +6,20 @@ Each rung inherits all processes above it in the table.
 | Run | Process added |
 | --- | --- |
 | S0 | Stellar dust creation |
-| S1 | Dust cooling |
+| S1 | Dust temperature (`DustEnableCooling`) |
 | S2 | Gas–dust drag |
 | S3 | Astration |
 | S4 | Thermal sputtering |
 | S5 | ISM grain growth |
-| S6 | Subgrid clumping |
+| S6 | Subgrid clumping (`DustEnableClumping`, mode 2 by default) |
 | S7 | SN shock destruction |
 | S8 | Coagulation |
 | S9 | Shattering |
 | S10 | Radiation pressure; full ladder |
+
+Sputtering runs inside the drag routine, so S4 and above need drag on, as the
+ladder already has. Clumping changes the density model of growth,
+coagulation, and shattering together.
 
 The ladder is a controlled process comparison, not a chronological claim
 about which process is physically more fundamental. Compile options,

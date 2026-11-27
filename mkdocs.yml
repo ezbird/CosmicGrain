@@ -2,6 +2,10 @@ site_name: CosmicGrain
 site_description: Dust evolution for GADGET-4 cosmological simulations
 site_url: https://docs.cosmicgrain.space
 
+exclude_docs: |
+  /archive/**
+  /internal/**
+
 repo_name: ezbird/CosmicGrain
 repo_url: https://github.com/ezbird/CosmicGrain
 
@@ -23,6 +27,10 @@ theme:
 
 extra_css:
   - stylesheets/cosmicgrain.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
 markdown_extensions:
   - admonition
@@ -120,3 +128,4 @@ nav:
       - Units: reference/units.md
       - Source-level Constants: reference/constants.md
       - Equation Map: reference/equations.md
+      - Citation: reference/citation.md

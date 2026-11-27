@@ -1,6 +1,6 @@
 # Source-Level Constants
 
-Most user-facing dust controls are runtime parameters, but several numerical or physical choices remain hardcoded in the current implementation. This page records the most important ones found in the audited source tree; it is not a replacement for reading the implementation when changing the model.
+Most user-facing dust controls are runtime parameters, but several numerical or physical choices remain hardcoded in the current implementation. This page records the most important ones; it is not a replacement for reading the implementation when changing the model.
 
 ## Dust bookkeeping
 
@@ -19,9 +19,14 @@ The current source includes several hardcoded model choices, including:
 
 - thermal-sputtering characteristic temperature `2e6 K` and exponent `2.5`;
 - shock Sedov coefficient `ξ = 1.033`;
-- radiation-pressure transition grain size `a0 = 35 nm`;
+- radiation-pressure transition grain size `a0 = 35 nm`; the stellar flux is evaluated no closer than the star's softening length and the velocity change is limited to `100 km s⁻¹` per update (`RADP_MAX_DV_KMS`);
 - grain material density `2.4 g cm⁻³` in drag/radiation calculations;
 - grain-growth effective temperature `20 K`, sticking coefficient `0.3`, and reference metallicity mass fraction `0.02`;
+- shattering Mach number `1`, velocity normalization `1.1 km s⁻¹`, material densities `3.5` / `2.24 g cm⁻³`, and composition-dependent `1–2 km s⁻¹` threshold;
+- shattering reference timescale `54.1 Myr`, density break `1 cm⁻³`, and timescale clamps `[1 Myr, 10 Gyr]`;
+- coagulation reference timescale `27.1 Myr` with `v_co = 0.2 km s⁻¹`; local D/G clamped to `[1e-6, 0.1]`;
+- dense-phase model (`DustEnableClumping` ≥ 2): Blitz & Rosolowsky pressure law with `P0/k = 4.3e4 K cm⁻³` and `α = 0.92`; `n_dense = 100 cm⁻³` (mode 2) or `(P/k)/100 K` (mode 3); non-star-forming gas above `3e4 K` has no dense phase; dense or diffuse fractions below `1e-4` are skipped;
+- legacy clumping factors (`DustEnableClumping = 1`): 30 for star-forming gas, otherwise 10 / 3 / 1.5 above 0.5 / 0.2 / 0.05 × `CritPhysDensity`;
 - dust-cooling emissivity index `β = 2`, reference temperature `100 K`, reference radius `0.1 µm`, and reference absorption efficiency `1.3e-4`.
 
 These values are implementation choices rather than runtime parameters. If one becomes a quantity that users are expected to vary systematically, it should preferably be promoted to a named runtime parameter and documented there.
@@ -32,7 +37,23 @@ see [Runtime Parameters](parameters.md).
 
 ## Stellar feedback
 
-The audited feedback implementation uses four delayed SNII time bins (`SNII_TIME_BINS = 4`) and a CCSN number normalization of `0.011` per solar mass formed for the LRN-rate calculation. Feedback kernel searches and their safety limits are also controlled by source-level constants.
+| Constant | Value | Role |
+| --- | ---: | --- |
+| `SNII_TIME_BINS` | 4 | Delayed SNII/HN release bins per star particle |
+| `CCSN_NUMBER_PER_MSUN` | 0.011 | CCSN per M☉ formed (LRN rate) |
+| SN heating temperature | `1e7 K` | ΔT of stochastic SN heating; `CG_FEEDBACK_DELTA_T` overrides it |
+| `FB_SKIP_HEATING_ABOVE_K` | `1e8 K` | Gas already this hot is not heated again (SN reheating guard) |
+| `AGB_MAX_RELATIVE_KMS` | 3000 km s⁻¹ | AGB donors faster than this relative to the gas are treated as corrupt; ejecta take the gas velocity |
+| `MIN_FEEDBACK_NEIGHBORS` | 16 | Feedback kernel is grown (×1.25, up to 4×) until it holds this many gas neighbours |
+| Velocity watchdog | 3000 km s⁻¹ | Stars, grains and gas faster than this are reported or counted (`[FAST_STAR]`, `[FAST_PARTICLES]`) |
+
+## Parallel bookkeeping
+
+| Constant | Value | Role |
+| --- | ---: | --- |
+| `DTG_ROUTE_RATIO` | 5 | D/G routing-cell size in fine-grid cells (`CG_DTG_ROUTE_RATIO`) |
+| `DTG_OCCUPANCY_MIN_TASKS` | 64 | Occupancy routing of D/G queries from this rank count up (`CG_DTG_ROUTING`) |
+| `DUST_SELFCHECK_MAX_GRAINS` | 200000 | The all-task dust association self-check is skipped above this many grains |
 
 ## Documentation rule
 

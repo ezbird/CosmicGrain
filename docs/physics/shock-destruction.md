@@ -34,16 +34,19 @@ v(R) = \frac{2}{5}\,\xi^{5/2}\sqrt{\frac{E}{\rho}}\,R^{-3/2}
 
 **\(R(t)\) and \(v(R)\) always use the same explosion energy \(E\)** — both are derived from the true per-event energy, converted once from code units to erg. This matters because the two quantities only form a valid Sedov-Taylor pair when computed from a shared \(E\); using a fixed canonical value for one and the true event energy for the other would silently decouple the radius and velocity from each other.
 
-Grain destruction efficiency as a function of shock velocity and composition follows a piecewise-linear interpolation of Bocchio et al. (2014, Table 6), blended between silicate and carbonaceous curves by carbon fraction. Carbonaceous grains are far more vulnerable to weak shocks (77% destruction efficiency at 50 km/s) than silicates (2% at the same velocity); both converge toward complete destruction above roughly 175–200 km/s.
+Grain destruction efficiency as a function of shock velocity and composition follows a piecewise-linear interpolation of Bocchio et al. (2014, Table 6), with separate silicate and carbonaceous curves applied to each grain's two components. Carbonaceous grains are far more vulnerable to weak shocks (77% destruction efficiency at 50 km/s) than silicates (2% at the same velocity); carbonaceous grains reach complete destruction at 175 km/s, silicates level off at 67%.
 
 **Grain-size vulnerability.** Within the mass earmarked for destruction, smaller grains are weighted as more vulnerable than larger ones (more surface area per unit mass): a factor of 1.5× for grains below 20 nm, 1.2× for 20–50 nm, and 0.7× for grains above 100 nm, relative to a baseline of 1.0 in between. Total destroyed mass is unaffected by this weighting — it only changes *which* grains within the search volume lose that mass, redistributing loss toward smaller, more vulnerable grains and away from larger, more resilient ones.
 
 **Subgrid volume correction.** At the resolutions CosmicGrain typically runs at, the physical Sedov radius (tens of parsecs) is much smaller than the spatial hash cell used to search for nearby dust (order kpc). A direct grain-by-grain search at the physical radius would usually find zero grains per SN event. CosmicGrain instead computes the total dust mass expected to be destroyed within the true physical shock volume, then distributes that expected mass across all dust found in a larger search volume — weighted by each grain's size-adjusted share of the local dust mass, per the vulnerability weighting above. This keeps the total destroyed mass converged across resolutions: at coarse resolution few grains are found but the volume correction factor is near unity; at fine resolution many grains are found but the correction factor is correspondingly small.
 
+Because the two components are destroyed separately, shocks change
+`CarbonMassFraction`.
+
 ### Assumptions
 
 - The shock is evaluated at a single characteristic post-explosion time (0.3 Myr) rather than tracked continuously through its evolution.
-- A gas-density floor is applied when computing the Sedov radius, preventing the radius from collapsing to zero in very dense star-forming gas — the floor is a numerical safeguard for resolution independence, not a claim about the physical density at the explosion site.
+- The ambient density in the Sedov solution is capped at `DustShockAmbientDensity`, so the radius does not collapse in dense star-forming gas; this is a numerical choice, not a claim about the density at the explosion site.
 - Shock velocity used to set the destruction efficiency is always derived from the true physical shock radius, never from the (typically larger) search radius used to find dust — using the inflated search radius would understate the velocity and artificially suppress destruction.
 - All grains within the search volume see the same shock velocity; there is currently no attenuation of velocity by an individual grain's distance from the SN within that volume.
 - Destroyed and eroded dust mass is returned to the nearest gas particle as metals, consistent with shock destruction being an erosive process rather than a sink.
@@ -55,38 +58,31 @@ Grain destruction efficiency as a function of shock velocity and composition fol
 
 <div class="cg-card implementation" markdown="1">
 
-Shock destruction is triggered once per SN feedback event via `destroy_dust_from_sn_shocks()`, which implements the subgrid, volume-corrected, size-weighted treatment described above. It computes the physical shock radius and velocity from the local gas density and the true event energy, sets an effective search radius (at least twice the dust hash cell size, capped at 3 kpc), and finds all dust particles within that radius. The expected destroyed mass is distributed across those particles in proportion to their size-adjusted share of the local dust mass; grains that would be eroded below the minimum grain size are fully destroyed, and survivors have their radius reduced according to mass-conserving scaling.
+Each SNII/hypernova tranche that is deposited queues one shock event at its
+star, carrying the tranche energy and the nearest gas particle within 50 code
+length units (which sets the ambient density and receives returned material).
+After the feedback call, `erode_dust_from_sn_shocks_batch()` gathers all events
+from all tasks, sums the dust in each search sphere over all tasks, and
+applies the events in star-ID order, so results do not depend on the domain
+decomposition. Dust created in the same feedback call is excluded.
 
-Carbon and silicate destruction budgets are evaluated separately and
-distributed using the corresponding component mass and grain-size weighting.
-Survivors receive updated mass, radius, and carbon fraction. The obsolete
-standalone `erode_dust_grain_shock()` path has been replaced by the unified
-volume-corrected implementation and shared
-`destroy_dust_particle_to_gas()` cleanup path.
+For each event:
 
-### Numerical floors
-
-- The physical shock radius is floored at 0.001 kpc (1 pc) to avoid degenerate values.
-- The gas density used in the Sedov radius calculation is capped via `DustShockAmbientDensity`, preventing the radius from vanishing in very dense gas.
-- The effective search radius is floored at twice the dust hash cell size and capped at 3 kpc.
-- The event energy is validated before use; an invalid or non-positive value falls back to the canonical 10⁵¹ erg with a logged warning — this should not trigger in a well-formed call from `feedback.cc`.
-- If no dust particles are found within the search radius, the event is a silent no-op — expected behavior in dust-sparse regions, not an error.
-
-### Algorithm
-
-1. **A stellar feedback event with associated SN energy occurs.**
-2. **The local gas density is sampled** near the SN, with a density cap applied for numerical stability.
-3. **The event energy is converted from code units to erg**, with a validated fallback.
-4. **The physical Sedov-Taylor shock radius and velocity are computed** at the characteristic post-explosion time, from the same event energy.
-5. **An effective search radius is set**, at least twice the dust hash cell size and capped at 3 kpc.
-6. **Dust particles within the search radius are located** via the spatial hash.
-7. **The volume correction factor is computed** from the ratio of the physical shock volume to the search volume.
-8. **The expected destroyed mass is calculated** from the local dust mass, the volume correction, and the Bocchio et al. (2014) destruction efficiency at the physical shock velocity.
-9. **Carbon and silicate destruction are distributed separately**, weighted
-   by species mass and grain-size vulnerability; particles reduced below the
-   minimum size are destroyed, while survivors receive updated mass, radius,
-   and CF.
-10. **Dust diagnostics and bookkeeping are updated.**
+- \(\rho_{\rm Sedov}=\min(\rho_{\rm gas},\;{\tt DustShockAmbientDensity}\times m_p)\);
+  \(\rho_{\rm gas}\) falls back to \(1\,m_p\,{\rm cm^{-3}}\) if no gas was found
+  or it is below \(0.01\,m_p\,{\rm cm^{-3}}\).
+- \(R_{\rm phys}=R(0.3\,{\rm Myr})\), floored at 1 pc; \(v=v(R_{\rm phys})\).
+- \(R_{\rm search}=\min[\max(R_{\rm phys},\,2\times\text{dust hash cell}),\,3]\)
+  code length units; \(f_{\rm vol}=(R_{\rm phys}/R_{\rm search})^3\).
+- Destroyed masses \(M_{\rm C}f_{\rm vol}\epsilon_{\rm C}(v)\) and
+  \(M_{\rm sil}f_{\rm vol}\epsilon_{\rm sil}(v)\), from the carbon and silicate
+  dust mass in the sphere, are split over the grains by component mass times
+  the size factor.
+- A grain left below `DustMinGrainSize` is destroyed and its whole mass
+  returned to the gas (if the event found gas; otherwise it is left
+  untouched). Survivors get new mass, radius (\(a\propto m^{1/3}\)), and carbon
+  fraction, and the eroded C and silicate elements go to the gas particle.
+- An invalid event energy falls back to \(10^{51}\) erg with a warning.
 
 </div>
 
@@ -95,10 +91,12 @@ volume-corrected implementation and shared
 | Parameter | Description |
 |-----------|-------------|
 | `DustEnableShockDestruction` | Enables or disables SN shock destruction. |
-| `DustShockAmbientDensity` | Density cap used when computing the Sedov shock radius, preventing radius collapse in dense star-forming gas. |
-| `DustMinGrainSize` | Minimum grain radius; grains eroded below this in a shock are fully destroyed (shared across all dust physics modules). |
+| `DustShockAmbientDensity` | Cap on the Sedov ambient density, in \(m_p\,{\rm cm^{-3}}\); default 0.5. Higher gives a smaller shock radius and less destruction. |
+| `DustMinGrainSize` | Grains eroded below this radius are destroyed. |
 
-The characteristic evaluation time (0.3 Myr), the Sedov constant (ξ = 1.033), the Bocchio et al. (2014) efficiency curve coefficients, and the grain-size vulnerability factors (1.5× / 1.2× / 1.0 / 0.7×) are hardcoded and not currently exposed as parameters. Event energy is no longer hardcoded — it is passed through from the triggering feedback event.
+The evaluation time (0.3 Myr), \(\xi=1.033\), the Bocchio et al. (2014)
+efficiencies, the size factors, and the search-radius limits are hardcoded.
+The event energy is the tranche's SN energy.
 
 ## Where in the Code?
 
@@ -106,26 +104,15 @@ The characteristic evaluation time (0.3 Myr), the Sedov constant (ξ = 1.033), t
 
 ### `src/dust/dust.cc`
 
-- **Primary shock destruction routine**
-  - `destroy_dust_from_sn_shocks()`
-    - Computes the Sedov-Taylor shock radius and velocity from the true event energy, applies the subgrid volume correction, and distributes destruction/erosion across dust in the search volume, weighted by grain-size vulnerability.
-  - `calculate_sn_shock_radius()`
-    - Computes the physical Sedov-Taylor shock radius at a given post-explosion time and energy.
-  - `calculate_sedov_velocity_from_radius()`
-    - Computes the Sedov-Taylor blast-wave velocity at a given physical radius and energy — energy is passed explicitly so it always matches the radius calculation's energy.
-  - `get_shock_destruction_efficiency()`
-    - Piecewise-linear interpolation of Bocchio et al. (2014, Table 6) destruction efficiency, blended by carbon fraction.
-  - `shock_size_factor()`
-    - Shared grain-size vulnerability weight (1.5× / 1.2× / 1.0 / 0.7× by grain radius), used to bias per-grain mass-loss distribution toward smaller, more vulnerable grains.
-
-- **Shared destruction path**
-  - `destroy_dust_particle_to_gas()` — invoked for grains eroded below the minimum grain size; returns remaining mass to the nearest gas particle as metals.
-  - Bookkeeping: `NDustDestroyedByShock`, `TotalMassDestroyedByShock`, `TotalMassErodedByShock`.
+- `erode_dust_from_sn_shocks_batch()` applies all queued shock events collectively.
+- `calculate_sn_shock_radius()` and `calculate_sedov_velocity_from_radius()` give the Sedov-Taylor radius and velocity from the same energy.
+- `get_shock_destruction_efficiency()` interpolates Bocchio et al. (2014, Table 6) for carbon and silicate.
+- `shock_size_factor()` gives the grain-size weight.
+- Bookkeeping: `NDustDestroyedByShock`, `TotalMassDestroyedByShock`, `TotalMassErodedByShock`.
 
 ### `src/cooling_sfr/feedback.cc`
 
-- **Stellar feedback interface**
-  - Invokes `destroy_dust_from_sn_shocks(Sp, p, E_code, comm)` following SNII feedback events, passing the true per-event energy in code units.
+- Queues one `DustShockEvent` per deposited SNII/HN tranche and calls `erode_dust_from_sn_shocks_batch()` once per feedback call.
 
 </div>
 

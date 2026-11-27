@@ -4,7 +4,12 @@
 
 <div class="cg-card summary" markdown="1">
 
-Coagulation increases the representative grain radius of dust superparticles by modeling the statistical effect of frequent grain-grain collisions in dense, cold gas, without changing superparticle mass or computational particle count. This is the key distinction from grain growth: growth adds new mass by accreting gas-phase metals, while coagulation changes the representative size at fixed dust mass, as a continuous closure for microscopic grains sticking together in molecular clouds. Coagulation and shattering are complementary size-transfer mechanisms gated by the same density threshold, active in opposite density regimes.
+Coagulation increases the representative grain radius of a dust superparticle
+at fixed mass and composition, as a continuous closure for grains sticking
+together in dense, cold gas. Unlike grain growth it adds no mass: fewer,
+larger grains carry the same dust mass. Coagulation and shattering are the two
+size-transfer processes; in the default dense-phase model coagulation acts on
+the dense fraction of each gas element and shattering on the diffuse rest.
 
 </div>
 
@@ -12,8 +17,8 @@ Coagulation increases the representative grain radius of dust superparticles by 
 
 <div class="cg-card model" markdown="1">
 
-CosmicGrain uses the Trayford et al. (2025) coagulation-timescale scaling,
-adapted to its continuous representative-grain radius,
+CosmicGrain uses the Trayford et al. (2026) Eq. 10 coagulation timescale,
+with the representative radius in place of their small-grain bin:
 
 <div class="cg-equation" markdown="1">
 
@@ -22,48 +27,53 @@ adapted to its continuous representative-grain radius,
 \left(\frac{a}{0.1\,\mu{\rm m}}\right)
 \left(\frac{\mathrm{D/G}}{0.01}\right)^{-1}
 \left(\frac{v_{\rm co}}{0.1\,{\rm km\,s^{-1}}}\right)^{-1}
-\left(\frac{n_{\rm H,eff}}{10\,{\rm cm^{-3}}}\right)^{-1}
-\mathcal{C}_{\rm co}
+\left(\frac{n_{\rm H}}{10\,{\rm cm^{-3}}}\right)^{-1}
+\frac{\mathcal{C}_{\rm co}}{f_{\rm dense}}
 \]
 
 </div>
 
-Here \(v_{\rm co}=0.2\,{\rm km\,s^{-1}}\), \(n_{\rm H,eff}\) is the associated
-gas particle's hydrogen density multiplied by the shared clumping factor, and
-\(\mathcal{C}_{\rm co}\) is `DustCoagulationCalibration`. D/G is the dust-mass
-sum divided by the gas-mass sum in the dust particle's resolved association
-sphere. Contributions are queried across MPI ranks using the gas and dust
-spatial hashes. The ratio is clamped to \([10^{-6},0.1]\). This is a local
-particle-sampled mass ratio, not a kernel-weighted density ratio.
+with \(v_{\rm co}=0.2\,{\rm km\,s^{-1}}\) and \(\mathcal{C}_{\rm co}\) =
+`DustCoagulationCalibration`, a timescale multiplier (larger = slower). The
+density and phase fraction depend on `DustEnableClumping`
+([Subgrid Clumping](subgrid-clumping.md)):
 
-Trayford's equation uses a small-grain radius in its two-size-bin model.
-CosmicGrain intentionally retains its continuous grain radius and substitutes
-that representative radius into the timescale. With the closure
-\(da/dt=a/(3\tau_{\rm co})\), and \(\tau_{\rm co}\propto a\) at fixed
-environment, the continuous-radius update is
+- **Modes 2/3 (default 2):** \(n_{\rm H}=n_{\rm dense}\) (100 cm\(^{-3}\) in
+  mode 2) and \(f_{\rm dense}\) from Blitz & Rosolowsky (2006). Coagulation is
+  skipped only where \(f_{\rm dense}<10^{-4}\).
+- **Modes 0/1:** \(n_{\rm H}=n_{\rm eff}=C\,n_{\rm H}\), \(f_{\rm dense}=1\),
+  and coagulation runs only where \(n_{\rm eff}\ge\)
+  `DustCollisionDensityThresh` and, for non-star-forming gas, \(T\le3000\) K.
+
+With the v1.2.0 default \(\mathcal{C}_{\rm co}=22.3\),
+\(\tau_{\rm co}\approx30\) Myr for \(a=0.1\,\mu\)m, D/G = 0.01,
+\(n_{\rm dense}=100\,{\rm cm^{-3}}\) and \(f_{\rm dense}=1\).
+
+D/G is the dust mass over the gas mass inside the grain's association sphere
+(see below), summed over all MPI ranks and clamped to \([10^{-6},0.1]\). It is
+a particle-sampled mass ratio, not a kernel-weighted one.
+
+With the closure \(da/dt=a/(3\tau_{\rm co})\) and \(\tau_{\rm co}\propto a\),
+the radius update over \(\Delta t\) is
 
 <div class="cg-equation" markdown="1">
 
 \[
-a_{\rm new} = \min\!\left[a_{\max},
-a\left(1+\frac{\Delta t}{3\tau_{\rm co}(a)}\right)\right].
+a_{\rm new} = \min\!\left[a_{\max},\,
+a\left(1+\frac{\Delta t}{3\tau_{\rm co}(a)}\right)\right],
 \]
 
 </div>
 
-The update is subcycled so no numerical substep grows the radius by more than
-20%; the full interval is integrated unless the shared `DustMaxGrainSize`
-ceiling is reached. The subcycling preserves the fixed-environment continuous
-solution and does not change the superparticle's mass or composition.
+subcycled so no substep grows the radius by more than 20%. The superparticle's
+mass and carbon fraction are unchanged, and no mass is exchanged with gas.
 
 ### Assumptions
 
-- Trayford et al. do not specify a separate temperature cutoff in the coagulation prescription. CosmicGrain treats star-forming effective-EOS gas as the unresolved cold-phase proxy and applies the 3000 K ceiling only to non-star-forming gas.
-- Coagulation is modeled as a continuous, deterministic process (rather than the stochastic, catastrophic treatment used for shattering) because many grain-grain collisions are assumed to occur per timestep in sufficiently dense gas.
-- CosmicGrain does not explicitly consume a partner superparticle or transfer
-  mass between discrete size bins. It changes representative radius at fixed
-  superparticle mass as a continuous-size closure.
-- No mass or metals are exchanged with the surrounding gas; coagulation is a closed process entirely internal to the existing dust population.
+- Coagulation is deterministic and continuous: many collisions per step.
+- No partner superparticle is consumed; only the representative radius changes.
+- The legacy 3000 K ceiling applies only to non-star-forming gas in modes 0/1;
+  effective-EOS gas stands in for unresolved cold clouds.
 
 </div>
 
@@ -71,49 +81,43 @@ solution and does not change the superparticle's mass or composition.
 
 <div class="cg-card implementation" markdown="1">
 
-Coagulation is gated by effective density, temperature, grain validity, and
-local D/G availability before the timescale and radius update are computed.
-The timescale density uses the shared `dust_clumping_factor()` used by grain
-growth and shattering. D/G is determined from the resolved association sphere
-\(\max(2\,{\rm kpc},\min(H_{\rm sml},10\,{\rm kpc}))\) centered on the dust
-particle. The sphere's gas and dust mass sums are combined across MPI ranks;
-hash neighbor accumulation does not use a fixed-size neighbor buffer.
+### Association sphere and local D/G
 
-The spatial hash is refreshed by the feedback/hash subsystem on its normal
-schedule (first build and then after the scale factor advances by
-\(\Delta\log a \ge 0.002\)). The estimator therefore inherits the same
-spatial-index staleness between rebuilds as other dust-neighbor operations.
-D/G also remains resolution- and sampling-dependent. Each dust particle caches
-its estimate and refreshes it every 10 dust updates; the cache is carried with
-the particle during domain exchange and invalidated when the particle has no
-valid gas association. Consequently, the local ratio can also lag changes in
-the nearby dust/gas population between refreshes.
+Each grain is associated with its nearest eligible gas particle (zoom-region
+gas within 10 code length units), searched across all ranks. Growth,
+coagulation, and shattering run only if the grain lies within
+\(r_{\rm assoc}=\max(2,\min(H_{\rm sml},10))\) code length units (comoving
+\(h^{-1}\) kpc) of that gas particle. A grain whose nearest gas is on another
+rank is sent to that rank for its update and returned.
 
-### Shared density threshold with shattering
+D/G is summed over the sphere of radius \(r_{\rm assoc}\) around the grain.
+The sums use a 2-code-unit grid rebuilt at every dust call from the particle
+lists of the shared feedback hash, at current positions. Queries go to the
+ranks whose particles can overlap the sphere: by bounding box below 64 ranks,
+and through a distributed directory of occupied routing cells from 64 ranks
+up. Both routings give bit-identical results (`CG_DTG_ROUTING=bbox|occupancy`
+forces one). The feedback hash is rebuilt after each domain decomposition and
+whenever the scale factor has advanced by 0.002.
 
-Coagulation requires `n_eff` to be *above* `DustCollisionDensityThresh`; shattering requires it to be *below* the same threshold. Because both modules gate on the identical parameter, they are mutually exclusive by construction for any given gas cell at a given timestep — a grain cannot simultaneously qualify for both, which is the intended physical picture (dense gas favors sticking, diffuse gas favors fragmentation) but is worth knowing since a single parameter change affects both processes' active density regimes simultaneously.
+Each grain caches its D/G (`LocalDTG`, `DTGAge`) and refreshes it every 10
+dust calls, staggered over particles; the cache moves with the particle and is
+cleared when the grain has no valid association.
 
-### Shared grain-size ceiling
+### Numerical limits
 
-Coagulation uses the runtime `DustMaxGrainSize` ceiling shared with other grain-size-changing processes. The audited source does not contain a separate `DustCoagulationMaxSize` parameter.
-
-### Numerical floors
-
-- The D/G estimate is clamped to \([10^{-6},0.1]\); neighborhoods with no
-  measurable gas or dust mass are rejected and counted as D/G failures.
-- Grains already at or above `DustMaxGrainSize` skip coagulation; a computed update is also capped at `DustMaxGrainSize`.
-- A grain whose computed `a_new` doesn't exceed its current radius (e.g. from a degenerate timescale) is left unchanged rather than forced to grow.
+- Grains at or above `DustMaxGrainSize` are skipped; updates are capped there.
+- A missing or non-positive D/G skips the grain.
+- An update that does not increase the radius is discarded.
 
 ### Algorithm
 
-1. **Associate the dust particle with gas** and determine the local association sphere from the nearest gas smoothing length.
-2. **Estimate local D/G** from dust and gas mass sums inside that sphere, combining contributions across MPI ranks.
-3. **Compute the clumping-boosted effective density** `n_eff` for the associated gas particle.
-4. **Gate on density and temperature** — `n_eff` must exceed `DustCollisionDensityThresh`; non-star-forming gas above 3000 K is excluded.
-5. **Gate on D/G, grain validity, and size** — reject unavailable local ratios and invalid grains; skip grains at the maximum size.
-6. **Compute the coagulation timescale** using the Trayford Eq. 10 scaling and the calibrated continuous grain radius.
-7. **Subcycle the continuous-radius update** with at most 20% radius growth per substep, conserving superparticle mass and composition and respecting `DustMaxGrainSize`.
-8. **Record the event** for diagnostics and update bookkeeping counters.
+1. Get \(n_{\rm H}\) and \(f_{\rm dense}\) (modes 2/3) or \(n_{\rm eff}\) and
+   the density/temperature gates (modes 0/1).
+2. Reject invalid grains, grains at the maximum size, and missing D/G.
+3. Compute \(\tau_{\rm co}\).
+4. Subcycle the radius update (at most 20% per substep, capped at
+   `DustMaxGrainSize`).
+5. Record the event for diagnostics.
 
 </div>
 
@@ -122,11 +126,14 @@ Coagulation uses the runtime `DustMaxGrainSize` ceiling shared with other grain-
 | Parameter | Description |
 |-----------|-------------|
 | `DustEnableCoagulation` | Enables or disables coagulation. |
-| `DustCollisionDensityThresh` | Effective density threshold above which coagulation is active (and below which shattering is active — shared between the two modules). |
-| `DustMaxGrainSize` | Maximum grain radius reachable via coagulation, growth, or any other size-increasing process (shared parameter, no longer coagulation-specific). |
-| `DustCoagulationCalibration` | Multiplicative calibration factor applied to the coagulation timescale. |
+| `DustCoagulationCalibration` | Timescale multiplier, larger = slower; v1.2.0 default 22.3. |
+| `DustEnableClumping` | Selects the dense-phase (2/3) or legacy (0/1) density model. |
+| `DustCollisionDensityThresh` | Minimum \(n_{\rm eff}\) for coagulation in modes 0/1 only (default 15 cm\(^{-3}\)). |
+| `DustMaxGrainSize` | Shared maximum grain radius (nm). |
 
-The Trayford timescale normalization, collision velocity, D/G clamp, 3000 K non-star-forming temperature ceiling, 20% substep limit, and 10-update D/G-cache refresh interval are hardcoded and not currently exposed as parameters.
+The timescale normalization, \(v_{\rm co}\), D/G clamp, 3000 K legacy
+ceiling, 20% substep limit, association radii, and 10-call D/G refresh are
+hardcoded.
 
 ## Where in the Code?
 
@@ -134,25 +141,11 @@ The Trayford timescale normalization, collision velocity, D/G clamp, 3000 K non-
 
 ### `src/dust/dust.cc`
 
-- **Coagulation routine**
-  - `dust_grain_coagulation()`
-    - Applies the physical gates and updates continuous grain radius using
-      the local D/G estimate and Trayford-inspired timescale.
-  - `estimate_local_dust_to_gas_ratio()`
-    - Routes neighborhood queries to overlapping MPI ranks and combines
-      gas/dust mass sums from their spatial hashes.
-  - `dust_clumping_factor()`
-    - Supplies the shared clumping-boosted effective density (documented separately).
-  - `record_coagulation_event()`
-    - Accumulates per-event density samples into a histogram consumed by `print_coag_histogram()` for periodic diagnostics; internals not covered here.
-  - Bookkeeping: `NCoagulationEvents`.
-
-### `src/dust/update_dust_dynamics()`
-
-- **Caller**
-  - Invokes `dust_grain_coagulation()` using the Hsml-aware association radius
-    \(\max(2\,{\rm kpc},\min(H_{\rm sml},10\,{\rm kpc}))\), alongside growth
-    and shattering.
+- `dust_grain_coagulation()` applies the gates and updates the radius.
+- `estimate_local_dust_to_gas_ratio()` computes D/G across ranks (shared with shattering).
+- `dust_dense_fraction()` / `dust_clumping_factor()` supply the density model.
+- `update_dust_dynamics()` associates grains with gas, refreshes D/G, and calls growth, coagulation, and shattering.
+- Bookkeeping: `NCoagulationEvents`; `record_coagulation_event()` fills the periodic density histogram.
 
 </div>
 
@@ -162,9 +155,9 @@ The Trayford timescale normalization, collision velocity, D/G clamp, 3000 K non-
 
 *References relevant to grain-grain coagulation via dense-gas collisions.*
 
-### Trayford et al. (2025)
+### Trayford et al. (2026)
 
-**Trayford, J., et al. (2025). *Modelling the evolution and influence of dust in cosmological simulations that include the cold phase of the interstellar medium.* Monthly Notices of the Royal Astronomical Society, 545, staf2040.**
+**Trayford, J. W., et al. (2026). *Modelling the Evolution and Influence of Dust in Cosmological Simulations That Include the Cold Phase of the Interstellar Medium.* Monthly Notices of the Royal Astronomical Society, 545, staf2040.**
 
 <p class="reference-note">
 Source of the coagulation-timescale scaling (Eq. 10) adapted here to CosmicGrain's continuous representative-grain radius.

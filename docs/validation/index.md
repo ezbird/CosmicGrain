@@ -13,24 +13,29 @@ Validation is divided into three distinct layers:
 
 ## End-to-end validation run
 
-A dust-enabled **Halo 295 / 512** zoom completed from \(z=98.1046\) to \(z=0\). The run exercises star formation, stellar enrichment, explicit PartType6 creation and evolution, domain decomposition, FOF/SUBFIND, and particle exchange.
+The Paper II run (**Halo 441 / 1024**, v1.2.0 code, `DustEnableClumping 2`) was evolved from
+\(z=97.88\) to \(z=0\). It exercises star formation, stellar enrichment, PartType6
+creation and evolution, domain decomposition, FOF/SUBFIND and particle exchange.
 
 ## Whole-box conservation benchmark
 
+From `scripts/check_mass_conservation.py` and a direct read of the first and last snapshots:
+
 | Quantity | Result |
 | --- | ---: |
-| Initial baryonic mass | 2.611556729 × 10¹² M☉ |
-| Final baryonic mass | 2.611556749 × 10¹² M☉ |
-| Fractional baryonic-mass drift | **7.747311 × 10⁻⁹** |
-| Fractional dark-matter mass drift | **7.375289 × 10⁻¹⁶** |
-| Dust C + silicate / total dust | **1.000000000000** |
-| Non-finite masses | **0** |
-| Negative masses | **0** |
-| Invalid dust carbon fractions | **0** |
+| Baryonic mass (gas + stars + dust), first → last | 2.5263 × 10¹² M☉ → 2.5263 × 10¹² M☉ |
+| Fractional baryonic-mass drift | **1.73 × 10⁻⁸** |
+| Fractional total-mass drift | **2.7 × 10⁻¹²** |
+| Dark-matter mass drift | **0** |
+| Largest snapshot-to-snapshot baryonic change | 2.6 × 10⁻⁷ M☉ (z ≈ 2) |
+| Non-finite or negative masses | **0** |
+| Dust `CarbonMassFraction` outside [0, 1] or non-finite | **0** |
 
-At \(z=0\), the box contains 136,764 gas particles, 1,044 star particles, and 8,365 surviving dust particles. The initial gas count was 137,808, so final gas + star particle counts close exactly at 137,808.
+Particle counts close exactly: 1,066,464 initial gas particles = 909,172 gas + 157,292 stars at
+\(z=0\). The box also holds 1,019,472 dust particles at \(z=0\). The record is in
+[`paperII_1024_global_conservation.txt`](paperII_1024_global_conservation.txt).
 
-The current mass and composition-integrity checks therefore **PASS**.
+The mass and composition-integrity checks **PASS**.
 
 ## Metal bookkeeping
 
@@ -40,20 +45,9 @@ Gas metallicity, stellar metallicity, dust mass, and the tracked gas-element res
 
 ## Code validation versus physical convergence
 
-The successful 512 run demonstrates end-to-end numerical integrity; it does **not** establish convergence of galaxy-scale dust predictions.
-
-For Halo 295 at \(z=0\), the central 30 pkpc contains only:
-
-| Component | Particle count |
-| --- | ---: |
-| Gas | 63 |
-| Stars | 152 |
-| Dust | 9 |
-
-The surviving dust mass inside 30 pkpc is \(1.743\times10^3\,M_\odot\), about 0.283% of the surviving dust mass inside \(R_{200}\). At this resolution, the central ISM, stellar population, enrichment history, and dust distribution are too sparsely sampled for this result alone to be interpreted as physical dust evacuation.
-
-The convergence program therefore repeats the same diagnostics at 1024³, 2048³, and 4096³-equivalent zoom resolution.
-
+Passing this audit shows numerical integrity, not convergence of galaxy-scale dust predictions.
+Convergence is tested separately by repeating the science diagnostics at 512³, 1024³ and 2048³
+([Resolution](resolution.md)).
 
 ## Recent regression fixes
 
@@ -67,7 +61,20 @@ what should be considered a trustworthy production run:
 - dust state and cadence bookkeeping across restarts was repaired and is now
   explicitly serialized/tested; and
 - snapshot continuation includes dust-ID and particle-state safeguards before
-  the initial domain decomposition.
+  the initial domain decomposition, and stellar ages are now correct after a
+  snapshot restart.
+
+v1.2.0 adds further fixes that change results:
+
+- the Hubble parameter \(h\) is included in dust time, mass, and energy unit
+  conversions, and dust velocities are converted between physical and
+  comoving units;
+- feedback and dust neighbour searches are independent of the domain
+  decomposition, so neighbour sets no longer depend on the number of MPI
+  ranks; and
+- an SPH timestep limiter with wake-up, an SN reheating guard, an AGB
+  fast-donor guard, and dust/star velocity-runaway guards remove the
+  high-resolution blow-ups seen at 2048³.
 
 Because enrichment changes can strongly alter the dust budget even when gas and
 stellar masses change modestly, results produced before these fixes should not
@@ -86,4 +93,4 @@ See [Resolution and gas smoothing length](resolution.md) for the separate
 
 ## Regression benchmark
 
-Future changes to particle exchange, feedback, enrichment, or dust mass-transfer routines should rerun the whole-box conservation audit. A material degradation relative to this Halo 295 / 512 benchmark should be investigated before accepting the change.
+Future changes to particle exchange, feedback, enrichment, or dust mass-transfer routines should rerun the whole-box conservation audit. A material degradation relative to this Halo 441 / 1024 benchmark should be investigated before accepting the change.

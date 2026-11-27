@@ -1,0 +1,27 @@
+CosmicGrain validation record (v1.2.0)
+======================================
+
+Run: Halo 441 / 1024-equivalent zoom, halo441_output_1024_cs_c100_r050 (Paper II)
+Evolution: z=97.881988 -> z=0
+Tools: scripts/check_mass_conservation.py; direct read of snapshots 000 and 029
+
+Baryon mass (gas+stars+dust), first: 2.5263e12 Msun
+Baryon mass (gas+stars+dust), last:  2.5263e12 Msun  (drift +4.3642e4 Msun)
+Fractional baryonic mass drift: 1.727527e-08
+Fractional total mass drift:    2.681940e-12
+Fractional DM mass drift:       0
+Largest snapshot-to-snapshot baryonic change: 2.59e-07 Msun (snap 13, z=2.00)
+
+Nonfinite masses: 0
+Negative masses: 0
+Dust CarbonMassFraction nonfinite or outside [0,1]: 0
+
+Particle-count closure:
+initial gas = 1066464
+final gas + stars = 909172 + 157292 = 1066464
+final dust particles = 1019472
+
+RESULT: PASS
+
+This is an end-to-end code-validation benchmark, not a claim of
+physical convergence.

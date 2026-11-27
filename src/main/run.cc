@@ -38,6 +38,7 @@
 #include "../main/main.h"
 #include "../main/simulation.h"
 #include "../ngbtree/ngbtree.h"
+#include "../main/energy_ledger.h"
 #include "../sort/parallel_sort.h"
 #include "../system/system.h"
 
@@ -83,13 +84,17 @@ void sim::run(void)
      std::getenv("CG_AGB_SYNC_TEST_TIMESTEPS") || std::getenv("CG_RC1_NEIGHBOR_MODE") ||
      std::getenv("CG_RC1_PERF_CALL_LIMIT"))
     Terminate("Diagnostic test switches are forbidden in the production build");
-// Preserve the production RC1 requirements while allowing a legitimate
-// snapshot restart to begin at the snapshot's cosmological scale factor.
-if(!All.ComovingIntegrationOn || All.AGBFeedbackMode != 2 || All.TimeMax != 1.0)
-  Terminate("Production RC1 requires cosmological integration, AGB mode 2, and TimeMax=1");
+// The feedback and dust model is validated for cosmological runs with AGB mode 2.
+if(!All.ComovingIntegrationOn || All.AGBFeedbackMode != 2)
+  Terminate("CosmicGrain requires cosmological integration and AGB mode 2");
 
-if(All.RestartFlag != RST_STARTFROMSNAP && All.TimeBegin != 0.01)
-  Terminate("Production RC1 requires TimeBegin=0.01 except for snapshot restarts");
+// The calibrated runs start at z=99 (TimeBegin 0.01) and end at z=0.  Other
+// start or end times are allowed (partial runs, tests) but are not the
+// calibrated setup, so say so instead of stopping.
+if(ThisTask == 0 && All.TimeMax != 1.0)
+  printf("WARNING: TimeMax=%g; the calibrated CosmicGrain runs end at TimeMax=1 (z=0)\n", All.TimeMax);
+if(ThisTask == 0 && All.RestartFlag != RST_STARTFROMSNAP && All.TimeBegin != 0.01)
+  printf("WARNING: TimeBegin=%g; the calibrated CosmicGrain runs start at TimeBegin=0.01 (z=99)\n", All.TimeBegin);
 
 if(All.RestartFlag == RST_STARTFROMSNAP &&
    (!(All.TimeBegin > 0.0) || !(All.TimeBegin < All.TimeMax)))
@@ -198,19 +203,23 @@ if(All.RestartFlag == RST_STARTFROMSNAP &&
        * accessed passively. This also creates the list of active hydro particles at this
        * synchronization point, which is stored in the list TimeBinsHydro.ActiveParticleList[].
        * This list is reused for the subsequent second and first hydro step. */
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_DRIFT);
       NgbTree.compute_densities();
 #ifdef FEEDBACK
       agb_probe_observe(&Sp,1);
 #endif
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_DENSITY);
 
       /* if particles have increased their smoothing lengths, this is recorded in parent tree nodes */
       NgbTree.update_maxhsml();
 
       /* hydro-forces, second half-step. This will also update the predicted velocities/entropies with the new current ones */
       do_hydro_step_second_half();
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_HYDRO2);
 
       /* this does the closing gravity half-step for the timebins that end at the current synchronization point */
       do_gravity_step_second_half();
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_GRAV2);
 
       /* do any extra physics, in a Strang-split way, for the timesteps that are finished */
       MPI_Barrier(Communicator);
@@ -237,7 +246,9 @@ if(All.RestartFlag == RST_STARTFROMSNAP &&
         force_dust_update = true;
 #endif
 
+      TIMER_START(CPU_DUST);
       advance_dust_physics(force_dust_update);
+      TIMER_STOP(CPU_DUST);
 
       /* Feedback may spawn dust and dust microphysics may destroy it. Compact
        * and rebuild time bins before statistics, snapshots, or another tree
@@ -254,6 +265,7 @@ if(All.RestartFlag == RST_STARTFROMSNAP &&
         DustNeedsSynchronization = 0;
       }
 #endif
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_DUST);
 
 #ifdef DEBUG_MD5
       Logs.log_debug_md5("A");
@@ -304,6 +316,7 @@ if(All.RestartFlag == RST_STARTFROMSNAP &&
 
       /* compute hydro-forces */
       do_hydro_step_first_half();
+      cg_ledger::point(&Sp, Communicator, cg_ledger::PH_KICK1_HYDRO1);
 
       /* update the neighbor tree with the new velocities */
       NgbTree.update_velocities();
@@ -361,12 +374,35 @@ void sim::calculate_non_standard_physics_end_of_step(void)
     CoolSfr.sfr_create_star_particles(&Sp);
   #endif
   #endif
+    cg_ledger::point(&Sp, Communicator, cg_ledger::PH_COOLSFR);
 
   #ifdef FEEDBACK
     const double feedback_begin = MPI_Wtime();
+    TIMER_START(CPU_FEEDBACK);
+    /* timestep limiter, source rule: remember the gas state so heated or kicked gas can be woken afterwards */
+    std::vector<long long> lim_id;
+    std::vector<float> lim_entr, lim_vel;
+    const bool lim_on = cg_limiter::enabled();
+    if(lim_on)
+      {
+        lim_id.resize(Sp.NumGas);
+        lim_entr.resize(Sp.NumGas);
+        lim_vel.resize(3 * (size_t)Sp.NumGas);
+        for(int i = 0; i < Sp.NumGas; i++)
+          {
+            lim_id[i]   = (long long)Sp.P[i].ID.get();
+            lim_entr[i] = Sp.SphP[i].EntropyPred;
+            for(int k = 0; k < 3; k++)
+              lim_vel[3 * i + k] = Sp.SphP[i].VelPred[k];
+          }
+      }
     apply_stellar_feedback(All.Time, &Sp, static_cast<ngbtree*>(&NgbTree), &Domain, Communicator);
+    if(lim_on)
+      cg_limiter::after_sources(&Sp, (int)lim_id.size(), lim_id.data(), lim_entr.data(), lim_vel.data());
+    cg_ledger::point(&Sp, Communicator, cg_ledger::PH_FEEDBACK);
     feedback_diag_try_flush(Communicator, /*cadence=*/50);
     agb_probe_flush(&Sp,Communicator);
+    TIMER_STOP(CPU_FEEDBACK);
 
     FeedbackTimingTotal += MPI_Wtime() - feedback_begin;
     FeedbackTimingCalls++;
@@ -390,14 +426,17 @@ void sim::calculate_non_standard_physics_end_of_step(void)
 void sim::configure_dust_update_cadence(void)
 {
   /*
-   * DustUpdateCadence is read from the active parameter file on task 0.
-   * It lives outside All to preserve compatibility with legacy restart files.
-   * Broadcast it explicitly because All's normal parameter broadcast does not
-   * include variables stored outside All.
+   * These dust controls are read from the active parameter file on task 0.
+   * They live outside All to preserve compatibility with legacy restart files,
+   * so broadcast and validate them explicitly.
    */
   MPI_Bcast(&DustUpdateCadence, 1, MPI_INT, 0, Communicator);
   MPI_Bcast(&DustShatteringFragmentSlope, 1, MPI_DOUBLE, 0, Communicator);
   MPI_Bcast(&DustShatteringMaxFragmentFraction, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustSNIIInitialRadius, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustSNIISizeSigmaDex, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustAGBInitialRadius, 1, MPI_DOUBLE, 0, Communicator);
+  MPI_Bcast(&DustAGBSizeSigmaDex, 1, MPI_DOUBLE, 0, Communicator);
 
   if(DustUpdateCadence < 1 || DustUpdateCadence > 1000000)
     Terminate(
@@ -414,6 +453,18 @@ void sim::configure_dust_update_cadence(void)
     Terminate(
         "Invalid DustShatteringMaxFragmentFraction=%g; expected a finite value in (0,1)",
         DustShatteringMaxFragmentFraction);
+  if(!std::isfinite(DustSNIIInitialRadius) || !(DustSNIIInitialRadius > 0.0))
+    Terminate("Invalid DustSNIIInitialRadius=%g; expected a finite value > 0",
+              DustSNIIInitialRadius);
+  if(!std::isfinite(DustSNIISizeSigmaDex) || !(DustSNIISizeSigmaDex >= 0.0))
+    Terminate("Invalid DustSNIISizeSigmaDex=%g; expected a finite value >= 0",
+              DustSNIISizeSigmaDex);
+  if(!std::isfinite(DustAGBInitialRadius) || !(DustAGBInitialRadius > 0.0))
+    Terminate("Invalid DustAGBInitialRadius=%g; expected a finite value > 0",
+              DustAGBInitialRadius);
+  if(!std::isfinite(DustAGBSizeSigmaDex) || !(DustAGBSizeSigmaDex >= 0.0))
+    Terminate("Invalid DustAGBSizeSigmaDex=%g; expected a finite value >= 0",
+              DustAGBSizeSigmaDex);
 
   if(DustAccumulatedSyncPoints < 0 ||
      DustAccumulatedPhysicalTime < 0.0 ||

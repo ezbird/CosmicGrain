@@ -33,6 +33,8 @@
 #include "../main/simulation.h"
 #include "../mpi_utils/generic_comm.h"
 #include "../mpi_utils/mpi_utils.h"
+#include <vector>
+
 #include "../sort/cxxsort.h"
 #include "../subfind/subfind.h"
 #include "../system/system.h"
@@ -46,7 +48,10 @@ struct r2type
 static bool subfind_ngb_compare_dist(const r2type &a, const r2type &b) { return a.r2 < b.r2; }
 
 static int *DM_NumNgb;
-static double *Dist2list;
+/* Squared distances of the neighbours found for one target. The tree walk can
+ * reach particles of every rank in this shared-memory island, so the count is
+ * not bounded by this rank's own NumPart; the buffer grows when needed. */
+static std::vector<double> Dist2list;
 static MyFloat *Left, *Right;
 
 /* local data structure for collecting particle/cell data that is sent to other processors if needed */
@@ -147,16 +152,8 @@ class nearest_comm : public generic_comm<nearest_in, nearest_out, T_tree, T_doma
                 if(r2 > h2)
                   continue;
 
-                /* ── DIAGNOSTIC: print before crash so we can see what triggered it ── */
-                if(numngb >= Tp->NumPart)
-                  {
-                    printf("[SUBFIND_CRASH] numngb=%d >= NumPart=%d  target_type=%d  P_type=%d  hsml=%g\n",
-                          numngb, Tp->NumPart,
-                          (target >= 0) ? Tp->P[target].getType() : -1,
-                          P->getType(), hsml);
-                    myflush(stdout);
-                    Terminate("numngb >= Tp->NumPart");
-                  }
+                if(numngb >= (int)Dist2list.size())
+                  Dist2list.resize(2 * Dist2list.size() + 1024);
 
                 Dist2list[numngb++] = r2;
               }
@@ -249,7 +246,7 @@ void fof<partset>::subfind_find_linkngb(domain<partset> *SubDomain, int num, int
 {
   subfind_collective_printf("SUBFIND: root-task=%d: Start find_linkngb. (%d particles on root-task)\n", ThisTask, num);
 
-  Dist2list = (double *)Mem.mymalloc("Dist2list", Tp->NumPart * sizeof(double));
+  Dist2list.assign(Tp->NumPart + 1024, 0.0);
   Left      = (MyFloat *)Mem.mymalloc("Left", sizeof(MyFloat) * Tp->NumPart);
   Right     = (MyFloat *)Mem.mymalloc("Right", sizeof(MyFloat) * Tp->NumPart);
   DM_NumNgb = (int *)Mem.mymalloc_movable(&DM_NumNgb, "DM_NumNgb", sizeof(int) * Tp->NumPart);
@@ -355,7 +352,7 @@ void fof<partset>::subfind_find_linkngb(domain<partset> *SubDomain, int num, int
   Mem.myfree(Right);
   Mem.myfree(Left);
 
-  Mem.myfree(Dist2list);
+  std::vector<double>().swap(Dist2list); /* release the memory */
 
   subfind_collective_printf("SUBFIND: root-task=%d: Done with find_linkngb\n", ThisTask);
 }

@@ -74,6 +74,12 @@ struct sph_particle_data : public sph_particle_data_hydrocore
   MyFloat MaxSignalVel; /*!< maximum signal velocity */
   MyFloat CurrentMaxTiStep;
 
+  /* timestep limiter (timestep_limiter.h): start of the current hydro step, end of its first half kick, and the part of
+   * the step not covered by 2^TimeBinHydro after an early wake-up (owed to cooling and star formation) */
+  integertime TiStepStart;
+  integertime TiFirstKickEnd;
+  integertime LimiterExtraTi;
+
 #ifdef PRESSURE_ENTROPY_SPH
   MyFloat
       DtPressureSphDensity; /*!< rate of change of the pressure derived density, needed to predict densities for passive particles */

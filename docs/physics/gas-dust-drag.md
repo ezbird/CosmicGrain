@@ -64,22 +64,23 @@ Given \(t_{\rm stop}\), the dust velocity relaxes toward the gas velocity via th
 
 <div class="cg-card implementation" markdown="1">
 
-Drag is applied to every live dust particle each time dust physics runs, using the properties of its nearest gas neighbor. The relative velocity, gas density, and gas temperature are used to compute a stopping timescale, and the dust velocity is updated using the exact exponential solution above — valid regardless of the timestep-to-stopping-time ratio, which matters because dust physics can run on a coarser cadence controlled by `DustUpdateCadence`, with the accumulated physical interval passed to the update.
+Drag is applied to every live dust particle that has a nearest gas particle within 10 code length units (searched across all MPI ranks; a grain whose gas is on another rank is updated there) each time dust physics runs. The relative velocity, gas density, and gas temperature are used to compute a stopping timescale, and the dust velocity is updated using the exact exponential solution above — valid regardless of the timestep-to-stopping-time ratio, which matters because dust physics can run on a coarser cadence controlled by `DustUpdateCadence`, with the accumulated physical interval passed to the update.
 
 ### Guards and numerical floors
 
-- If the gas neighbor returned by the spatial hash has since changed particle type (a stale hash entry), the drag update is skipped for that particle and a bad-index counter is incremented.
+- The relative speed is converted to a physical peculiar velocity (\(\Delta\mathbf{p}/a\)); the exponential relaxation acts on the stored comoving momenta directly.
+- If the associated gas particle is not gas, the update is skipped and a bad-index counter is incremented.
 - In near-vacuum conditions (sound speed below 10³ cm s⁻¹, or gas density below 10⁻³⁰ g cm⁻³), the stopping timescale is set to a 50 Myr ceiling — effectively decoupling the grain from the gas rather than attempting an ill-conditioned calculation.
 - The stopping timescale is clamped to the range [0.001, 50] Myr. This is a numerical safeguard: an unclamped stopping time in the diffuse CGM could otherwise place a grain on an unrealistically short gravity timebin via the drag velocity kick. The radiation pressure module computes its own unclamped stopping time separately for the terminal-velocity correction, since that physical limit should not be artificially suppressed.
 
 ### Relationship to sputtering
 
-The same routine that applies drag also checks whether the local gas temperature exceeds the sputtering threshold and, if so, hands off to the thermal sputtering routine. Drag and sputtering share a neighbor lookup for efficiency, but sputtering's physics — grain erosion and mass return to gas — is documented separately.
+The same routine that applies drag also checks whether the local gas temperature exceeds the sputtering threshold and, if so, hands off to the thermal sputtering routine. Because that check sits inside the drag routine, **thermal sputtering only runs when `DustEnableDrag` is on**.
 
 ### Algorithm
 
-1. **The nearest gas particle is located** for each live dust particle.
-2. **The gas neighbor's type is validated**; a stale hash result is skipped.
+1. **The nearest gas particle is found** for each live dust particle.
+2. **The gas neighbor's type is validated.**
 3. **Local gas properties are read**: velocity, density, and temperature (via entropy).
 4. **The relative velocity** between dust and gas is computed.
 5. **The Epstein stopping timescale is calculated**, including the supersonic correction if applicable, and clamped to [0.001, 50] Myr.
@@ -110,15 +111,13 @@ Grain material density (2.4 g cm⁻³), mean molecular weight (0.6), and adiabat
     - Computes the Epstein stopping timescale, including the supersonic correction and the [0.001, 50] Myr clamp.
 
 - **Supporting routines**
-  - `find_nearest_gas_particle()`
-    - Identifies the gas neighbor used for the drag calculation via the spatial hash.
+  - `associate_dust_with_gas()`
+    - Finds each grain's nearest eligible gas particle across all ranks.
   - `get_temperature_from_entropy()`
     - Converts stored gas entropy to temperature, accounting for the local electron fraction.
 
-### `src/dust/update_dust_dynamics()`
-
 - **Per-step entry point**
-  - Calls `dust_gas_interaction()` for every live dust particle on each dust-physics cadence step.
+  - `update_dust_dynamics()` calls `dust_gas_interaction()` for every associated grain on each dust update.
 
 </div>
 
