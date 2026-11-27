@@ -1,5 +1,7 @@
 # CosmicGrain
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21302431.svg)](https://doi.org/10.5281/zenodo.21302431)
+
 A live dust physics extension for GADGET-4, implementing explicit on-the-fly dust in cosmological simulations. Notably, the dust superparticles (PartType6) have individual masses, grain sizes, compositions, positions, and velocities.
 
 CosmicGrain follows the creation, evolution, transport, growth, and destruction of dust grains self-consistently alongside gas, stars, and dark matter. The project is designed to study the origin and evolution of cosmic dust from high redshift to the present day, with particular emphasis on dusty galaxies observed by JWST and ALMA.
@@ -189,3 +191,13 @@ If you use CosmicGrain in scientific work, please cite:
 
 * The CosmicGrain code paper (in preparation)
 * Springel et al. (2021), GADGET-4
+
+---
+
+## Citing CosmicGrain
+
+If you use CosmicGrain, please cite the software through Zenodo:
+[doi:10.5281/zenodo.21302431](https://doi.org/10.5281/zenodo.21302431).
+This DOI always points to the latest release; each release also has its own
+version DOI on that page. GitHub's "Cite this repository" button uses
+`CITATION.cff`.
